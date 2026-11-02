@@ -1,0 +1,26 @@
+# 비밀번호 (핫스팟, 파이 계정, 이미지 생성용)
+credentials.txt
+os-image/secrets.env
+
+# SD 카드 이미지 (수 GB). 생성 스크립트(configure.sh, write_sd.sh)만 올림
+os-image/*.img
+os-image/*.img.gz
+os-image/*.img.xz
+
+# 주행 녹화, 사진 (용량이 크고 매번 바뀜)
+runs/
+snapshots/
+pi/runs/
+
+# 파이에만 있는 보정값 (aicar push도 덮어쓰지 않음)
+pi/calib.json
+pi/vision.json
+pi/drive.log
+pi/drive.pid
+
+# 자동 생성
+.venv/
+.aicar/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,390 @@
+#!/bin/bash
+# AICAR 맥 명령어: 코드 업데이트, 주행, 설정, 녹화를 모두 이 하나로 실행합니다.
+# 사용법: aicar <명령> [옵션]   (aicar help 로 전체 목록)
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink "$0" || echo "$0")")" && pwd)"
+[ -f "$ROOT/pi/car.py" ] || ROOT="$(cd "$(dirname "$0")" && pwd)"
+CODE="$ROOT/pi"                 # 파이 ~/aicar 로 올라가는 코드
+RUNS="$ROOT/runs"               # 맥으로 가져온 녹화
+SNAPS="$ROOT/snapshots"
+STATE="$ROOT/.aicar"            # 파이 주소 캐시, 마지막 업데이트 기록
+REMOTE=aicar                    # 파이 쪽 폴더 (~/aicar)
+PY="venv/bin/python"            # 모든 명령은 cd ~/aicar 뒤에 실행
+STREAM_PORT=8000
+mkdir -p "$STATE" "$RUNS" "$SNAPS"
+
+SSH_OPTS=(-o ConnectTimeout=4 -o ControlMaster=auto -o "ControlPath=$STATE/cm-%r@%h" -o ControlPersist=120
+          -o ServerAliveInterval=2 -o ServerAliveCountMax=3)   # 연결이 끊기면 6초 안에 알아챔
+# 코드만 올림. 파이에서 생기는 설정(json), 녹화, 가상환경, 모델은 건드리지 않음
+SYNC_EXCLUDES=(--exclude venv/ --exclude runs/ --exclude models/ --exclude __pycache__/ --exclude '*.json'
+               --exclude '.lgd-*' --exclude '*.jpg' --exclude '*.mp4' --exclude drive.log --exclude drive.pid)
+
+red() { printf '\033[31m%s\033[0m\n' "$*"; }
+green() { printf '\033[32m%s\033[0m\n' "$*"; }
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+die() { red "$*"; exit 1; }
+
+# ---------------- 파이 찾기 ----------------
+is_aicar() {
+    nc -z -G 1 "$1" 22 2>/dev/null &&
+        [ "$(ssh "${SSH_OPTS[@]}" -o BatchMode=yes "pi@$1" hostname 2>/dev/null)" = "aicar" ]
+}
+
+find_host() {
+    # AICAR_HOST 환경변수 > 마지막으로 찾은 주소 > 집 와이파이 주소 > 핫스팟 주소 > 같은 네트워크 검색
+    local h
+    for h in ${AICAR_HOST:-} $(cat "$STATE/host" 2>/dev/null) 192.168.0.38 10.42.0.1; do
+        if is_aicar "$h"; then echo "$h" > "$STATE/host"; echo "$h"; return 0; fi
+    done
+    local ip prefix
+    ip=$(ipconfig getifaddr en0 2>/dev/null) || return 1
+    prefix=${ip%.*}
+    for h in $( (for i in $(seq 1 254); do (nc -z -G 1 "$prefix.$i" 22 2>/dev/null && echo "$prefix.$i") & done; wait) ); do
+        if is_aicar "$h"; then echo "$h" > "$STATE/host"; echo "$h"; return 0; fi
+    done
+    return 1
+}
+
+HOST=""
+host() {
+    [ -n "$HOST" ] && return
+    HOST=$(find_host) || die "파이를 찾을 수 없습니다. 파이 전원과 맥 Wi-Fi(집 와이파이 또는 AICAR)를 확인하세요."
+}
+run() { host; ssh "${SSH_OPTS[@]}" "pi@$HOST" "$@"; }            # 결과만 받는 명령
+run_tty() { host; ssh "${SSH_OPTS[@]}" -t "pi@$HOST" "$@"; }     # 키보드 입력/Ctrl+C가 필요한 명령
+in_dir() { echo "cd ~/$REMOTE && $*"; }
+
+open_stream() {
+    # 프로그램이 인식 화면 서버를 켤 때까지 기다렸다가(최대 30초) 브라우저로 열기
+    # (일찍 열면 오류 페이지가 뜸. 페이지가 한 번 열리면 끊겨도 알아서 다시 연결함)
+    (for _ in $(seq 60); do
+         curl -s -o /dev/null -m 1 "http://$HOST:$STREAM_PORT/" && break
+         sleep 0.5
+     done
+     open "http://$HOST:$STREAM_PORT") >/dev/null 2>&1 &
+    echo "인식 화면: http://$HOST:$STREAM_PORT"
+}
+
+# ---------------- 코드 업데이트 ----------------
+remote_sums() { run "cd ~/$REMOTE && md5sum *.py 2>/dev/null"; }
+
+cmd_push() {
+    host
+    local force=0; [ "${1:-}" = "-f" ] && force=1
+    # 마지막 업데이트 이후 파이에서 직접 고친 파일이 있으면 덮어쓰지 않고 멈춤
+    if [ $force = 0 ] && [ -f "$STATE/last_push" ]; then
+        local changed
+        changed=$(diff <(sort "$STATE/last_push") <(remote_sums | sort) | awk '/^>/ {print $3}')
+        if [ -n "$changed" ]; then
+            red "파이에서 직접 수정된 파일이 있습니다: $(echo $changed)"
+            echo "  파이 쪽을 살리려면:  aicar pull-code   (맥으로 가져온 뒤 다시 push)"
+            echo "  맥 쪽으로 덮어쓰려면: aicar push -f"
+            exit 1
+        fi
+    fi
+    rsync -a --delete --itemize-changes "${SYNC_EXCLUDES[@]}" -e "ssh ${SSH_OPTS[*]}" \
+        "$CODE/" "pi@$HOST:$REMOTE/" | awk '$1 ~ /^\*del/ {print "  삭제: " $2; n++}
+                                         $1 ~ /^<f/ {print "  업데이트: " $2; n++}
+                                         END {if (!n) print "  변경 없음"}'
+    remote_sums > "$STATE/last_push"
+    green "파이 코드 업데이트 완료 ($HOST)"
+}
+
+cmd_pull_code() {
+    host
+    rsync -a --itemize-changes "${SYNC_EXCLUDES[@]}" -e "ssh ${SSH_OPTS[*]}" \
+        "pi@$HOST:$REMOTE/" "$CODE/" | awk '$1 ~ /^>f/ {print "  가져옴: " $2; n++} END {if (!n) print "  변경 없음"}'
+    remote_sums > "$STATE/last_push"
+    green "파이 코드를 맥 pi/ 폴더로 가져왔습니다"
+}
+
+# ---------------- 상태 ----------------
+cmd_status() {
+    host
+    bold "파이 주소: $HOST"
+    run 'echo "Wi-Fi:"; nmcli -t -f DEVICE,CONNECTION device | grep ^wlan | sed "s/^/  /"
+         ip -4 -br addr | awk "/^wlan/ {print \"  \" \$1, \$3}"
+         echo "온도: $(vcgencmd measure_temp | cut -d= -f2)   전원: $(vcgencmd get_throttled | grep -q =0x0$ && echo 정상 || echo 저전압/과열 기록 있음)"
+         echo "디스크: $(df -h / | awk "NR==2 {print \$3 \" 사용 / \" \$2}")   녹화 $(ls -d ~/aicar/runs/*/ 2>/dev/null | wc -l)개"
+         p=$(pgrep -af "python.*(lane_follow|drive_keys|tune_|car\.py)" | grep -v pgrep | sed "s#.*/python ##")
+         echo "실행 중: ${p:-없음}"'
+}
+
+track_name() { [ "$1" = black ] && echo "흰 바닥 위 검은 선" || echo "검은 바닥 위 흰 선"; }
+
+cmd_track() {
+    # 트랙 종류(선 색)를 파이 vision.json에 저장. 인자 없으면 지금 값을 보여 주고 물어봄
+    local mode="${1:-}" cur n
+    cmd_push >/dev/null || exit 1      # 이 설정을 아는 최신 lane_follow.py가 파이에 있어야 함
+    cur=$(run "cd ~/$REMOTE && $PY -c 'import lane_follow as lf; print(lf.LINE_COLOR)'" 2>/dev/null | tail -1)
+    echo "지금 트랙: $(track_name "$cur")"
+    if [ -z "$mode" ]; then
+        echo "  1) 검은 바닥 위 흰 선"
+        echo "  2) 흰 바닥 위 검은 선"
+        read -r -p "선택 [1/2, 엔터 = 그대로]: " n
+        case "$n" in 1) mode=white ;; 2) mode=black ;; *) echo "그대로 둡니다"; return ;; esac
+    fi
+    case "$mode" in white|black) ;; *) die "사용법: aicar track [white|black]" ;; esac
+    if [ "$mode" = "$cur" ]; then echo "이미 $(track_name "$mode") 입니다"; return; fi
+    # 직접 맞춘 흰 선 기준값은 반대 색에서는 맞지 않으므로 자동으로 되돌림
+    run "cd ~/$REMOTE && $PY -c 'import lane_follow as lf; lf.save_vision(line_color=\"$mode\", white_thr=None)'" ||
+        die "저장 실패"
+    green "트랙: $(track_name "$mode") 로 저장했습니다. 다음 주행부터 적용됩니다."
+    echo "  선 기준값은 자동으로 돌려놨습니다. 필요하면 aicar tune-white 로 다시 맞추세요."
+}
+
+cmd_config() {
+    run "cd ~/$REMOTE && echo '[calib.json] 서보 보정'; cat calib.json 2>/dev/null || echo '  (없음)'; echo
+         echo '[vision.json] 흰 선/카메라'; cat vision.json 2>/dev/null || echo '  (없음 - 자동)'; echo"
+    bold "[lane_follow.py 주요 설정] (맥 pi/lane_follow.py에서 수정 후 aicar push)"
+    grep -E '^(BASE_SPEED|MIN_SPEED|KICK_SPEED|KP|KH|KD|SMOOTH|AUTO_STEER_MAX|STEER_RATE|ROI_TOP|LINE_MODE|LENS_POSITION|JUNCTION_Y|EDGE_STOP_Y|AUTO_TRIM) ' \
+        "$CODE/lane_follow.py" | sed 's/^/  /'
+    bold "[car.py 조향]"
+    grep -E '^(STEER_LIMIT|STEER_SCALE|STEER_INVERT|SERVO_PIN|MOTOR_PWM)' "$CODE/car.py" | sed 's/^/  /'
+}
+
+# ---------------- 녹화 ----------------
+latest_run() { run "ls -1 ~/$REMOTE/runs | tail -1"; }
+
+cmd_runs() {
+    run "cd ~/$REMOTE/runs 2>/dev/null && for d in \$(ls -1); do
+           printf '  %s  %5s 프레임  %s\n' \$d \$(ls \$d | grep -c jpg\$) \$(du -sh \$d | cut -f1); done"
+    echo "맥에 받은 녹화: $(ls -1 "$RUNS" | wc -l | tr -d ' ')개 ($RUNS)"
+}
+
+cmd_fetch() {
+    local name="${1:-latest}"
+    [ "$name" = latest ] && name=$(latest_run)
+    [ -n "$name" ] || die "녹화가 없습니다"
+    host
+    echo "받는 중: $name"
+    rsync -a -e "ssh ${SSH_OPTS[*]}" "pi@$HOST:$REMOTE/runs/$name" "$RUNS/" || die "다운로드 실패: $name"
+    green "받음: $RUNS/$name"
+}
+
+ensure_mac_venv() {
+    if [ ! -x "$ROOT/.venv/bin/python" ]; then
+        echo "맥에 분석용 파이썬 환경을 만드는 중 (처음 한 번)..."
+        python3 -m venv "$ROOT/.venv" && "$ROOT/.venv/bin/pip" install -q numpy opencv-python || die "환경 설치 실패"
+    fi
+}
+
+cmd_replay() {
+    local name="${1:-latest}"; shift || true
+    [ "$name" = latest ] && name=$(latest_run)
+    [ -d "$RUNS/$name" ] || cmd_fetch "$name"
+    ensure_mac_venv
+    (cd "$CODE" && "$ROOT/.venv/bin/python" replay.py "$RUNS/$name" "$@") && open "$RUNS/$name/replay.mp4"
+}
+
+cmd_clean_runs() {
+    local keep="${1:-5}"
+    local list
+    list=$(run "ls -1 ~/$REMOTE/runs 2>/dev/null | head -n -$keep")
+    [ -n "$list" ] || { echo "지울 녹화가 없습니다 (최근 ${keep}개 유지)"; return; }
+    echo "파이에서 삭제할 녹화 ($(echo "$list" | wc -l | tr -d ' ')개, 최근 ${keep}개는 남김):"
+    echo "$list" | sed 's/^/  /'
+    read -r -p "삭제할까요? 맥으로 받은 복사본은 지워지지 않습니다 [y/N] " yn
+    [ "$yn" = y ] || [ "$yn" = Y ] || { echo "취소"; return; }
+    run "cd ~/$REMOTE/runs && rm -rf $(echo $list)" && green "삭제 완료"
+}
+
+cmd_snap() {
+    local name="snap-$(date +%Y%m%d-%H%M%S).jpg"
+    run "$(in_dir "$PY snap.py /tmp/$name")" | grep -v -E 'INFO|WARN|^\[' ||
+        die "사진 실패 (주행 프로그램이 카메라를 쓰고 있으면 aicar stop 먼저)"
+    scp -q "${SSH_OPTS[@]}" "pi@$HOST:/tmp/$name" "$SNAPS/$name" && run "rm -f /tmp/$name" && open "$SNAPS/$name"
+    green "저장: $SNAPS/$name"
+}
+
+# ---------------- 주행 ----------------
+cmd_stop() {
+    run "bash ~/$REMOTE/stop_all.sh"
+}
+
+# 파이에서 자율주행이 도는 중인지 (파이 쪽에서 실행할 셸 조건, 맞으면 $p = 프로세스 번호)
+DRIVING='p=$(cat ~/aicar/drive.pid 2>/dev/null) && ps -p "$p" -o args= | grep -q lane_follow'
+
+autonomous() {
+    # $1: --drive 또는 빈 값. 나머지: 첫 인자가 숫자면 속도, 그 외는 lane_follow.py 옵션 그대로
+    local drive="$1"; shift
+    local args=()
+    if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9.]+$ ]]; then args+=(--speed "$1"); shift; fi
+    args+=("$@")
+    run "$DRIVING" && die "이미 자율주행이 실행 중입니다. 보기: aicar log   정지: aicar stop"
+    cmd_push || exit 1
+    # 파이에서 백그라운드로 실행: 맥과 연결이 끊겨도 계속 주행. 출력은 파이 ~/aicar/drive.log
+    run "cd ~/$REMOTE || exit 1
+         nohup setsid $PY -u lane_follow.py $drive ${args[*]:-} > drive.log 2>&1 < /dev/null &
+         echo \$! > drive.pid"
+    open_stream
+    cmd_log
+}
+
+cmd_log() {
+    # 실행 중인 자율주행 출력 보기. Ctrl+C = 차 정지, 연결이 끊기면 보기만 끝나고 차는 계속 주행
+    local interrupted=0 rc
+    trap 'interrupted=1' INT
+    run "if $DRIVING; then tail -n +1 -f --pid=\$p ~/$REMOTE/drive.log
+         else cat ~/$REMOTE/drive.log 2>/dev/null; echo; echo '(실행 중인 자율주행 없음)'; fi"
+    rc=$?
+    trap - INT
+    if [ $interrupted = 1 ]; then
+        echo; echo "정지하는 중..."
+        run "bash ~/$REMOTE/stop_all.sh; echo; tail -n 3 ~/$REMOTE/drive.log" ||
+            red "파이에 연결할 수 없어 정지 신호를 못 보냈습니다. 다시 연결되면 바로 aicar stop"
+    elif [ $rc = 255 ]; then
+        echo; red "파이와 연결이 끊겼습니다. 차는 파이에서 계속 주행합니다."
+        echo "  다시 연결되면 보기: aicar log   정지: aicar stop"
+    fi
+}
+
+# ---------------- Wi-Fi ----------------
+# 파이에서 USB 랜카드(wlan1)가 와이파이 장치로 잡혀 있는지 (파이 쪽에서 실행할 셸 조건)
+HAS_WLAN1='nmcli -t -f DEVICE,TYPE device | grep -qx "wlan1:wifi"'
+NO_WLAN1_MSG="USB 랜카드(wlan1)가 인식되지 않습니다. 파이에서 랜카드를 뺐다가 다시 꽂고 10초 뒤 aicar wifi 로 확인하세요.
+  (파란색 USB 3.0 포트 권장. 계속 안 되면 aicar reboot)"
+
+cmd_wifi() {
+    run 'echo "[연결 상태]"; nmcli -t -f DEVICE,CONNECTION device | grep ^wlan | sed "s/^/  /"
+         echo "[저장된 와이파이]"; nmcli -t -f NAME,TYPE,AUTOCONNECT connection show | awk -F: "\$2 ~ /wireless/ && \$1 != \"AICAR-AP\" {print \"  \" \$1}"'
+    echo "[주변 와이파이 (USB 랜카드)]"
+    if run "$HAS_WLAN1"; then
+        run 'sudo nmcli device wifi rescan ifname wlan1 2>/dev/null; sleep 2
+             nmcli -f SSID,SIGNAL,SECURITY device wifi list ifname wlan1 | sed "s/^/  /" | head -15'
+    else
+        red "  $NO_WLAN1_MSG"
+    fi
+}
+
+cmd_wifi_add() {
+    # USB 랜카드(wlan1)를 새 와이파이에 연결하고 저장. 다음부터는 그 와이파이가 있으면 자동 연결
+    local ssid="${1:-}" pass="${2:-}"
+    run "$HAS_WLAN1" || die "$NO_WLAN1_MSG"
+    [ -n "$ssid" ] || read -r -p "와이파이 이름(SSID): " ssid
+    [ -n "$ssid" ] || die "와이파이 이름이 필요합니다"
+    if [ $# -lt 2 ]; then read -r -s -p "비밀번호 (없으면 엔터): " pass; echo; fi
+    local q_ssid q_pass
+    q_ssid=$(printf '%q' "$ssid"); q_pass=$(printf '%q' "$pass")
+    echo "파이를 '$ssid'에 연결하는 중..."
+    if [ -n "$pass" ]; then
+        run "sudo nmcli device wifi rescan ifname wlan1 2>/dev/null; sleep 2; sudo nmcli device wifi connect $q_ssid password $q_pass ifname wlan1"
+    else
+        run "sudo nmcli device wifi rescan ifname wlan1 2>/dev/null; sleep 2; sudo nmcli device wifi connect $q_ssid ifname wlan1"
+    fi || die "연결 실패. 이름/비밀번호를 확인하거나 aicar wifi 로 주변 와이파이를 확인하세요."
+    run "ip -4 -br addr show wlan1" | awk '{print "파이 wlan1 주소: " $3}'
+    green "등록 완료. 맥도 '$ssid'에 연결하면 aicar가 파이를 자동으로 찾습니다."
+}
+
+cmd_wifi_del() {
+    local ssid="${1:-}"
+    [ -n "$ssid" ] || read -r -p "삭제할 와이파이 이름: " ssid
+    [ "$ssid" != "AICAR-AP" ] || die "AICAR 핫스팟은 삭제할 수 없습니다"
+    run "sudo nmcli connection delete id $(printf '%q' "$ssid")" && green "삭제: $ssid"
+}
+
+usage() {
+    cat <<'EOF'
+AICAR 명령어  (맥 터미널에서: aicar <명령>)
+
+[연결 / 업데이트]
+  status                 파이 주소, Wi-Fi, 온도, 디스크, 실행 중인 프로그램
+  push [-f]              맥 pi/ 폴더의 코드를 파이에 업데이트 (go/view는 자동으로 함)
+  pull-code              파이에서 직접 고친 코드를 맥 pi/ 폴더로 가져오기
+  ssh                    파이 터미널 열기
+  check                  파이 파이썬 환경 점검
+  reboot | shutdown      파이 재부팅 / 안전하게 끄기 (전원 뽑기 전에 shutdown)
+  wifi                   파이 와이파이 상태, 저장된 목록, 주변 와이파이
+  wifi-add [이름] [비번]  파이 USB 랜카드를 새 와이파이에 연결하고 저장 (안 주면 물어봄)
+  wifi-del <이름>        저장된 와이파이 삭제
+
+[수동 조작]
+  drive-keys [최대속도]  키보드로 운전 (w/s 속도, a/d 조향, 스페이스 정지, q 종료)
+  center                 조향 중앙
+  steer <각도>           1초 조향 후 중앙 복귀 (-26 ~ 26, 음수=왼쪽)
+  drive <속도> [초]      직진 주행 (속도 -1 ~ 1, 음수=후진, 기본 1초)
+  test                   조향 + 전진/후진 테스트
+  stop                   실행 중인 주행 즉시 정지
+
+[자율주행]  (실행하면 브라우저에 인식 화면이 열림, Ctrl+C로 정지. 맥 연결이 끊겨도 차는 계속 주행)
+  view [옵션]            차선 인식 + 조향만 (모터 꺼짐). 차를 손으로 밀며 확인
+  go [속도] [옵션]       자율주행 (예: aicar go 0.3)
+      옵션: --start N            course.py N번 동작부터
+            --record             runs/에 녹화
+            --set KP=1.8 KH=1.0  이번 실행만 설정 변경
+  log                    실행 중인 자율주행 출력 다시 보기 (연결이 끊긴 뒤 등, Ctrl+C로 정지)
+  course                 맥에서 코스(course.py) 편집 → 저장 후 aicar push
+
+[설정]
+  config                 현재 설정 보기 (보정값, 흰 선, 주요 주행값)
+  track [white|black]    트랙 색: white = 검은 바닥 위 흰 선, black = 흰 바닥 위 검은 선 (안 주면 물어봄)
+  tune-center            키보드로 서보 중앙 맞추기 (s 저장)
+  trim <도>              서보 중앙을 그만큼 옮겨 저장 (예: aicar trim -0.5)
+  tune-white             흰 선 인식 기준 맞추기 (브라우저 보며 w/s, Enter 저장)
+  tune-light             신호등 인식 기준 맞추기 (브라우저 보며 w/s e/d r/f, Enter 저장)
+  set                    주행 설정 파일(lane_follow.py) 편집 → 저장 후 aicar push
+
+[카메라 / 녹화]
+  camera                 카메라 원본 + 인식 화면 나란히 보기 (모터/서보 안 움직임, Ctrl+C 종료)
+  snap                   사진 찍어 맥으로 가져와 열기
+  runs                   파이의 녹화 목록
+  fetch [이름|latest]    녹화를 맥 runs/ 폴더로 받기
+  replay [이름|latest] [--set K=V]   맥에서 녹화 재분석 → 영상 열기
+  clean-runs [N]         파이 녹화 중 최근 N개(기본 5)만 남기고 삭제
+
+파이 주소는 자동으로 찾습니다 (집 와이파이 192.168.0.38 → 핫스팟 10.42.0.1 → 같은 네트워크 검색).
+직접 지정: AICAR_HOST=10.42.0.1 aicar status
+EOF
+}
+
+# ---------------- 명령 실행 ----------------
+cmd="${1:-help}"; shift || true
+case "$cmd" in
+    help|-h|--help|course|set) ;;
+    *) host ;;      # 파이 주소를 한 번만 찾고 모든 하위 명령이 같이 씀
+esac
+case "$cmd" in
+    status)      cmd_status ;;
+    push)        cmd_push "$@" ;;
+    pull-code)   cmd_pull_code ;;
+    ssh)         run_tty "cd ~/$REMOTE; exec bash -l" ;;
+    check)       run "$(in_dir "$PY check_env.py")" 2>&1 | grep -E '^  (OK|FAIL)|카메라' ;;
+    reboot)      run "sudo reboot" 2>/dev/null; green "재부팅합니다. 1분쯤 뒤 다시 연결하세요." ;;
+    shutdown)    run "sudo shutdown -h now" 2>/dev/null; green "파이를 끕니다. 초록 LED가 꺼지면 전원을 뽑아도 됩니다." ;;
+
+    drive-keys)  cmd_push && run_tty "$(in_dir "$PY drive_keys.py ${1:+--max-speed $1}")" ;;
+    center)      run "$(in_dir "$PY car.py center")" ;;
+    steer)       [ $# -ge 1 ] || die "사용법: aicar steer <각도>"; run "$(in_dir "$PY car.py steer $1")" ;;
+    drive)       [ $# -ge 1 ] || die "사용법: aicar drive <속도> [초]"; run "$(in_dir "$PY car.py drive $1 ${2:-1}")" ;;
+    test)        run "$(in_dir "$PY car.py test")" ;;
+    stop)        cmd_stop ;;
+
+    view)        autonomous "" "$@" ;;
+    go)          autonomous --drive "$@" ;;
+    log)         cmd_log ;;
+    course)      open -t "$CODE/course.py"; echo "저장한 뒤: aicar push (go는 자동 업데이트)" ;;
+
+    config)      cmd_config ;;
+    track)       cmd_track "$@" ;;
+    tune-center) cmd_push && run_tty "$(in_dir "$PY tune_center.py")" ;;
+    trim)        [ $# -ge 1 ] || die "사용법: aicar trim <도>"; run "$(in_dir "$PY car.py trim $1")" ;;
+    tune-white)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_white.py")" ;;
+    tune-light)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_light.py")" ;;
+    camera)      run "$DRIVING" && die "자율주행이 카메라를 쓰는 중입니다. 화면 보기: aicar log   정지: aicar stop"
+                 cmd_push && open_stream && run_tty "$(in_dir "$PY camera_view.py")" ;;
+    set)         open -t "$CODE/lane_follow.py"; echo "맨 위 '설정' 부분을 고쳐 저장한 뒤: aicar push" ;;
+
+    snap)        cmd_snap ;;
+    runs)        cmd_runs ;;
+    fetch)       cmd_fetch "$@" ;;
+    replay)      cmd_replay "$@" ;;
+    clean-runs)  cmd_clean_runs "$@" ;;
+
+    wifi)        cmd_wifi ;;
+    wifi-add)    cmd_wifi_add "$@" ;;
+    wifi-del)    cmd_wifi_del "$@" ;;
+
+    help|-h|--help) usage ;;
+    *)           red "알 수 없는 명령: $cmd"; echo; usage; exit 1 ;;
+esac
