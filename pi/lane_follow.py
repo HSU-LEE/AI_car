@@ -58,6 +58,9 @@ WHITE_THR = None        # 흰 선으로 볼 밝기 차(바닥 대비). None이�
 WHITE_MIN = 35          # 자동일 때 이보다 낮게는 내려가지 않음 (빈 바닥에서 노이즈를 선으로 잡지 않게)
 TOPHAT_K = 23           # 이보다 굵은 밝은 덩어리(반사광, 매트 밖 바닥)는 선이 아님 (반해상도 px) [좁은 화각 35]
 USE_MAT_MASK = True     # 검은 매트 바깥(바닥, 나무 테두리)은 무시
+MAT_MIN_CONTRAST = 70   # 매트와 그 바깥의 밝기 차이가 이보다 작으면 '매트가 따로 없음'(바닥 하나에 테이프)으로 보고 화면 전체를 씀.
+                        #   나무 바닥 + 검은 테이프는 조명/비네팅 때문에 차이가 ~50이라, 그대로 나누면 화면 아래 모서리의
+                        #   가까운 테이프까지 '매트 밖'으로 지워짐. 검은 매트 + 나무 테두리는 ~100
 LINE_W_MIN, LINE_W_MAX = 3, 87   # 띠 안에서 선 하나의 가로 폭(px) [좁은 화각 4, 130]
 MIN_PIXELS = 40         # 선 하나로 인정할 최소 픽셀 수 [좁은 화각 60]
 DOUBLE_GAP = 33         # 이 간격(px)보다 가까운 두 선은 이중선 하나로 합침 [좁은 화각 50]
@@ -305,6 +308,11 @@ class LaneDetector:
     def mat_mask(gray):
         """검은 매트 영역(아래쪽에서 이어진 가장 큰 어두운 영역의 볼록 껍질). 바닥/나무 테두리 제외"""
         small = cv2.resize(gray, (gray.shape[1] // 4, gray.shape[0] // 4), interpolation=cv2.INTER_AREA)
+        bg = cv2.medianBlur(small, 7)       # 선을 지운 바닥 밝기로 '매트와 바깥이 정말 다른지' 판단
+        bthr, _ = cv2.threshold(bg, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        lo, hi = bg[bg < bthr], bg[bg >= bthr]
+        if not len(lo) or not len(hi) or float(hi.mean()) - float(lo.mean()) < MAT_MIN_CONTRAST:
+            return np.full_like(gray, 255)  # 바닥이 한 종류 (조명 차이로만 갈림) → 전부 매트
         thr, _ = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         dark = (small < thr).astype(np.uint8)
         dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8))  # 흰 선을 메워 매트를 한 덩어리로 [좁은 화각 9x9]
@@ -437,19 +445,31 @@ class LaneDetector:
             l, r = (x, None) if dl <= dr else (None, x)
         return l, r, None
 
-    def find_gap(self, bands, both_near):
+    def find_gap(self, bands, ls, rs):
         """앞에서 차선이 끊기는지 → 선이 마지막으로 보인 띠의 y (없으면 None).
         아래 띠부터 선이 이어지다가 그 위로 GAP_BANDS개 띠에 선이 하나도 없으면 끊김으로 봄.
-        오감지 방지: 맨 아래 띠에 양쪽 선이 다 보일 때만 (급커브에서 위쪽 선이 화면 옆으로 빠지는 것 제외),
+        오감지 방지: 끊기기 직전 띠에서 양쪽 선이 다 보이고 둘 다 화면 가장자리가 아닐 때만
+        (급커브는 선이 화면 옆으로 빠져나가며 사라짐 → 제외. 맨 아래 띠는 가까운 선이 화면 밖으로 잘리기 쉬워서 안 봄),
         매트 끝이 아닐 때만, 빈 띠가 매트 안일 때만, 가로선/횡단보도 띠가 있으면 아님"""
-        if not both_near or self.edge or any(special for _, _, special in bands):
+        if self.edge or not bands[0][1] or any(special for _, _, special in bands):
             return None
         k = 0
         while k + 1 < len(bands) and bands[k + 1][1]:    # 아래에서부터 선이 이어진 마지막 띠
             k += 1
-        empty = bands[k + 1:k + 1 + GAP_BANDS]
-        if len(empty) < GAP_BANDS or any(has for _, has, _ in empty):
+        margin = FRAME_W * 0.04
+        if ls[k] is None or rs[k] is None or ls[k] < margin or rs[k] > FRAME_W - margin:
             return None
+        empty = bands[k + 1:k + 1 + GAP_BANDS]
+        if len(empty) < GAP_BANDS:
+            return None
+        # 빈 띠: 차로가 이어졌다면 있을 자리(끊기기 직전 양쪽 선에서 원근으로 줄인 폭 ± 1/4) 안에 선이 없어야 함.
+        # 화면 가장자리의 바닥 밖 물체 같은 것은 차로 자리 밖이라 세지 않음
+        center, width_k = (ls[k] + rs[k]) / 2, rs[k] - ls[k]
+        for j in range(k + 1, k + 1 + GAP_BANDS):
+            w = width_k * self.model_width(j) / self.model_width(k)
+            lo, hi = center - 0.75 * w, center + 0.75 * w
+            if any(lo <= x <= hi for x in bands[j][1]):
+                return None
         if USE_MAT_MASK and any(cy < self.mat_top for cy, _, _ in empty):
             return None     # 빈 곳이 매트 밖(바닥)이면 끊긴 게 아니라 매트가 끝난 것
         return int(bands[k][0])
@@ -474,14 +494,14 @@ class LaneDetector:
         self.crosswalk = self.crosswalk_any = False
         self.junction_y = self.crosswalk_y = None   # 가로선/횡단보도가 보인 가장 가까운(아래) 띠의 y. course의 at= 판단용
         ys, ls, rs, pending = [], [], [], []
-        bands = []      # 띠별 (y, 선이 있는지, 가로선/횡단보도인지) → 차선 끊김(gap) 판단용
+        bands = []      # 띠별 (y, 선 x 목록, 가로선/횡단보도인지) → 차선 끊김(gap) 판단용
         ref = self.center[0] if self.center[0] is not None else cx0
         for i in range(SLICES):     # 0번이 가장 가까운 띠. 아래에서 위로 올라가며 추적
             y1 = mask.shape[0] - (i + 1) * h
             cy = top + y1 + h // 2
             lines, hrun, crosswalk = self.find_lines(mask[y1:y1 + h])
             hline = hrun is not None
-            bands.append((cy, bool(lines), hline or crosswalk))
+            bands.append((cy, lines, hline or crosswalk))
             if hline and cy >= jy or (JUNCTION_BY_BRANCH and i < 2 and len(lines) >= 3):
                 junction = True
             if hline:
@@ -528,7 +548,7 @@ class LaneDetector:
                     rs[i] = x
         self.left, self.right = list(ls), list(rs)
 
-        self.gap_y = self.find_gap(bands, ls[0] is not None and rs[0] is not None)
+        self.gap_y = self.find_gap(bands, ls, rs)
         if self.gap_y is not None and draw:
             dashed_hline(dbg, self.gap_y, C_GAP, thick=2)
             chip(dbg, "LANE ENDS", FRAME_W // 2 - 40, self.gap_y - 22, C_GAP)

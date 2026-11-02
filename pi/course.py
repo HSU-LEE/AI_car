@@ -209,10 +209,12 @@ def describe(step):
 # ↓↓↓ 여기를 코스에 맞게 수정 ↓↓↓
 
 COURSE = _flat([
+    to_gap(0.85),
+    cross_gap(),
     to_junction(),
+    follow(0.75),
     tr(),
-    stop(3),
-    to_gap(0.6),
+    to_gap(0.85),
     finish(),
 ])
 

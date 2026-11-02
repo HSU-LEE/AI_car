@@ -128,6 +128,30 @@ def test_gap():
           f"{d1.gap_y} → {d2.gap_y}")
     d3, _ = run_detector(lane_frame(y_end=250, right=False))
     check("한쪽 선만(급커브) → gap 아님", d3.gap_y is None, f"gap_y={d3.gap_y}")
+    img = lane_frame(y_end=250)
+    img[int(H * 0.82):, W // 2:] = 30           # 가까운 오른쪽 선이 화면 아래에서 잘려 안 보임
+    d4, _ = run_detector(img)
+    check("가까운 선 하나가 화면 밖으로 잘려도 끊기기 직전에 양쪽이 보이면 gap", d4.gap_y is not None,
+          f"gap_y={d4.gap_y}")
+    img = lane_frame(y_end=0, bg=200, line=20)  # 나무 바닥(밝음) + 검은 테이프, 아래 모서리만 어두움(비네팅)
+    yy, xx = np.mgrid[0:H, 0:W]
+    shade = (1 - 0.35 * (((xx - W / 2) / (W / 2)) ** 2 + ((yy - H) / H) ** 2)).clip(0.6, 1)
+    img = (img * shade[..., None]).astype(np.uint8)
+    d5, det5 = run_detector(img, color="black")
+    check("바닥 하나 + 가장자리 어두움: 가까운 양쪽 선을 지우지 않음",
+          d5.left[0] is not None and d5.right[0] is not None, f"left {d5.left[0]} right {d5.right[0]}")
+
+
+def test_mat_mask():
+    print("[매트 마스크]")
+    img = lane_frame(y_end=0, bg=25, line=235)
+    img[:, :int(W * 0.12)] = 170                # 왼쪽은 나무 테두리 (매트 밖)
+    cv2.line(img, (int(W * 0.06), int(H * 0.45)), (int(W * 0.06), H), (250, 250, 250), 8)   # 테두리 위 흰 것
+    d, det = run_detector(img)
+    top = int(H * lf.ROI_TOP)
+    mask = d.line_mask(img[top:])
+    check("검은 매트 + 나무 테두리: 테두리 위 흰 것은 무시", int((mask[:, :int(W * 0.1)] > 0).sum()) == 0)
+    check("검은 매트 + 나무 테두리: 차선은 그대로", det is not None and abs(det[0]) < 0.1, f"{det}")
 
 
 def test_crosswalk():
@@ -320,7 +344,7 @@ def test_driver_smoke():
 
 
 def main():
-    for t in (test_fast_math, test_lane, test_gap, test_crosswalk, test_track_color,
+    for t in (test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_driver_smoke):
         t()
     passed = sum(results)
