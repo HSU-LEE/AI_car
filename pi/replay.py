@@ -1,10 +1,10 @@
-"""녹화한 주행(runs/<시각>/)을 다시 돌려 인식 결과를 영상으로 만든다. 맥에서도 실행 가능
+"""Re-run a recorded drive (runs/<time>/) and write an annotated video. Works on a Mac.
 
   python replay.py runs/20261029-190000
-  python replay.py runs/20261029-190000 --set KP=0.7 KH=1.0     설정값을 바꿔서 비교
-  python replay.py runs/20261029-190000 --frames 120-300         일부 구간만
+  python replay.py runs/20261029-190000 --set KP=0.7 KH=1.0
+  python replay.py runs/20261029-190000 --frames 120-300
 
-결과: <run>/replay.mp4 (인식 화면 + 원래 조향값 비교), 터미널에 요약 통계
+Writes <run>/replay.mp4 and prints a short summary.
 """
 import argparse
 import ast
@@ -31,14 +31,14 @@ def main():
         try:
             new = ast.literal_eval(val)
         except (ValueError, SyntaxError):
-            new = val       # "light" 같은 문자열
+            new = val       # Leave values such as "light" as strings.
         setattr(lf, key, new)
         print(f"{key}: {old} -> {new}")
 
     run = Path(args.run)
     if (run / "log.csv").exists():
         rows = list(csv.DictReader(open(run / "log.csv")))
-    else:   # 로그 없이 프레임만 있을 때: 20fps로 가정
+    else:   # Frames only: assume 20 fps.
         print("log.csv 없음 -> 프레임만으로 재생 (20fps 가정)")
         rows = [{"frame": p.stem, "t": int(p.stem) / 20, "steer": "nan"}
                 for p in sorted(run.glob("[0-9]*.jpg"))]
@@ -46,11 +46,11 @@ def main():
         a, b = map(int, args.frames.split("-"))
         rows = rows[a:b + 1]
 
-    driver = lf.Driver(lf.COURSE)       # 실제 주행과 똑같은 판단 (코스 옵션, 차선 놓침 처리 포함)
+    driver = lf.Driver(lf.COURSE)       # Same decisions as a real run, including course options.
     detect, steering, traffic, course = driver.detect, driver.steering, driver.traffic, driver.course
     out = Path(args.out) if args.out else run / "replay.mp4"
     writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), 20,
-                             (lf.FRAME_W + lf.Driver.PANEL_W, lf.FRAME_H))     # 주행 화면과 같이 오른쪽 정보 패널 포함
+                             (lf.FRAME_W + lf.Driver.PANEL_W, lf.FRAME_H))     # Same right-hand info panel as a live run.
 
     lost = junctions = gaps = 0
     lights = {"red": 0, "green": 0}

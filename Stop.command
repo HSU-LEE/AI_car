@@ -1,5 +1,5 @@
 #!/bin/bash
-# 즉시 정지: 실행 중인 주행을 멈추고 조향을 중앙으로
+# Stop at once: halt the running drive and center the steering.
 cd "$(dirname "$0")" || exit 1
 
 ./aicar stop

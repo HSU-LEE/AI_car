@@ -1,14 +1,14 @@
-"""서보 중앙각 튜닝
+"""Tune the servo center.
 
-바퀴가 똑바로 설 때까지 키로 조정한 뒤 s로 저장하면 calib.json에 기록되고,
-car.py가 다음 실행부터 자동으로 반영합니다.
+Adjust with the keys until the wheels point straight, then press s.
+The value is saved in calib.json and car.py loads it on the next run.
 
-  z / c   0.1도씩 왼쪽 / 오른쪽
-  a / d   0.5도씩 왼쪽 / 오른쪽
-  A / D   2도씩 왼쪽 / 오른쪽
-  r       보정값 0으로 초기화
-  s       저장 후 종료
-  q       저장하지 않고 종료
+  z / c   0.1 degree left / right
+  a / d   0.5 degree left / right
+  A / D   2 degrees left / right
+  r       Reset the trim to 0
+  s       Save and quit
+  q       Quit without saving
 """
 import json
 import sys
@@ -46,8 +46,8 @@ def main():
             elif key == "r":
                 trim = 0.0
             elif key == "s":
-                # 중앙을 새로 맞췄으니 주행 중 자동으로 배운 보정값은 초기화
-                data = load_calib()     # 다른 보정값(모터 최소값 등)은 그대로 두고
+                # A new center makes the learned running bias stale, so clear it.
+                data = load_calib()     # Keep other saved values, such as the motor floor.
                 data.update(steer_trim=trim, steer_bias=0.0)
                 CALIB_FILE.write_text(json.dumps(data))
                 print(f"\n저장됨: {CALIB_FILE} (steer_trim = {trim:+.1f})")

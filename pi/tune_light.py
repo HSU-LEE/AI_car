@@ -1,19 +1,20 @@
-"""신호등 인식 기준값 튜닝 (현장 조명에 맞추기)
+"""Tune traffic-light thresholds for the lighting on site.
 
-맥 브라우저에서 http://<파이 IP>:8000 을 열고 신호등을 카메라 앞에 둔 채 조정:
-  왼쪽: 카메라 화면 + 인식된 램프 박스 / 오른쪽: 빨강·초록으로 잡힌 픽셀
-  w / s   채도 기준 +5 / -5   (올리면 옅은 색은 무시)
-  e / d   밝기 기준 +5 / -5   (올리면 어두운 색은 무시)
-  r / f   최소 크기 +5 / -5   (올리면 작은 반사광은 무시)
-  Enter   저장 후 종료 (vision.json → lane_follow.py가 다음 실행부터 사용)
-  q       저장하지 않고 종료
+Open http://<pi-ip>:8000 with the light in front of the camera:
+  Left: camera plus the lamp box. Right: pixels counted as red or green.
+  w / s   Saturation +5 / -5   (higher ignores pale color)
+  e / d   Brightness +5 / -5   (higher ignores dark color)
+  r / f   Minimum size +5 / -5 (higher ignores small reflections)
+  Enter   Save and quit (vision.json, used by lane_follow.py on the next run)
+  q       Quit without saving
 
-빨간불/초록불 램프에만 박스가 생기고, 주변 물체·반사광에는 안 생기는 값이 좋다.
+A good value boxes only the red and green lamps.
 
-화면 아래 "lamp H S V"는 신호등 영역에서 밝고 색이 있는 픽셀의 중간값 (램프 색 확인용)
-  H(색상, 0~180): 빨강 0~10 또는 170~180, 초록 40~80 (wait_green은 빨간불 자리에서 35~100까지 초록으로 봄)
-  초록불인데 H가 80~100이면 청록빛으로 찍히는 것 → wait_green은 괜찮지만 화면 전체 인식은 못 함
-  S/V가 위 기준(S>=, V>=)보다 낮으면 w/s, e/d로 기준을 낮추기
+"lamp H S V" under the image is the median of bright, colored pixels in the lamp area.
+  H (hue, 0..180): red is 0..10 or 170..180, green is 40..80.
+    wait_green treats hue 35..100 as green, but only at the spot where red was seen.
+    A green lamp at H 80..100 looks cyan. wait_green still accepts it; a full-frame search does not.
+  If S or V is below the threshold shown (S>=, V>=), lower it with w/s or e/d.
 """
 import select
 import sys
@@ -27,7 +28,7 @@ import lane_follow as lf
 
 
 def lamp_hsv(frame):
-    """신호등 영역에서 밝고 색이 있는 픽셀(V>=150, S>=40)의 H, S, V 중간값과 개수"""
+    """Median H, S, V and count of bright colored pixels (V>=150, S>=40) in the lamp area."""
     vals = []
     for x0, y0, x1, y1 in lf.TrafficLight.regions():
         hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV).reshape(-1, 3)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 저장된 와이파이 삭제
+# Delete a saved Wi-Fi network.
 source "$(dirname "$0")/../_common.sh"
 
 $A wifi

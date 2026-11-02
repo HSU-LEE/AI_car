@@ -1,6 +1,6 @@
 #!/bin/bash
-# 경기장 자동 캘리브레이션: 차를 직선 차로 가운데에, 차로 방향으로 놓고 더블클릭
-# 트랙 색, 초점, 조도(노출/게인/화이트밸런스), 차로 폭/소실점, 카메라 중앙을 재서 파이에 저장
+# Venue calibration. Place the car in the center of a straight lane, pointing along it.
+# Measures track color, focus, exposure, lane width, horizon, and camera center, then saves them on the Pi.
 source "$(dirname "$0")/../_common.sh"
 
 echo "차를 직선 차로 가운데에, 차로 방향으로 똑바로 놓으세요. 측정하는 동안(약 15초) 차와 카메라 앞을 가리지 마세요."

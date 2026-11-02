@@ -1,19 +1,18 @@
-"""경기장 자동 캘리브레이션 — 차를 직선 차로 가운데에, 차로 방향으로 놓고 실행
+"""Automatic venue calibration. Place the car in the center of a straight lane, pointing along the lane, then run.
 
-  python calibrate.py           측정 후 vision.json에 저장 (이전 값은 vision.json.bak)
-  python calibrate.py --dry     측정만 하고 저장 안 함
-  python calibrate.py --focus-only   초점만 다시
+  python calibrate.py           measure, then save to vision.json (the previous file is kept as vision.json.bak)
+  python calibrate.py --dry     measure only, do not save
+  python calibrate.py --focus-only   refit focus only
 
-순서
-  1. 트랙 색       바닥이 밝으면 흰 바닥/검은 선, 어두우면 검은 바닥/흰 선
-  2. 초점          렌즈를 가까이~멀리 훑어서 차선 영역(가까운 쪽에 비중)이 가장 선명한 값으로 고정
-  3. 조도          자동 노출/화이트밸런스로 맞춘 뒤 고정. 흰 선이 하얗게 날아가지 않게 줄이고,
-                   주행 중 흔들림(번짐)이 없게 노출 시간은 MAX_EXPOSURE_US 이하로 (부족한 밝기는 게인으로)
-  4. 차로 폭/소실점 띠마다 양쪽 선 위치를 재서 원근 모델(LANE_WIDTH_PX, HORIZON_Y)을 맞춤
-  5. 카메라 중앙    차가 차로 가운데에 있다고 보고 차로 중앙이 화면 아래에서 어디인지 (CAMERA_X)
-  6. 확인          저장한 값으로 다시 인식해서 결과 화면을 calib_view.jpg로 저장
+Steps
+  1. Track color     a bright floor is a white floor with a black line; a dark floor is a black floor with a white line
+  2. Focus           sweep the lens from near to far and lock the value that is sharpest on the lane region, weighted toward the near side
+  3. Exposure        settle auto exposure and white balance, then lock them. Shorten exposure so the white line does not blow out, and keep the exposure time at or below MAX_EXPOSURE_US so the line does not blur while driving. Gain makes up any missing brightness.
+  4. Lane width and vanishing point   measure both line positions in each band and fit the perspective model (LANE_WIDTH_PX, HORIZON_Y)
+  5. Camera center   assume the car is in the middle of the lane and record where the lane center falls at the bottom of the frame (CAMERA_X)
+  6. Check           detect again with the values to be saved and write the result view to calib_view.jpg
 
-자동으로 못 하는 것: 서보 중앙(차가 움직여야 함 → Tune Center), 신호등(켜진 신호등이 필요 → Tune Traffic Light)
+Servo center and the traffic light cannot be set here. Servo center needs the car to move (Tune Center). The traffic light needs a lit signal (Tune Traffic Light).
 """
 import argparse
 import json
@@ -25,11 +24,11 @@ import numpy as np
 
 import lane_follow as lf
 
-MAX_EXPOSURE_US = 8000      # 노출 시간 상한(us). 길면 달릴 때 선이 번짐 → 넘으면 게인으로 대신 밝힘
+MAX_EXPOSURE_US = 8000      # Exposure-time cap, in microseconds. A longer exposure blurs the line while driving, so the rest of the brightness comes from gain.
 MAX_GAIN = 8.0
-CLIP_LEVEL = 250            # 이 밝기 이상은 하얗게 날아간 것으로 봄
-CLIP_RATIO = 0.003          # 차선 영역에서 날아간 픽셀이 이 비율을 넘으면 노출을 줄임
-FRAMES = 30                 # 차로 측정에 쓰는 프레임 수
+CLIP_LEVEL = 250            # Brightness at or above this counts as blown out to white.
+CLIP_RATIO = 0.003          # If blown-out pixels in the lane region exceed this fraction, reduce the exposure.
+FRAMES = 30                 # Frames used for the lane measurement.
 VIEW_FILE = lf.VISION_FILE.with_name("calib_view.jpg")
 
 
@@ -39,14 +38,16 @@ def roi_gray(frame):
 
 
 def detect_track_color(frames):
-    """바닥 밝기(차선 영역 중간값)로 트랙 색 판단 → "white"(검은 바닥/흰 선) / "black"(흰 바닥/검은 선)"""
+    """Judge track color from floor brightness, the median of the lane region: "white" (black floor, white line) or "black" (white floor, black line)."""
     med = float(np.median([np.median(roi_gray(f)) for f in frames]))
     return ("black" if med > 128 else "white"), med
 
 
 def measure_lanes(frames):
-    """띠마다 화면 가운데 기준 왼쪽/오른쪽 선 x의 중간값 → [(y, 왼쪽 x, 오른쪽 x)].
-    차로 폭 모델과 상관없이 마스크에서 바로 재므로, 모델 값이 틀려 있어도 측정됨"""
+    """Median left and right line x in each band, measured from the frame center: [(y, left x, right x)].
+
+    The lines are measured straight from the mask, independent of the lane-width model, so a wrong model still measures.
+    """
     det = lf.LaneDetector()
     top = int(lf.FRAME_H * lf.ROI_TOP)
     samples = {}
@@ -65,26 +66,27 @@ def measure_lanes(frames):
                 samples.setdefault(cy, []).append((max(lefts), min(rights)))
     bands = []
     for cy, pairs in sorted(samples.items()):
-        if len(pairs) >= len(frames) // 2:      # 절반 이상의 프레임에서 양쪽 선이 보인 띠만
+        if len(pairs) >= len(frames) // 2:      # Keep only bands where both lines were visible in at least half the frames.
             arr = np.array(pairs)
             bands.append((cy, float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))))
     return bands
 
 
-FIT_TOLERANCE = 6.0     # 차로 폭 직선에서 이 px보다 벗어난 띠는 빼고 다시 맞춤 (먼 곳이 굽은 선 등)
+FIT_TOLERANCE = 6.0     # A band farther than this many px from the lane-width line is dropped and the fit is redone, such as a bend far away.
 
 
 def fit_geometry(bands):
-    """띠별 양쪽 선 → 차로 폭 모델(y=342에서의 폭, 소실점 y), 카메라 중앙, 차의 기울어짐.
-    가장 믿을 만한 가까운 띠 3개로 시작해서, 먼 띠는 그 직선에서 FIT_TOLERANCE 안일 때만 하나씩 더함
-    (먼 곳이 굽거나 끊김 근처라 어긋난 띠가 직선 전체를 끌고 가지 않게). 반환: dict 또는 오류 메시지(str)"""
-    bands = sorted(bands, key=lambda b: -b[0])     # 가까운(아래) 띠부터
+    """Fit both lines in each band to the lane-width model (width at y=342 and vanishing-point y), plus camera center and car tilt.
+
+    Start with the three most reliable near bands, then add a farther band only while it stays within FIT_TOLERANCE of that line, so a bent or broken far band cannot drag the whole line. Returns a dict, or an error message (str).
+    """
+    bands = sorted(bands, key=lambda b: -b[0])     # Nearest (lowest) band first.
     used = bands[:3]
     for b in bands[3:]:
         ys = np.array([u[0] for u in used], float)
         coef = np.polyfit(ys, [u[2] - u[1] for u in used], 1)
         if abs(np.polyval(coef, b[0]) - (b[2] - b[1])) > FIT_TOLERANCE:
-            break                                   # 여기부터 위는 직선 모델에서 벗어남
+            break                                   # From here upward the bands leave the straight model.
         used.append(b)
     bands = used
     if len(bands) < 3:
@@ -92,13 +94,13 @@ def fit_geometry(bands):
     ys = np.array([b[0] for b in bands], float)
     widths = np.array([b[2] - b[1] for b in bands])
     centers = np.array([(b[1] + b[2]) / 2 for b in bands])
-    a, b = np.polyfit(ys, widths, 1)        # 폭 = a*y + b (원근: 아래로 갈수록 넓어짐)
+    a, b = np.polyfit(ys, widths, 1)        # Width = a*y + b. Perspective makes the lane wider toward the bottom.
     if a <= 0:
         return "멀수록 차로가 좁아지지 않음 (선을 잘못 잡았을 수 있음). 차를 차로 방향으로 똑바로 놓기"
     horizon = -b / a
     width_342 = a * 342 + b
     resid = float(np.max(np.abs(np.polyval((a, b), ys) - widths)))
-    k, c0 = np.polyfit(ys, centers, 1)      # 차로 중앙 x = k*y + c0
+    k, c0 = np.polyfit(ys, centers, 1)      # Lane-center x = k*y + c0.
     bottom_x = k * lf.FRAME_H + c0
     return {"lane_width_px": round(float(width_342), 1), "horizon_y": round(float(horizon), 1),
             "camera_x": round(float(bottom_x / lf.FRAME_W), 4),
@@ -110,12 +112,12 @@ def capture(cam, n=1, settle=0.0):
     return [cam.capture_array() for _ in range(n)]
 
 
-# 초점: 차선을 읽는 영역의 선명도로 고름 (오토포커스는 화면 가운데=먼 바닥에 맞춰서 가까운 차선이 흐려짐)
-FOCUS_REGIONS = ((0.0, 0.3, 0.2), (0.3, 0.7, 0.4), (0.7, 1.0, 0.4))   # ROI 안의 (위, 아래, 가중치): 먼 / 가운데 / 가까운
+# Focus is chosen by sharpness where the lane is read. Autofocus locks on the center of the frame, the far floor, and leaves the near lane soft.
+FOCUS_REGIONS = ((0.0, 0.3, 0.2), (0.3, 0.7, 0.4), (0.7, 1.0, 0.4))   # (top, bottom, weight) inside the ROI: far, middle, near.
 
 
 def sharpness(frame):
-    """ROI 영역별 선명도(Laplacian 분산)"""
+    """Sharpness of each ROI region, as the variance of the Laplacian."""
     top = int(lf.FRAME_H * lf.ROI_TOP)
     lap = cv2.Laplacian(cv2.cvtColor(frame[top:], cv2.COLOR_BGR2GRAY), cv2.CV_64F)
     n = lap.shape[0]
@@ -123,14 +125,14 @@ def sharpness(frame):
 
 
 def best_focus(table):
-    """{렌즈 위치: 영역별 선명도} → 영역마다 최고값으로 나눠 가중 평균이 가장 큰 렌즈 위치"""
+    """Pick a lens position from {lens position: per-region sharpness}. Each region is divided by its peak, then the weighted average decides."""
     peaks = [max(v[i] for v in table.values()) or 1.0 for i in range(len(FOCUS_REGIONS))]
     score = {lp: sum(w * v[i] / peaks[i] for i, (_, _, w) in enumerate(FOCUS_REGIONS)) for lp, v in table.items()}
     return max(score, key=score.get)
 
 
 def calibrate_focus(cam, controls):
-    """렌즈를 가까이~멀리 훑어서 차선 영역(가까운 쪽에 비중)이 가장 선명한 렌즈 위치(디옵터). 실패하면 None"""
+    """Sweep the lens from near to far and return the position, in diopters, that is sharpest on the lane region, weighted toward the near side. None on failure."""
     table = {}
 
     def measure(lp):
@@ -139,27 +141,27 @@ def calibrate_focus(cam, controls):
         cam.capture_array()
         table[round(float(lp), 2)] = sharpness(cam.capture_array())
 
-    for lp in np.arange(1.5, 12.01, 0.75):      # 67cm ~ 8cm
+    for lp in np.arange(1.5, 12.01, 0.75):      # 67 cm to 8 cm.
         measure(lp)
     coarse = best_focus(table)
-    for lp in np.arange(coarse - 0.5, coarse + 0.51, 0.25):     # 그 주변을 촘촘히
+    for lp in np.arange(coarse - 0.5, coarse + 0.51, 0.25):     # Finer steps around that position.
         if 0.5 <= lp <= 12 and round(float(lp), 2) not in table:
             measure(lp)
     if max(sum(v) for v in table.values()) < 1.0:
-        return None     # 화면이 완전히 균일 (카메라가 가려짐 등)
+        return None     # The frame is completely uniform, for example because the camera is covered.
     return best_focus(table)
 
 
 def calibrate_exposure(cam):
-    """자동 노출/화이트밸런스가 자리 잡은 값 → 번짐 없게 노출 상한, 날아가지 않게 줄여서 고정값"""
+    """Lock the settled auto exposure and white balance, cap exposure so the image does not blur, and reduce it so highlights do not blow out."""
     cam.set_controls({"AeEnable": True, "AwbEnable": True})
     time.sleep(2.5)
     md = cam.capture_metadata()
     exp, gain = float(md["ExposureTime"]), float(md["AnalogueGain"])
     gains = [float(g) for g in md["ColourGains"]]
-    if exp > MAX_EXPOSURE_US:       # 같은 밝기를 짧은 노출 + 높은 게인으로
+    if exp > MAX_EXPOSURE_US:       # Keep the same brightness with a shorter exposure and a higher gain.
         gain, exp = min(MAX_GAIN, gain * exp / MAX_EXPOSURE_US), MAX_EXPOSURE_US
-    for _ in range(8):              # 흰 선(밝은 쪽)이 하얗게 날아가면 조금씩 줄임
+    for _ in range(8):              # If the white line, the bright side, blows out, reduce a little at a time.
         cam.set_controls({"AeEnable": False, "AwbEnable": False, "ExposureTime": int(exp),
                           "AnalogueGain": gain, "ColourGains": tuple(gains)})
         frame = capture(cam, 1, settle=0.4)[0]
@@ -175,7 +177,7 @@ def calibrate_exposure(cam):
 
 
 def check_result(frames):
-    """저장할 값으로 다시 인식: 위치 오차, 양쪽 선이 다 보인 비율, 마지막 화면"""
+    """Detect again with the values about to be saved: position error, fraction of frames with both lines, and the last frame."""
     det = lf.LaneDetector()
     offsets, both, dbg = [], 0, None
     for f in frames:
@@ -203,7 +205,7 @@ def main():
     from libcamera import controls
 
     if args.focus_only:
-        cam = lf.open_camera()      # 저장된 고정 노출 그대로
+        cam = lf.open_camera()      # Keep the saved locked exposure.
         try:
             lens = calibrate_focus(cam, controls)
         finally:
@@ -268,10 +270,10 @@ def main():
             else:
                 saved["camera_x"] = geo["camera_x"]
                 print(f"      {lf.CAMERA_X} → {geo['camera_x']}")
-        saved["white_thr"] = None       # 흰 선 기준은 자동 (고정 노출이라 안정적)
+        saved["white_thr"] = None       # The white-line threshold stays automatic. Locked exposure keeps it stable.
 
         print("[6/6] 확인 ...", flush=True)
-        for key, value in saved.items():        # 이번 실행에서 바로 적용해서 다시 인식
+        for key, value in saved.items():        # Apply this run's values immediately and detect again.
             name = {"line_color": "LINE_COLOR", "lane_width_px": "LANE_WIDTH_PX", "horizon_y": "HORIZON_Y",
                     "camera_x": "CAMERA_X", "white_thr": "WHITE_THR", "lens_position": "LENS_POSITION",
                     "camera_lock": "CAMERA_LOCK"}[key]

@@ -1,16 +1,16 @@
-"""흰 선 인식 기준값 튜닝
+"""Tune the white-line threshold.
 
-기본은 자동 캘리브레이션이라 따로 할 필요는 없다. 조명이 특이해서 선을 놓치거나
-엉뚱한 곳을 선으로 잡을 때만 직접 정하면 된다.
+Automatic calibration is the default. Set a value by hand only when the light
+misses the line or paints the floor.
 
-맥 브라우저에서 http://10.42.0.1:8000 을 열고 주황색(선으로 인식된 부분)을 보면서 조정:
-  w / s   기준값 +2 / -2  (올리면 덜 잡고, 내리면 더 잡음)
-  W / S   기준값 +10 / -10
-  a       자동으로 되돌리기
-  Enter   저장 후 종료 (vision.json → lane_follow.py가 다음 실행부터 사용)
-  q       저장하지 않고 종료
+Open http://10.42.0.1:8000 and watch the orange pixels (pixels treated as the line):
+  w / s   Threshold +2 / -2   (higher catches less, lower catches more)
+  W / S   Threshold +10 / -10
+  a       Return to automatic
+  Enter   Save and quit (vision.json, used by lane_follow.py on the next run)
+  q       Quit without saving
 
-주황색이 흰 선 위에만 꽉 차게 칠해지고, 바닥/반사광에는 안 칠해지는 값이 좋다.
+A good value paints the white line and nothing else.
 """
 import select
 import sys

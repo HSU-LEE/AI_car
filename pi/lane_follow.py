@@ -1,25 +1,23 @@
-"""OpenCV 차선 인식 + 가변 조향 자율주행 + 교차로별 코스 지정
+"""OpenCV lane detection with variable steering and a per-junction course.
 
-화면 아래쪽(ROI)을 가로 띠 여러 개로 나눠 각 띠에서 흰 선을 찾고, 왼쪽/오른쪽 선을
-프레임마다 추적해 차로 중심을 구한다. 중심점들로 직선을 맞춰
-  - 위치 오차(차가 차로 중앙에서 벗어난 정도)
-  - 방향 오차(차로가 휘어지는 정도)
-를 구하고 둘을 합쳐 조향각을 연속으로 정한다. 조향이 클수록 감속한다.
-앞을 가로지르는 선(교차로)을 만나면 course.py의 COURSE에 적힌 다음 동작을 실행한다.
+The lower part of the frame (the ROI) is split into horizontal bands. Each band finds the white lines, and the left and right lines are tracked from frame to frame to get the lane center. A line fitted through those centers gives
+  - position error (how far the car is from the lane center)
+  - heading error (how much the lane is curving)
+Those two are combined into a continuous steering angle. Larger steering slows the car. A line across the road (a junction) runs the next action listed in COURSE in course.py.
 
-사용법 (Pi에서)
-  python lane_follow.py             조향만 (모터 꺼짐) - 차를 손으로 밀면서 인식 확인
-  python lane_follow.py --drive     실제 주행
+Usage (on the Pi)
+  python lane_follow.py             steering only (motors off); push the car by hand to check detection
+  python lane_follow.py --drive     drive for real
   python lane_follow.py --drive --speed 0.3
-  python lane_follow.py --drive --start 3     COURSE 3번 동작부터 시작
-  python lane_follow.py --record    runs/ 폴더에 영상 저장 (맥에서 replay.py로 분석)
-  python lane_follow.py --drive --set KP=1.8 KH=1.0   이번 실행만 설정값 바꾸기
+  python lane_follow.py --drive --start 3     start at COURSE action 3
+  python lane_follow.py --record    save video under runs/ (analyze on a Mac with replay.py)
+  python lane_follow.py --drive --set KP=1.8 KH=1.0   override settings for this run only
 
-  흰 선 기준값은 자동 캘리브레이션된다. 직접 정하려면 tune_white.py (vision.json에 저장)
+  The white-line threshold is calibrated automatically. Set it by hand with tune_white.py (saved in vision.json).
 
-  맥 브라우저에서 http://<파이 IP>:8000 을 열면 인식 화면이 보인다. (핫스팟이면 10.42.0.1)
-  Ctrl+C(SIGINT)나 SIGTERM으로 정지. ssh 연결이 끊겨도(SIGHUP) 계속 주행한다.
-  맥의 aicar go/view는 파이에서 백그라운드로 실행하고 출력은 drive.log에 남긴다.
+  Open http://<Pi IP>:8000 in a Mac browser to see the detection view. (On the hotspot, 10.42.0.1.)
+  Stop with Ctrl+C (SIGINT) or SIGTERM. Driving continues if ssh drops (SIGHUP).
+  On the Mac, aicar go/view starts this in the background on the Pi and writes output to drive.log.
 """
 import argparse
 import ast
@@ -36,121 +34,129 @@ import numpy as np
 from car import STEER_LIMIT, load_calib
 from course import COURSE
 
-# ---------------- 설정 ----------------
+# --- Settings ---
 FRAME_W, FRAME_H = 640, 360
-# 카메라: 센서 전체(약 66도)를 씀. 예전에는 FrameRate 60 때문에 가운데 2/3만 잘라 쓰는 1536x864 모드(약 47도)였음.
-#   두 모드는 화면 중심이 같아서, 예전 화면의 점 (x, y)는 지금 화면에서 (320 + (x-320)/1.5, 180 + (y-180)/1.5).
-#   아래 픽셀/화면 위치 설정은 이 비율로 환산한 값 (옛 값은 각 줄 주석). 트랙 위에서 Detect Only로 확인하며 다듬기
-CAMERA_SENSOR = (2304, 1296)    # 센서 전체를 2x2로 묶어 읽는 모드 (최대 56fps). 좁게 보려면 (1536, 864) + 60fps
+# The camera uses the full sensor (about 66 degrees). The old 1536x864 mode (about 47 degrees) cropped the center two thirds because FrameRate was 60.
+# Both modes share the same image center, so an old point (x, y) is now (320 + (x-320)/1.5, 180 + (y-180)/1.5).
+# Pixel and screen-position settings below were converted by that ratio (the old value is noted on each line). Confirm on the track with Detect Only and refine.
+CAMERA_SENSOR = (2304, 1296)    # Full sensor, read 2x2 binned (up to 56 fps). For a narrower view, use (1536, 864) at 60 fps.
 CAMERA_FPS = 56
-HFLIP = VFLIP = False   # 화면이 뒤집혀 보이면 True
-CAMERA_X = 0.5          # 차 정중앙이 화면 가로의 어디인지. vision.json의 camera_x가 있으면 그 값을 씀
+HFLIP = VFLIP = False   # Set True if the image looks upside down.
+CAMERA_X = 0.5          # Where the car centerline falls across the frame. vision.json camera_x overrides this when present.
 
-LINE_MODE = "lane"      # "lane": 양쪽 선 사이로 / "line": 선 하나를 따라감
-ROI_TOP = 0.4           # 화면 높이의 이 지점부터 아래만 사용 (작을수록 멀리 봄)
-SLICES = 6              # ROI를 나눌 가로 띠 개수
+LINE_MODE = "lane"      # "lane": drive between both lines. "line": follow a single line.
+ROI_TOP = 0.4           # Use only from this fraction of the frame height downward. A smaller value looks farther ahead.
+SLICES = 6              # Number of horizontal bands the ROI is split into.
 
-# 흰 선 인식. 기본은 매 프레임 자동 캘리브레이션. tune_white.py로 직접 정하면 vision.json에 저장됨
-LINE_COLOR = "white"    # 트랙 종류. "white": 검은 바닥 위 흰 선 / "black": 흰 바닥 위 검은 선
-                        #   "black"이면 화면 밝기를 뒤집어서 검은 선을 흰 선처럼 보고 나머지는 똑같이 처리.
-                        #   메뉴의 "트랙 색" (aicar track)로 바꾸면 vision.json에 저장됨
-WHITE_THR = None        # 흰 선으로 볼 밝기 차(바닥 대비). None이면 자동
-WHITE_MIN = 35          # 자동일 때 이보다 낮게는 내려가지 않음 (빈 바닥에서 노이즈를 선으로 잡지 않게)
-TOPHAT_K = 23           # 이보다 굵은 밝은 덩어리(반사광, 매트 밖 바닥)는 선이 아님 (반해상도 px) [좁은 화각 35]
-USE_MAT_MASK = True     # 검은 매트 바깥(바닥, 나무 테두리)은 무시
-MAT_MIN_CONTRAST = 70   # 매트와 그 바깥의 밝기 차이가 이보다 작으면 '매트가 따로 없음'(바닥 하나에 테이프)으로 보고 화면 전체를 씀.
-                        #   나무 바닥 + 검은 테이프는 조명/비네팅 때문에 차이가 ~50이라, 그대로 나누면 화면 아래 모서리의
-                        #   가까운 테이프까지 '매트 밖'으로 지워짐. 검은 매트 + 나무 테두리는 ~100
-LINE_W_MIN, LINE_W_MAX = 3, 87   # 띠 안에서 선 하나의 가로 폭(px) [좁은 화각 4, 130]
-MIN_PIXELS = 40         # 선 하나로 인정할 최소 픽셀 수 [좁은 화각 60]
-DOUBLE_GAP = 33         # 이 간격(px)보다 가까운 두 선은 이중선 하나로 합침 [좁은 화각 50]
-CROSSWALK_LINES = 4     # 한 띠에 선이 이만큼 이상이면 횡단보도로 보고 그 띠는 무시
-LANE_WIDTH_PX = 482     # 화면 아래쪽(y=342)에서의 차로 폭(px). 양쪽 선이 보이면 자동 보정됨
-                        #   [좁은 화각 녹화 실측 590을 환산. 넓은 화각의 y=342는 예전 화면 밖(더 가까운 바닥)]
-HORIZON_Y = 49          # 차로 양쪽 선이 만나는 높이(y). 위로 갈수록 차로 폭이 좁아지는 비율을 정함 [좁은 화각 -16]
-REF_LANE_PX = 590       # 위치/방향 오차의 단위 기준: 좁은 화각에서 KP, KH 등을 맞출 때의 차로 폭.
-                        #   오차에 REF_LANE_PX / LANE_WIDTH_PX를 곱해 예전과 같은 크기로 만들어서
-                        #   KP, KH, OFFSET_PRIORITY, 새 차선 판정 등 조향 쪽 값은 그대로 씀
-LEARN_WIDTH = False     # True면 주행 중 차로 폭을 학습. False면 위 실측값으로 고정 (매번 같은 동작)
-OUTLIER_PX = 30         # 띠별 중심점이 맞춘 직선에서 이만큼 벗어나면 오인식으로 보고 제외 [좁은 화각 45]
+# White-line detection. The default recalibrates every frame. tune_white.py stores a manual value in vision.json.
+LINE_COLOR = "white"    # Track type. "white": white line on a black floor. "black": black line on a white floor.
+                        # "black" inverts brightness so the black line is treated as a white line. The rest of the pipeline stays the same.
+                        # The track-color menu (aicar track) saves the choice in vision.json.
+WHITE_THR = None        # Brightness above the floor that counts as a white line. None means automatic.
+WHITE_MIN = 35          # Auto mode never goes below this, so noise on an empty floor is not taken as a line.
+TOPHAT_K = 23           # A bright blob thicker than this is not a line (reflection, floor outside the mat), in half-resolution px. [narrow FOV 35]
+USE_MAT_MASK = True     # Ignore the floor and wooden border outside the black mat.
+MAT_MIN_CONTRAST = 70   # Below this brightness gap between the mat and the outside, there is no separate mat (tape on one floor), so the whole frame is used.
+                        # Wood floor plus black tape differs by about 50 under lighting and vignetting, so splitting would erase the near tape in the bottom corners.
+                        # A black mat plus a wood border differs by about 100.
+LINE_W_MIN, LINE_W_MAX = 3, 87   # Width of one line inside a band, in px. [narrow FOV 4, 130]
+MIN_PIXELS = 40         # Minimum pixels required to accept one line. [narrow FOV 60]
+DOUBLE_GAP = 33         # Two lines closer than this gap (px) are merged into one double line. [narrow FOV 50]
+CROSSWALK_LINES = 4     # This many lines or more in one band means a crosswalk, and that band is ignored.
+LANE_WIDTH_PX = 482     # Lane width in px at the bottom of the frame (y=342). Corrected automatically when both lines are visible.
+                        # Converted from a measured 590 in a narrow-FOV recording. y=342 on the wide FOV is outside the old frame (closer floor).
+HORIZON_Y = 49          # Height y where the two lane lines meet. Sets how quickly the lane narrows toward the top. [narrow FOV -16]
+REF_LANE_PX = 590       # Lane width that position and heading error are measured in, from when KP and KH were tuned on the narrow FOV.
+                        # Errors are multiplied by REF_LANE_PX / LANE_WIDTH_PX so they keep the old magnitude.
+                        # Steering values such as KP, KH, OFFSET_PRIORITY, and the new-lane test stay unchanged.
+LEARN_WIDTH = False     # True learns lane width while driving. False keeps the measured value above, so each run behaves the same.
+OUTLIER_PX = 30         # A band center farther than this from the fitted line is a misdetect and is dropped. [narrow FOV 45]
 
-KP = 1.6                # 위치 오차 → 조향. 차로 중앙으로 돌아오는 힘 (클수록 과감)
-KH = 0.9                # 방향 오차 → 조향. 커브를 미리 꺾는 힘 (커브 이탈하면 키움)
-OFFSET_PRIORITY = 0.6   # 위치 오차가 이만큼 커지면 방향 오차는 무시하고 차로 복귀만 함 (S커브에서 서로 상쇄 방지)
-KD = 0.03               # 흔들림 억제 (지그재그가 빠르면 조금 키움, 너무 크면 오히려 떨림)
-SMOOTH = 0.15           # 조향 저역통과 (0: 없음, 0.8: 아주 부드럽게. 크면 반응이 늦어 커브 이탈)
-AUTO_TRIM = False       # True면 직선에서 계속 한쪽으로 조향할 때 중앙 보정값을 자동으로 고쳐 저장 (주행마다 학습)
-AUTO_TRIM_TAU = 15.0    # 자동 중앙 보정 속도(초). 양쪽 선이 다 보이는 직선에서만 학습
-AUTO_STEER_MAX = 26     # 자율주행 중 최대 조향각(도). car.py STEER_LIMIT(26)을 넘지 않음
-STEER_RATE = 150        # 조향각이 1초에 바뀔 수 있는 최대량(도/초). 작을수록 확확 안 틈
+KP = 1.6                # Position error to steering. How hard the car returns to the lane center. Larger is more aggressive.
+KH = 0.9                # Heading error to steering. How early the car turns into a curve. Raise it if the car leaves the curve.
+OFFSET_PRIORITY = 0.6   # Once position error exceeds this, heading is ignored and the car only returns to the lane, so the two do not cancel on an S-curve.
+KD = 0.03               # Damping. Raise it a little if the zigzag is fast. Too much causes shake.
+SMOOTH = 0.15           # Steering low-pass. 0 is none, 0.8 is very smooth. A larger value reacts late and leaves curves.
+AUTO_TRIM = False       # True learns and saves a center trim when straight driving keeps steering to one side.
+AUTO_TRIM_TAU = 15.0    # Auto center-trim time constant, in seconds. Learns only on straights where both lines are visible.
+AUTO_STEER_MAX = 26     # Maximum steering angle while driving, in degrees. Does not exceed car.py STEER_LIMIT (26).
+STEER_RATE = 150        # Maximum change in steering angle per second, in deg/s. A smaller value turns less abruptly.
 
-BASE_SPEED = 0.22       # 직진 속도
-MIN_SPEED = 0.18        # 최대 조향일 때 속도 (모터가 멈추지 않는 최소값 이상)
-HARD_STEER = 21         # 조향각이 이 값(도)을 넘으면 바퀴 저항이 커져 느려지므로 모터값을 조금 올림
-HARD_STEER_BOOST = 0.1 # 그때 더하는 모터값 (0이면 안 씀)
-KICK_SPEED = 0.6        # 멈춰 있다가 출발할 때 잠깐 주는 속도 (낮은 속도에서는 모터가 안 돌기 때문)
-KICK_TIME = 0.25        # 출발 킥 시간(초)
-LOST_LIMIT = 15         # (옛 설정, 안 씀) 프레임 수 대신 LOST_HOLD(초)로 판단
-LOST_HOLD = 1.0         # 차선을 놓쳐도 이 시간(초) 동안은 마지막 조향을 유지하며 천천히 진행. 그 뒤 정지
-STEP_MAX_SEC = 20       # until 동작에 max_sec를 안 쓰면 이 시간이 지나면 경고하고 다음 동작으로 (영원히 안 끝나는 것 방지)
-FAR_TOP = 0.3           # slow= 원거리 감지: 화면 높이의 이 지점 ~ ROI_TOP 사이에서도 가로선을 찾음 [좁은 화각 0.2]
-FAR_HLINE = 1.2         # 원거리 가로선: 한 줄에서 이어진 흰 픽셀이 그 높이의 차로 폭 × 이 값 이상이어야 인정
-                        # 감속에만 쓰고 교차로 판정(until)에는 안 씀 → 곡선을 가로선으로 잘못 봐도 잠깐 느려질 뿐
-APPROACH_HOLD = 0.5     # slow=: 선이 잠깐 안 보여도 이 시간(초) 동안은 감속 상태 유지 (오감지 한두 프레임엔 반응 안 하게)
-KICK_AFTER_STOP = 0.3   # 이 시간(초) 이상 서 있다가 출발할 때만 출발 킥 (잠깐 멈칫한 것에는 킥 안 함)
-MOTOR_MIN = 0.35        # 바닥에서 직진으로 실제로 굴러가는 최소 모터값. 이보다 낮은 명령은 이 값으로 올려서 보냄
-MOTOR_MIN_TURN = 0.42   # 최대로 꺾었을 때의 최소 모터값 (바퀴가 꺾이면 저항이 커짐). 그 사이는 조향각에 비례
-                        #   두 값은 calibrate_motor.py(캘리브레이션 마지막 단계)가 바닥에서 재서 calib.json에 저장
-LANE_PX_PER_CM = REF_LANE_PX / 20.0     # 1cm가 위치 오차 단위로 몇 px인지 (차로 폭 20cm). shift= 계산용
-                                        #   위치 오차가 REF_LANE_PX 기준 단위라서 같은 기준을 씀
-# style= 조향 성격: (KP 배수, KH 배수, SMOOTH)
+BASE_SPEED = 0.22       # Speed going straight.
+MIN_SPEED = 0.18        # Speed at full steering. Stays at or above the lowest command that keeps the motor turning.
+HARD_STEER = 21         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised a little.
+HARD_STEER_BOOST = 0.1  # Motor command added then. 0 disables it.
+KICK_SPEED = 0.6        # Brief speed when starting from a stop, because the motor will not turn at a low speed.
+KICK_TIME = 0.25        # Start-kick duration, in seconds.
+LOST_LIMIT = 15         # Old setting, unused. Lost-lane timing uses LOST_HOLD (seconds) instead of a frame count.
+LOST_HOLD = 1.0         # After the lane is lost, hold the last steering and creep for this many seconds, then stop.
+STEP_MAX_SEC = 20       # If an until action sets no max_sec, warn and advance after this many seconds so a step cannot run forever.
+FAR_TOP = 0.3           # slow= far detection also looks for a horizontal line between this frame height and ROI_TOP. [narrow FOV 0.2]
+FAR_HLINE = 1.2         # A far horizontal line counts only if connected white pixels on one row cover at least this times the lane width at that height.
+                        # Used only to slow down, not for the junction decision (until), so a curve mistaken for a line only slows the car briefly.
+APPROACH_HOLD = 0.5     # slow=: keep slowing for this many seconds after the line disappears, so one or two false frames do not react.
+KICK_AFTER_STOP = 0.3   # Use the start kick only after standing still at least this long, in seconds. A brief hesitation gets no kick.
+MOTOR_MIN = 0.35        # Lowest motor command that actually rolls straight on the floor. Lower commands are raised to this.
+MOTOR_MIN_TURN = 0.42   # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
+                        # calibrate_motor.py, the last calibration step, measures both on the floor and saves them in calib.json.
+LANE_PX_PER_CM = REF_LANE_PX / 20.0     # How many position-error px equal 1 cm, for a 20 cm lane width. Used by shift=.
+                                        # Position error is in REF_LANE_PX units, so this uses the same reference.
+# style= steering character: (KP scale, KH scale, SMOOTH).
 STYLES = {"soft": (0.8, 0.7, 0.35), "normal": (1.0, 1.0, None), "sharp": (1.3, 1.6, 0.05)}
 
-HLINE_RATIO = 0.27      # 띠 폭의 이 비율 이상 이어진 선 = 가로선(교차로) [좁은 화각 0.4]
-JUNCTION_Y = 0.5        # 가로선이 화면 높이의 이 지점보다 아래로 내려오면 교차로 동작 시작 (작을수록 일찍)
-EDGE_STOP_Y = 0.63      # 차 앞쪽 매트가 화면 높이의 이 지점에서 끝나면(매트 끝) 정지 [좁은 화각 0.7]
+HLINE_RATIO = 0.27      # A run covering at least this fraction of the band width is a horizontal line (a junction). [narrow FOV 0.4]
+JUNCTION_Y = 0.5        # The junction action starts once the horizontal line drops below this frame height. A smaller value starts earlier.
+EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
-JUNCTION_BY_BRANCH = False  # True면 선이 3개 이상 보일 때도 교차로로 봄 (갈림길)
-JUNCTION_FRAMES = 3     # 연속 몇 프레임 감지되어야 인정 (오감지 방지). gap/green도 같은 값
-GAP_MAX_HEADING = 0.5   # 방향 오차가 이보다 크면(차가 차로와 크게 어긋남) 끊김 판단 안 함
-GAP_BANDS = 2           # 차선 끊김(gap): 빈 띠 위에서 선이 다시 보이면 빈 띠 1개로도 끊김. 위에서 다시 안 보이면
-                        #   빈 띠가 이 개수 이상이어야 끊김 (맨 위 띠 하나만 빈 건 먼 선을 놓친 것일 수 있어서)
-CROSSWALK_HOLD_MAX = 1.5    # 차 바로 앞 횡단보도 위에서 조향을 유지하는 최대 시간(초). 그 뒤엔 다시 차선 따라감
-TURN_CLEAR_FRAMES = 8   # 회전: 새 차선이 이 프레임 수만큼 잡히면 회전 각도 → 차선 추종 조향으로 완전히 넘어감
-TURN_END_OFFSET = 0.4   # 회전 끝: 차 바로 앞에 선이 보이고 위치 오차가 이 안인 상태가
-TURN_END_FRAMES = 4     #   이 프레임 수만큼 이어지면 회전을 끝냄. 도는 중엔 선이 하나만 보여 방향 오차가 프레임마다
-                        #   크게 튀어서(실제 녹화 -0.75 ~ +0.65) 방향은 안 보고, 방향 맞추기는 다음 정렬 단계가 함
-ALIGN_OFFSET = 0.2      # until="aligned": 위치 오차가 이 안이고 (차로 가운데)
-ALIGN_HEADING = 0.2     #   방향 오차가 이 안인 상태가 (차로 방향으로 똑바로) [0.12는 실제 트랙에서 거의 안 됨]
-ALIGN_FRAMES = 5        #   이 프레임 수만큼 이어지면 '정렬됨'. 회전 뒤 tr()/tl()이 정렬하고 멈출 때 씀
-STRAIGHT_CORR = 6       # straight(): 차선이 보이면 이 범위(±도) 안에서 보정
-CURVE_ASSIST = 0.5      # curve(): 지정 각도와 차선 추종 조향을 섞는 비율 (0: 각도 고정, 1: 차선만)
+JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a junction (a fork).
+JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
+GAP_MAX_HEADING = 0.5   # Skip the gap test when heading error is larger than this, because the car is badly misaligned with the lane.
+GAP_BANDS = 2           # Lane gap: one empty band is enough if the line resumes above it.
+                        # If it does not resume, the empty run must be at least this many bands, because one empty top band may just be a missed far line.
+CROSSWALK_HOLD_MAX = 1.5    # Maximum seconds to hold steering on a crosswalk right in front of the car. After that, follow the lane again.
+TURN_CLEAR_FRAMES = 8   # Turn: once the new lane is held for this many frames, steering moves fully from the turn angle to lane following.
+TURN_END_OFFSET = 0.4   # Turn end: a line is visible just ahead and the position error is within this.
+TURN_END_HEADING = 0.5  # Heading-error limit while a corner horizontal line is still visible. Corner tape is rejected here.
+TURN_EXIT_HEADING = 0.92  # Exit line after the horizontal line disappears. The turn ends when that line comes in front, even if heading has not fallen to 0.5.
+TURN_EXIT_CLEAR = 8     # The horizontal line must stay gone for this many frames before it counts as the exit. A one- or two-frame flicker is still corner tape.
+TURN_END_FRAMES = 4     # Held for this many frames, the turn ends. Later alignment handles any heading that is still wobbling.
+APPROACH_STEER_MAX = 10  # When a junction line is visible ahead, hold steering inside this angle in degrees so the car does not cut into the corner.
+HEADING_STEER_MAX = 0.35  # Cap on the heading error used for steering. Align and turn-end tests still use the raw value.
+ALIGN_OFFSET = 0.2      # until="aligned": position error is within this (the lane center).
+ALIGN_HEADING = 0.2     # Heading error is within this (pointed along the lane). 0.12 almost never happens on the real track.
+ALIGN_FRAMES = 5        # Held for this many frames, the car counts as aligned. Used when tr() or tl() aligns and then stops after a turn.
+ALIGN_STEER_MAX = 8     # While aligning, if heading error exceeds TURN_END_HEADING, ignore heading and correct position only within this angle.
+STRAIGHT_CORR = 6       # straight(): when the lane is visible, correct only within ± this many degrees.
+CURVE_ASSIST = 0.5      # curve(): blend of the set angle and lane-follow steering. 0 is a fixed angle, 1 is the lane only.
 
-# 신호등. 현장 조명에 맞춰 tune_light.py로 조정하면 vision.json에 저장됨
-LIGHT_Y = (0.0, 0.5)    # 램프를 찾을 높이 범위 (화면 높이 비율). 차선 영역(ROI_TOP)보다 위쪽
-LIGHT_SIDE = 0.4        # 화면 왼쪽/오른쪽 이 비율 폭만 봄 (신호등은 레인 옆에 있음) [좁은 화각 0.35]
-LIGHT_S_MIN = 110       # 색으로 볼 최소 채도 (0~255)
-LIGHT_V_MIN = 170       # 색으로 볼 최소 밝기 (0~255). LED는 스스로 빛나서 주변 물체보다 밝음
-LIGHT_AREA_MIN = 11     # 램프 덩어리 최소 크기(px). 작은 반사광 무시 [좁은 화각 25]
-LIGHT_AREA_MAX = 1778   # 최대 크기(px). 큰 빨간/초록 물체 무시 [좁은 화각 4000]
-LIGHT_G_HUE = (35, 100) # wait_green: 빨간불을 본 그 자리에서만 쓰는 넓은 초록 범위 (LED 초록은 청록빛 H 80~95로도 찍힘)
-LIGHT_LOCAL_S_MIN = 60  # 그 자리에서 색으로 볼 최소 채도 (화면 전체용 LIGHT_S_MIN보다 느슨하게: 위치를 알아서 오감지 걱정이 적음)
-LIGHT_LOCAL_V_MIN = 100 # 그 자리에서 색으로 볼 최소 밝기 (초록 LED는 빨강보다 어둡게 찍히는 편)
-LIGHT_NEAR = 4          # wait_green: 초록불은 빨간불이 있던 자리에서 (빨간 램프 크기 × 이 값) 안에 있어야 인정
-                        #   같은 신호등의 램프 간격은 허용하고, 다른 곳의 초록 물체는 무시
+# Traffic light. tune_light.py adjusts these for the venue lighting and saves them in vision.json.
+LIGHT_Y = (0.0, 0.5)    # Height range searched for a lamp, as a fraction of frame height. Above the lane region (ROI_TOP).
+LIGHT_SIDE = 0.4        # Look only in this fraction of the width on the left and the right. The light sits beside the lane. [narrow FOV 0.35]
+LIGHT_S_MIN = 110       # Minimum saturation that counts as a color (0-255).
+LIGHT_V_MIN = 170       # Minimum value that counts as a color (0-255). An LED emits light, so it is brighter than nearby objects.
+LIGHT_AREA_MIN = 11     # Minimum lamp-blob size, in px. Small reflections are ignored. [narrow FOV 25]
+LIGHT_AREA_MAX = 1778   # Maximum size, in px. Large red or green objects are ignored. [narrow FOV 4000]
+LIGHT_G_HUE = (35, 100)  # wait_green: wide green range used only at the spot where red was seen. A green LED also reads cyan, H 80-95.
+LIGHT_LOCAL_S_MIN = 60  # Minimum saturation at that spot. Looser than full-frame LIGHT_S_MIN, because the position is known and a false hit matters less.
+LIGHT_LOCAL_V_MIN = 100  # Minimum value at that spot. A green LED tends to read darker than red.
+LIGHT_NEAR = 4          # wait_green: green must lie within (red lamp size times this) of where the red lamp was.
+                        # That allows the gap between lamps on the same light and ignores green objects elsewhere.
 
-LENS_POSITION = 4.5     # 수동 초점(디옵터 = 1/거리m). 4.5 ≈ 22cm (차선을 읽는 가까운 바닥). None이면 오토포커스.
-                        #   calibrate.py가 차선 영역 선명도로 재서 vision.json에 저장
-CAMERA_LOCK = None      # 고정 노출/게인/화이트밸런스 {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
-                        #   None이면 카메라 자동. calibrate.py가 경기장 조명에서 측정해 vision.json에 저장
+LENS_POSITION = 4.5     # Manual focus in diopters (1/distance in m). 4.5 is about 22 cm, the near floor where the lane is read. None means autofocus.
+                        # calibrate.py measures sharpness over the lane region and saves it in vision.json.
+CAMERA_LOCK = None      # Locked exposure, gain, and white balance {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
+                        # None leaves the camera automatic. calibrate.py measures the venue lighting and saves it in vision.json.
 VISION_FILE = Path(__file__).with_name("vision.json")
-# --------------------------------------
+# ---
 
 
 def load_vision():
-    """vision.json에 저장한 값을 불러옴. 없으면 기본값.
-    트랙 색(line_color), 흰 선 기준값(tune_white.py), 신호등 기준값(tune_light.py),
-    calibrate.py가 잰 카메라 중앙(camera_x), 차로 폭/소실점, 초점, 노출/화이트밸런스"""
+    """Load saved values from vision.json. Missing keys keep their defaults.
+
+    Track color (line_color), the white-line threshold (tune_white.py), traffic-light
+    thresholds (tune_light.py), the camera center measured by calibrate.py (camera_x),
+    lane width and vanishing point, focus, and exposure / white balance.
+    """
     global LINE_COLOR, WHITE_THR, CAMERA_X, LIGHT_S_MIN, LIGHT_V_MIN, LIGHT_AREA_MIN
     global LANE_WIDTH_PX, HORIZON_Y, LENS_POSITION, CAMERA_LOCK
     try:
@@ -170,7 +176,7 @@ def load_vision():
 
 
 def load_motor_min():
-    """calibrate_motor.py가 calib.json에 저장한 모터 최소값을 불러옴 (없으면 기본값)"""
+    """Load motor minimums saved in calib.json by calibrate_motor.py. Missing keys keep their defaults."""
     global MOTOR_MIN, MOTOR_MIN_TURN
     calib = load_calib()
     MOTOR_MIN = calib.get("motor_min", MOTOR_MIN)
@@ -178,13 +184,13 @@ def load_motor_min():
 
 
 def motor_floor(angle):
-    """이 조향각에서 차가 실제로 굴러가는 최소 모터값"""
+    """Minimum motor command that actually rolls the car at this steering angle."""
     r = min(abs(angle) / STEER_LIMIT, 1.0)
     return MOTOR_MIN + (MOTOR_MIN_TURN - MOTOR_MIN) * r
 
 
 def save_vision(**values):
-    """vision.json에서 주어진 항목만 바꿔 저장 (다른 항목은 유지)"""
+    """Update only the given keys in vision.json. Other keys are left as they are."""
     try:
         data = json.loads(VISION_FILE.read_text())
     except (OSError, ValueError):
@@ -201,13 +207,14 @@ _ELLIPSE_RECTS = {}
 
 
 def ellipse_rects(size):
-    """타원 커널을 같은 중심의 직사각형 여러 개로 쪼갬 (합집합 = 원래 타원).
-    타원은 볼록하고 대칭이라, 폭 w인 행을 포함하는 '폭 w × 그 폭 이상인 행 전체 높이' 직사각형이
-    모두 타원 안에 들어가고, 합치면 정확히 타원이 됨"""
+    """Split an ellipse kernel into rectangles that share its center. Their union is the original ellipse.
+
+    An ellipse is convex and symmetric, so every row of width w fits in a rectangle of width w and the full height of rows at least that wide. Each of those rectangles lies inside the ellipse, and together they are exactly the ellipse.
+    """
     if size not in _ELLIPSE_RECTS:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
         c = size // 2
-        reach = {}      # 반폭 → 그 반폭인 행이 중심에서 떨어진 최대 거리
+        reach = {}      # Half-width to the greatest distance from the center of a row with that half-width.
         for r in range(size):
             cols = np.flatnonzero(k[r])
             assert cols[0] + cols[-1] == 2 * c, "타원 커널이 좌우 대칭이 아님"
@@ -218,8 +225,10 @@ def ellipse_rects(size):
 
 
 def tophat_ellipse(img, size):
-    """cv2.morphologyEx(img, MORPH_TOPHAT, 타원 커널)과 같은 결과를 더 빠르게.
-    합집합 커널로 침식 = 각 직사각형 침식의 최솟값, 팽창 = 최댓값 (직사각형은 OpenCV가 분리해서 빠르게 처리)"""
+    """Faster equivalent of cv2.morphologyEx(img, MORPH_TOPHAT, ellipse kernel).
+
+    Erosion with a union kernel is the minimum of the rectangle erosions, and dilation is the maximum. OpenCV separates rectangles and processes them quickly.
+    """
     rects = ellipse_rects(size)
     eroded = cv2.erode(img, rects[0])
     for r in rects[1:]:
@@ -231,37 +240,37 @@ def tophat_ellipse(img, size):
 
 
 def percentile_u8(img, q):
-    """np.percentile(img, q)와 같은 값(선형 보간)을 정렬 없이 히스토그램으로 계산 (uint8 영상용)"""
+    """np.percentile(img, q) with linear interpolation, computed from a histogram without sorting. For uint8 images."""
     n = img.size
     cum = np.cumsum(cv2.calcHist([img], [0], None, [256], [0, 256]).ravel().astype(np.int64))
-    pos = (n - 1) * (q / 100)                       # numpy 기본(linear) 방식의 위치 계산을 그대로
+    pos = (n - 1) * (q / 100)                       # Same position calculation as numpy's default linear method.
     lo = int(np.floor(pos))
     t = pos - lo
-    a = float(np.searchsorted(cum, lo, side="right"))                 # lo번째로 작은 값
+    a = float(np.searchsorted(cum, lo, side="right"))                 # The lo-th smallest value.
     b = float(np.searchsorted(cum, min(lo + 1, n - 1), side="right"))
-    return b - (b - a) * (1 - t) if t >= 0.5 else a + (b - a) * t   # numpy와 같은 보간식
+    return b - (b - a) * (1 - t) if t >= 0.5 else a + (b - a) * t   # Same interpolation formula as numpy.
 
 
-# ---------------- 인식 화면 그리기 (브라우저 Live View) ----------------
-# 색 (BGR). 브라우저 페이지 아래 범례와 같은 색
-C_LANE = (255, 210, 60)     # 흰 선으로 인식된 픽셀 (반투명)
-C_LEFT, C_RIGHT = (255, 140, 40), (60, 60, 255)    # 왼쪽 / 오른쪽 선
-C_PATH = (80, 230, 80)      # 차가 따라갈 차로 중앙
-C_JUNC = (255, 0, 255)      # 교차로(가로선)
-C_XWALK = (240, 240, 240)   # 횡단보도
-C_GAP = (255, 128, 0)       # 차선 끊김
-C_AT = (0, 230, 255)        # at= 지점 (이 동작이 끝나는 선)
+# --- Detection Overlay (Browser Live View) ---
+# Colors (BGR). Same colors as the legend under the browser page.
+C_LANE = (255, 210, 60)     # Pixels detected as the white line (translucent).
+C_LEFT, C_RIGHT = (255, 140, 40), (60, 60, 255)    # Left line / right line.
+C_PATH = (80, 230, 80)      # Lane center the car follows.
+C_JUNC = (255, 0, 255)      # Junction (horizontal line).
+C_XWALK = (240, 240, 240)   # Crosswalk.
+C_GAP = (255, 128, 0)       # Lane gap.
+C_AT = (0, 230, 255)        # at= point, the line where this action ends.
 C_DIM = (110, 110, 110)
 
 
 def chip(img, text, x, y, color, scale=0.42, dark=None):
-    """색 배경 위에 글자를 쓴 작은 이름표. (x, y) = 왼쪽 위. 반환: 오른쪽 끝 x"""
+    """Small label: text on a colored background. (x, y) is the top left. Returns the right-edge x."""
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
     x = int(min(max(x, 0), img.shape[1] - tw - 8))
     y = int(min(max(y, 0), img.shape[0] - th - 8))
     cv2.rectangle(img, (x, y), (x + tw + 8, y + th + 8), color, -1)
     if dark is None:
-        dark = sum(color) > 380     # 밝은 배경엔 검은 글자
+        dark = sum(color) > 380     # Black text on a bright background.
     cv2.putText(img, text, (x + 4, y + th + 4), cv2.FONT_HERSHEY_SIMPLEX, scale,
                 (20, 20, 20) if dark else (255, 255, 255), 1, cv2.LINE_AA)
     return x + tw + 8
@@ -275,29 +284,29 @@ def dashed_hline(img, y, color, x0=0, x1=None, dash=10, gap=6, thick=1):
 
 class LaneDetector:
     def __init__(self):
-        self.left = [None] * SLICES     # 직전 프레임의 띠별 왼쪽/오른쪽 선 x
+        self.left = [None] * SLICES     # Left and right line x in each band from the previous frame.
         self.right = [None] * SLICES
         self.center = [None] * SLICES
-        self.width = [None] * SLICES    # 띠별 차로 폭 학습값
-        self.auto_thr = None            # 자동 캘리브레이션된 흰 선 기준값
-        self.thr = 0                    # 이번 프레임에 실제로 쓴 기준값
-        self.misses = 0                 # 연속으로 차선을 못 찾은 프레임 수
-        self.edge = False               # 차 바로 앞에서 매트가 끝남 (주행 정지)
+        self.width = [None] * SLICES    # Learned lane width for each band.
+        self.auto_thr = None            # White-line threshold from automatic calibration.
+        self.thr = 0                    # Threshold actually used for this frame.
+        self.misses = 0                 # Consecutive frames with no lane found.
+        self.edge = False               # The mat ends right in front of the car (driving stops).
         self.edge_hits = 0
-        self.mat_top = 0                # 차 정면에서 매트가 시작되는 가장 위쪽 y (화면 좌표)
-        self.crosswalk = False          # 이번 프레임에 차 앞(JUNCTION_Y 아래)에 횡단보도가 보임
-        self.crosswalk_any = False      # 화면 어디든 횡단보도가 보임 (지나가는 중)
+        self.mat_top = 0                # Highest y where the mat starts in front of the car, in screen coordinates.
+        self.crosswalk = False          # A crosswalk is visible in front of the car (below JUNCTION_Y) this frame.
+        self.crosswalk_any = False      # A crosswalk is visible anywhere in the frame (while passing it).
         self.junction_y = self.crosswalk_y = None
-        self.gap_y = None               # 앞에서 차선이 끊기는 곳: 선이 마지막으로 보인 띠의 y. 없으면 None
-        self.gap_why = ""               # gap_y가 None인 이유 (진단용)
-        self.near_line = False          # 차 바로 앞(맨 아래 띠)에 선이 보이는지. 끊긴 구간 위에서는 False
-        self.far_y = None               # ROI 위쪽(원거리)에서 본 가로선 y. slow= 감속용 (Driver가 필요할 때만 채움)
+        self.gap_y = None               # Where the lane ends ahead: y of the last band that still showed a line. None if it does not end.
+        self.gap_why = ""               # Why gap_y is None (diagnostics).
+        self.near_line = False          # Whether a line is visible just in front of the car (the bottom band). False while over a gap.
+        self.far_y = None               # y of a horizontal line seen above the ROI (far). For slow= braking. Driver fills it only when needed.
         top = int(FRAME_H * ROI_TOP)
         h = (FRAME_H - top) // SLICES
         self.band_y = [FRAME_H - (i + 0.5) * h for i in range(SLICES)]
 
     def model_width(self, i):
-        """원근 모델: 차로 폭은 소실점(HORIZON_Y)에서 0, 아래로 갈수록 선형으로 넓어짐"""
+        """Perspective model: lane width is 0 at the vanishing point (HORIZON_Y) and widens linearly downward."""
         return LANE_WIDTH_PX * (self.band_y[i] - HORIZON_Y) / (342 - HORIZON_Y)
 
     def lane_width(self, i):
@@ -306,24 +315,24 @@ class LaneDetector:
     def learn_width(self, i, w):
         if not LEARN_WIDTH:
             return
-        # 학습값이 모델에서 크게 벗어나지 않게 제한 (잘못 학습하면 한쪽으로 쏠리는 원인이 됨)
+        # Keep the learned value from drifting far from the model. A bad learn pulls the car to one side.
         m = self.model_width(i)
         w = float(np.clip(w, 0.8 * m, 1.25 * m))
         self.width[i] = w if self.width[i] is None else 0.9 * self.width[i] + 0.1 * w
 
     @staticmethod
     def mat_mask(gray):
-        """검은 매트 영역(아래쪽에서 이어진 가장 큰 어두운 영역의 볼록 껍질). 바닥/나무 테두리 제외"""
+        """Black-mat region: the convex hull of the largest dark region connected to the bottom. Excludes the floor and the wooden border."""
         small = cv2.resize(gray, (gray.shape[1] // 4, gray.shape[0] // 4), interpolation=cv2.INTER_AREA)
-        bg = cv2.medianBlur(small, 7)       # 선을 지운 바닥 밝기로 '매트와 바깥이 정말 다른지' 판단
+        bg = cv2.medianBlur(small, 7)       # Floor brightness with the lines removed, used to test whether the mat and the outside really differ.
         bthr, _ = cv2.threshold(bg, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         lo, hi = bg[bg < bthr], bg[bg >= bthr]
         if not len(lo) or not len(hi) or float(hi.mean()) - float(lo.mean()) < MAT_MIN_CONTRAST:
-            return np.full_like(gray, 255)  # 바닥이 한 종류 (조명 차이로만 갈림) → 전부 매트
+            return np.full_like(gray, 255)  # One kind of floor, split only by lighting, so the whole frame is mat.
         thr, _ = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         dark = (small < thr).astype(np.uint8)
-        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8))  # 흰 선을 메워 매트를 한 덩어리로 [좁은 화각 9x9]
-        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((1, 21), np.uint8))  # 횡단보도 줄무늬 사이도 이어줌 [좁은 화각 1x31]
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8))  # Fill in the white lines so the mat is one blob. [narrow FOV 9x9]
+        dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((1, 21), np.uint8))  # Also bridge the gaps between crosswalk stripes. [narrow FOV 1x31]
         n, labels = cv2.connectedComponents(dark)
         if n <= 1:
             return np.full_like(gray, 255)
@@ -340,27 +349,27 @@ class LaneDetector:
     def line_mask(self, roi):
         gray = cv2.GaussianBlur(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (5, 5), 0)
         if LINE_COLOR == "black":
-            # 흰 바닥 위 검은 선: 밝기를 뒤집으면 검은 바닥 위 흰 선과 같아짐 (매트 = 흰 바닥 영역)
+            # Black line on a white floor: inverting brightness makes it look like a white line on a black floor (the mat is the white floor).
             gray = cv2.bitwise_not(gray)
-        # 탑햇: 주변 바닥보다 밝으면서 가는 것만 남김 → 굵은 반사광/밝은 바닥은 사라짐
+        # Top-hat keeps only what is brighter than the nearby floor and thin, so thick reflections and bright floor drop out.
         half = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
         top = cv2.resize(tophat_ellipse(half, TOPHAT_K), (gray.shape[1], gray.shape[0]))
         if USE_MAT_MASK:
             mat = self.mat_mask(gray)
             top = cv2.bitwise_and(top, mat)
-            # 차 정면(가운데 1/6 폭 = 좁은 화각의 1/4 폭)에서 매트가 어디까지 이어지는지 → 너무 가까이서 끝나면 매트 끝
+            # How far the mat continues in front of the car (center 1/6 of the width, which was 1/4 on the narrow FOV). Ending too near the car means the mat edge.
             cx0 = int(FRAME_W * CAMERA_X)
             front = mat[:, max(cx0 - FRAME_W // 12, 0):cx0 + FRAME_W // 12]
             rows = np.flatnonzero(front.mean(axis=1) > 128)
             mat_top = int(FRAME_H * ROI_TOP) + (rows[0] if len(rows) else front.shape[0])
             self.mat_top = mat_top
             self.edge_hits = self.edge_hits + 1 if mat_top > FRAME_H * EDGE_STOP_Y else 0
-            self.edge = self.edge_hits >= 3     # 3프레임 연속일 때만 (한 프레임 오인식으로 서지 않게)
+            self.edge = self.edge_hits >= 3     # Only after 3 frames in a row, so one bad frame does not stop the car.
 
         if WHITE_THR is not None:
             self.thr = WHITE_THR
         else:
-            # 자동: 가장 밝은 선 픽셀(상위 1%)의 절반을 기준으로, 프레임 간에는 천천히 따라감
+            # Automatic: half the brightest line pixels (top 1%), then follow that target slowly from frame to frame.
             peak = percentile_u8(top, 99)
             target = max(WHITE_MIN, 0.5 * peak)
             self.auto_thr = target if self.auto_thr is None else 0.9 * self.auto_thr + 0.1 * target
@@ -369,8 +378,10 @@ class LaneDetector:
         return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
     def far_hline(self, frame):
-        """ROI 위쪽(FAR_TOP ~ ROI_TOP)에서 가로선이 보이는 가장 가까운(아래) y. 없으면 None.
-        slow= 감속을 일찍 시작하려고 씀. 기준 밝기는 이번 프레임 ROI에서 구한 self.thr를 그대로 씀"""
+        """Nearest (lowest) y of a horizontal line above the ROI, from FAR_TOP to ROI_TOP. None if there is none.
+
+        Used to start slow= braking early. Brightness uses this frame's ROI threshold, self.thr.
+        """
         top, bot = int(FRAME_H * FAR_TOP), int(FRAME_H * ROI_TOP)
         if bot - top < 4:
             return None
@@ -378,20 +389,20 @@ class LaneDetector:
         half = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
         mask = tophat_ellipse(half, TOPHAT_K) >= self.thr
         hits = 0
-        for r in range(mask.shape[0] - 1, -1, -1):      # 아래(가까운 쪽)부터
+        for r in range(mask.shape[0] - 1, -1, -1):      # From the bottom (the near side).
             row = np.concatenate(([0], mask[r].astype(np.int8), [0]))
             edges = np.flatnonzero(np.diff(row))
             longest = (edges[1::2] - edges[::2]).max() * 2 if len(edges) else 0
             y = top + 2 * r
             need = FAR_HLINE * LANE_WIDTH_PX * (y - HORIZON_Y) / (342 - HORIZON_Y)
             hits = hits + 1 if longest >= need else 0
-            if hits >= 2:                               # 두 줄 이상 이어져야 (잡음 제외)
+            if hits >= 2:                               # At least two rows in a row, so noise is excluded.
                 return y + 2
         return None
 
     @staticmethod
     def find_lines(band):
-        """띠 하나 → (세로 선들의 x 목록, 가로선 후보 (시작, 끝) 또는 None, 횡단보도 여부)"""
+        """One band: vertical-line x positions, a horizontal-line candidate (start, end) or None, and a crosswalk flag."""
         cols = band.sum(axis=0).astype(np.float64)
         on = (cols > band.shape[0] * 0.2 * 255).astype(np.int8)
         edges = np.flatnonzero(np.diff(np.concatenate(([0], on, [0]))))
@@ -402,13 +413,13 @@ class LaneDetector:
             elif LINE_W_MIN <= b - a <= LINE_W_MAX and cols[a:b].sum() >= MIN_PIXELS * 255:
                 runs.append([a, b])
         if len(runs) >= CROSSWALK_LINES:
-            # 횡단보도: 폭이 비슷한 줄무늬가 촘촘히 반복됨 (차선들은 서로 멀리 떨어져 있음)
+            # A crosswalk is a tight repeat of stripes of similar width. Lane lines sit far apart.
             widths = np.array([b - a for a, b in runs], dtype=float)
             gaps = np.array([runs[k + 1][0] - runs[k][1] for k in range(len(runs) - 1)], dtype=float)
             med = np.median(widths)
             if np.all((widths > 0.5 * med) & (widths < 2 * med)) and np.median(gaps) < 2.5 * med:
                 return [], hline, True
-        merged = []     # 이중선은 하나로
+        merged = []     # Double lines become one.
         for a, b in runs:
             if merged and a - merged[-1][1] < DOUBLE_GAP:
                 merged[-1][1] = b
@@ -422,7 +433,7 @@ class LaneDetector:
         return abs(x - prev) if prev is not None else 1e9
 
     def assign(self, i, lines, side, ref):
-        """띠 i의 선들 중 현재 차로의 왼쪽/오른쪽 선을 고름 → (왼쪽, 오른쪽, 판단 보류한 선)"""
+        """Pick this band's left and right lane lines. Returns (left, right, line held back for a later decision)."""
         if not lines:
             return None, None, None
         if side == "left":
@@ -437,14 +448,14 @@ class LaneDetector:
         pl, pr = self.left[i], self.right[i]
         if l is not None and r is not None:
             if not 0.6 * w <= r - l <= 1.5 * w:
-                # 폭이 말이 안 되면 직전 위치에 더 가까운 선 하나만 믿음
+                # If the width is implausible, trust only the line closer to the previous position.
                 if self.nearest(l, pl) <= self.nearest(r, pr):
                     r = None
                 else:
                     l = None
         if l is None or r is None:
-            # 선이 하나만 보이면: 직전 왼/오른선과 확실히 이어지면 그쪽으로,
-            # 아니면 판단을 보류했다가 프레임 전체를 보고 정함 (__call__ 참고)
+            # One visible line: if it clearly continues the previous left or right line, use that side.
+            # Otherwise hold the decision and settle it from the whole frame (see __call__).
             x = l if l is not None else r
             dl, dr = self.nearest(x, pl), self.nearest(x, pr)
             if min(dl, dr) >= w * 0.25:
@@ -453,16 +464,18 @@ class LaneDetector:
         return l, r, None
 
     def find_gap(self, bands, ls, rs):
-        """앞에서 차선이 끊기는지 → 선이 마지막으로 보인 띠의 y (없으면 None). (ls, rs는 쓰지 않음, 호환용)
-        아래 띠부터 선이 이어지다가 그 위에 선이 하나도 없는 띠가 있으면 끊김.
-          - 빈 띠가 1개여도, 그 위에서 선이 다시 보이면 끊김 (트랙의 짧은 끊김은 화면에서 띠 하나 정도)
-          - 맨 위 띠만 비고 위에서 다시 안 보이면 아님 (먼 선이 흐려서 놓친 것일 수 있음) → 빈 띠가 GAP_BANDS개 이상일 때만
-        오감지 방지
-          - 끊기기 직전 띠와 그 아래 띠를 합쳐서 왼쪽/오른쪽 선이 다 보여야 함 (양쪽이 끊기는 위치는 어긋나도 됨)
-          - 끊기기 직전 띠의 선이 화면 가장자리면 아님 (급커브: 선이 화면 옆으로 빠져나가며 사라짐)
-          - 화면 맨 가장자리(5%)의 것은 선으로 안 셈 (바닥 밖 물체)
-          - 매트 끝, 빈 띠가 매트 밖, 가로선/횡단보도 띠가 있으면 아님"""
-        self.gap_why = ""      # 끊김이 아닌 이유 (진단용: gap_probe.py / 화면)
+        """Y of the last band where the lane is still visible ahead, or None if it does not end. ls and rs are unused and kept for compatibility.
+
+        A gap is a band with no lines after lines have continued up from the bottom.
+          - One empty band is a gap if the line resumes above it. A short break on the track is about one band on screen.
+          - An empty top band with no resume is not a gap. The far line may just be too faint. A gap then needs at least GAP_BANDS empty bands.
+        False-hit guards:
+          - The band just before the gap and the band below it, taken together, must show both a left and a right line. The two sides may end at different heights.
+          - A line in the band just before the gap that sits at the frame edge is not a gap. On a sharp curve the line leaves the side of the frame.
+          - Anything in the outer 5% of the frame is not counted as a line. Those are objects off the floor.
+          - A mat edge, an empty band outside the mat, or a horizontal-line or crosswalk band is not a gap.
+        """
+        self.gap_why = ""      # Why this is not a gap (diagnostics: gap_probe.py and the view).
         inner = [[x for x in lines if 0.05 * FRAME_W <= x <= 0.95 * FRAME_W] for _, lines, _ in bands]
         self.near_line = bool(inner[0])
         if self.edge or any(special for _, _, special in bands):
@@ -472,7 +485,7 @@ class LaneDetector:
             self.gap_why = "no near line"
             return None
         k = 0
-        while k + 1 < len(bands) and inner[k + 1]:      # 아래에서부터 선이 이어진 마지막 띠
+        while k + 1 < len(bands) and inner[k + 1]:      # Last band whose lines still continue up from the bottom.
             k += 1
         if k == len(bands) - 1:
             self.gap_why = "lines continue to top"
@@ -494,32 +507,34 @@ class LaneDetector:
             return None
         if USE_MAT_MASK and any(bands[j][0] < self.mat_top for j in range(k + 1, k + 1 + e)):
             self.gap_why = "empty area outside mat"
-            return None     # 빈 곳이 매트 밖(바닥)이면 끊긴 게 아니라 매트가 끝난 것
+            return None     # An empty area outside the mat is the mat ending, not a lane gap.
         return int(bands[k][0])
 
     def __call__(self, frame, side="center", draw=True):
-        """반환: ((위치오차, 방향오차) 또는 None, 교차로 감지 여부, 디버그 이미지).
-        draw=False면 디버그 그림을 안 그림 (인식 결과는 같음, 디버그 이미지 자리에 None) → 화면을 안 보낼 때 빠르게"""
+        """Return ((position error, heading error) or None, junction detected, debug image).
+
+        draw=False skips the debug drawing. Detection is unchanged, and the debug image is None, which is faster when the view is not being sent.
+        """
         top = int(FRAME_H * ROI_TOP)
         mask = self.line_mask(frame[top:])
         h = mask.shape[0] // SLICES
 
         dbg = frame.copy() if draw else None
         if draw:
-            roi, on = dbg[top:], mask > 0       # 흰 선 픽셀은 반투명으로 칠해서 원래 화면도 보이게
+            roi, on = dbg[top:], mask > 0       # Paint white-line pixels translucent so the original image still shows.
             roi[on] = (0.45 * roi[on] + 0.55 * np.array(C_LANE)).astype(np.uint8)
-            dashed_hline(dbg, top, C_DIM)       # 이 선 아래만 차선 인식에 씀
+            dashed_hline(dbg, top, C_DIM)       # Only below this line is used for lane detection.
         cx0 = int(FRAME_W * CAMERA_X)
         jy = int(FRAME_H * JUNCTION_Y)
-        marks = {}                          # 교차로/횡단보도 이름표 (종류별 한 번, 마지막에 맨 위에 그림)
+        marks = {}                          # Junction and crosswalk labels, one per kind, drawn on top at the end.
 
         junction = False
         self.crosswalk = self.crosswalk_any = False
-        self.junction_y = self.crosswalk_y = None   # 가로선/횡단보도가 보인 가장 가까운(아래) 띠의 y. course의 at= 판단용
+        self.junction_y = self.crosswalk_y = None   # Lowest (nearest) band y of a horizontal line or crosswalk. Used by course at=.
         ys, ls, rs, pending = [], [], [], []
-        bands = []      # 띠별 (y, 선 x 목록, 가로선/횡단보도인지) → 차선 끊김(gap) 판단용
+        bands = []      # Per band: (y, line x list, horizontal line or crosswalk). Used for the lane-gap test.
         ref = self.center[0] if self.center[0] is not None else cx0
-        for i in range(SLICES):     # 0번이 가장 가까운 띠. 아래에서 위로 올라가며 추적
+        for i in range(SLICES):     # Band 0 is the nearest. Tracking walks from the bottom upward.
             y1 = mask.shape[0] - (i + 1) * h
             cy = top + y1 + h // 2
             lines, hrun, crosswalk = self.find_lines(mask[y1:y1 + h])
@@ -537,7 +552,7 @@ class LaneDetector:
             if hline or crosswalk:
                 color, name = (C_JUNC, "JUNCTION") if hline else (C_XWALK, "CROSSWALK")
                 if draw:
-                    cv2.rectangle(dbg, (0, top + y1 + 2), (5, top + y1 + h - 2), color, -1)   # 양쪽 가장자리 표시
+                    cv2.rectangle(dbg, (0, top + y1 + 2), (5, top + y1 + h - 2), color, -1)   # Marks on both edges.
                     cv2.rectangle(dbg, (FRAME_W - 6, top + y1 + 2), (FRAME_W - 1, top + y1 + h - 2), color, -1)
                 marks.setdefault(name, (color, cy))
 
@@ -552,13 +567,13 @@ class LaneDetector:
             ls.append(l)
             rs.append(r)
             if l is not None and r is not None:
-                ref = (l + r) / 2   # 다음(위) 띠는 이 띠의 중심을 기준으로 좌우 판단
+                ref = (l + r) / 2   # The next (higher) band judges left and right from this band's center.
             elif l is not None or r is not None:
                 w = self.lane_width(i) / 2
                 ref = l + w if l is not None else r - w
 
         if pending:
-            # 보류한 선: 화면 맨 아래까지 연장했을 때 차의 왼쪽에 닿으면 왼쪽 선, 오른쪽이면 오른쪽 선
+            # A held-back line is a left line if extending it to the bottom of the frame lands on the car's left, and a right line if it lands on the right.
             if len(pending) >= 2:
                 fit = np.polyfit([p[1] for p in pending], [p[2] for p in pending], 1)
                 xb = np.polyval(fit, FRAME_H)
@@ -584,7 +599,7 @@ class LaneDetector:
             elif l is not None and r is not None:
                 c = (l + r) / 2
                 self.learn_width(i, r - l)
-            elif l is not None:     # 차로 폭은 가로 방향으로 잰 값이라 그대로 반만큼 옮김
+            elif l is not None:     # Lane width is measured horizontally, so shift by half of it as-is.
                 c = l + half_w
             elif r is not None:
                 c = r - half_w
@@ -603,14 +618,14 @@ class LaneDetector:
 
         if not pts:
             self.misses += 1
-            if self.misses > 5:     # 오래 놓치면(차를 들었다 놓는 등) 추적 기록 초기화
+            if self.misses > 5:     # After a long loss (the car was picked up, for example), clear the tracking history.
                 self.left, self.right, self.center = [None] * SLICES, [None] * SLICES, [None] * SLICES
             if draw:
                 self.draw_marks(dbg, marks)
             return None, junction, dbg
         self.misses = 0
 
-        # 다른 띠들과 동떨어진 중심점(오인식) 제외: 두 점씩 골라 만든 직선 중 가장 많은 점이 맞는 것을 채택
+        # Drop center points far from the others (misdetects): of the lines through each pair of points, keep the one that fits the most points.
         if len(pts) >= 3:
             best = []
             for a in range(len(pts)):
@@ -624,7 +639,7 @@ class LaneDetector:
                 if draw:
                     for y, x in pts:
                         if (y, x) not in best:
-                            cv2.circle(dbg, (int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # 오인식으로 뺀 점
+                            cv2.circle(dbg, (int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # Point dropped as a misdetect.
                 pts = best
 
         near_y, far_y = FRAME_H - h // 2, top + h // 2
@@ -637,13 +652,13 @@ class LaneDetector:
             cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
             cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
 
-        # 오차 단위: 화면 반폭 기준 × (REF_LANE_PX / LANE_WIDTH_PX). 화각이 바뀌어 차로가 작게 보여도
-        # 같은 차로 이탈은 같은 값이 되게 함 → 조향 게인(KP, KH)과 임계값은 그대로
+        # Error unit: half the frame width times (REF_LANE_PX / LANE_WIDTH_PX). A changed field of view can make the lane look smaller.
+        # The same lane departure stays the same value, so the steering gains (KP, KH) and the thresholds stay as they are.
         half = FRAME_W / 2 * LANE_WIDTH_PX / REF_LANE_PX
         offset = float(np.clip((x_near - cx0) / half, -1, 1))
         heading = float(np.clip((x_far - x_near) / half, -1, 1))
         if self.gap_y is not None and abs(heading) > GAP_MAX_HEADING:
-            # 차가 차로와 크게 어긋나 있으면 차선이 화면 옆으로 빠져서 끊긴 것처럼 보임 → 끊김으로 안 봄
+            # If the car is badly misaligned with the lane, the lines leave the side of the frame and look like a gap, so this is not treated as a gap.
             self.gap_y, self.gap_why = None, "car not aligned with lane"
         if draw:
             self.draw_marks(dbg, marks)
@@ -651,28 +666,30 @@ class LaneDetector:
 
     @staticmethod
     def draw_marks(dbg, marks):
-        """교차로/횡단보도 이름표를 다른 표시들 위에 (가장 가까운 띠 높이에)"""
+        """Draw junction and crosswalk labels above the other marks, at the nearest band's height."""
         for name, (color, cy) in marks.items():
             chip(dbg, name, 12, cy - 10, color)
 
 
 class TrafficLight:
-    """신호등 램프 색 판별 → "red" / "green" / None (매 프레임).
-    차선 영역(ROI_TOP)보다 위쪽, 화면 좌우(LIGHT_SIDE)만 본다. 두 가지 방법을 같이 씀:
-      1. 채도/밝기가 높고 거의 정사각형인 빨강(H<10, >170) / 초록(H 40~80) 덩어리
-         (초록 범위를 80에서 끊은 건 청록색 장애물 블록(H 85~95)을 초록불로 잡지 않게)
-      2. LED는 가운데가 하얗게 날아가고 테두리에만 색이 남음 → 하얀 덩어리 둘레(링)의 색"""
+    """Lamp color each frame: "red", "green", or None.
 
-    RING_S_MIN = 60         # 링 색 판별에 쓰는 최소 채도 (링은 덩어리보다 옅음)
-    CORE_V_MIN = 230        # 하얗게 날아간 LED 가운데로 볼 밝기
-    CORE_S_MAX = 50         # 가운데로 볼 최대 채도 (거의 흰색만. 옅은 색 테두리까지 가운데로 묶이지 않게)
+    Looks only above the lane ROI (ROI_TOP) and at the left and right edges (LIGHT_SIDE). Two methods are used together:
+      1. Highly saturated, bright, nearly square blobs of red (H<10 or >170) or green (H 40-80).
+         Green stops at 80 so a cyan obstacle block (H 85-95) is not taken as a green light.
+      2. An LED blows out white in the center and keeps color only in a ring, so the ring color is used.
+    """
+
+    RING_S_MIN = 60         # Minimum saturation used to read the ring color. The ring is paler than the blob.
+    CORE_V_MIN = 230        # Value that counts as a blown-out white LED center.
+    CORE_S_MAX = 50         # Maximum saturation for the center. Nearly white only, so a pale colored rim is not pulled into the center.
 
     def __init__(self):
         self.state = None
-        self.boxes = []         # (x, y, w, h, 색) 화면 표시용
+        self.boxes = []         # (x, y, w, h, color) for the on-screen display.
         self.local = []
-        self.lamps = {}         # 색별 가장 큰 램프 박스 {"red": (x, y, w, h), "green": ...}. wait_green의 위치 비교용
-        self.mask_vis = None    # tune_light.py에서 보는 색 마스크 (keep_mask=True일 때만)
+        self.lamps = {}         # Largest lamp box per color {"red": (x, y, w, h), "green": ...}. Compared by position in wait_green.
+        self.mask_vis = None    # Color mask shown by tune_light.py, only when keep_mask=True.
         self.keep_mask = False
 
     @staticmethod
@@ -691,13 +708,13 @@ class TrafficLight:
 
     @staticmethod
     def lamp_like(w, h, area, area_min):
-        """램프 모양: 크기 범위 안, 거의 정사각형, 박스를 꽤 채움(동그라미/네모)"""
+        """Lamp shape: inside the size range, nearly square, and filling much of its box (a circle or a square)."""
         return area_min <= area <= LIGHT_AREA_MAX and 0.6 <= w / h <= 1.6 and area >= 0.45 * w * h
 
     def __call__(self, frame):
         self.boxes = []
         self.lamps = {}
-        self.local = []         # color_at으로 다시 본 자리 (화면 표시용)
+        self.local = []         # Spots re-read by color_at (for the on-screen display).
         biggest = {"red": 0, "green": 0}
 
         def add(color, x, y, w, h, area):
@@ -712,7 +729,7 @@ class TrafficLight:
             hue, sat, val = cv2.split(cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV))
             strong = (sat >= LIGHT_S_MIN) & (val >= LIGHT_V_MIN)
 
-            # 1. 색 덩어리
+            # 1. Color blobs.
             for color, mask in (("red", strong & self.is_red(hue)), ("green", strong & self.is_green(hue))):
                 mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
                 if self.keep_mask:
@@ -722,7 +739,7 @@ class TrafficLight:
                     if self.lamp_like(w, h, area, LIGHT_AREA_MIN):
                         add(color, x0 + x, y0 + y, w, h, area)
 
-            # 2. 가운데가 하얗게 날아간 LED: 둘레 링의 색
+            # 2. LED with a blown-out white center: color of the surrounding ring.
             core = ((val >= self.CORE_V_MIN) & (sat <= self.CORE_S_MAX)).astype(np.uint8)
             n, labels, stats, _ = cv2.connectedComponentsWithStats(core, connectivity=8)
             for i in range(1, n):
@@ -743,7 +760,7 @@ class TrafficLight:
                 if color:
                     add(color, x0 + x, y0 + y, w, h, area)
 
-        # wait_green이 '빨간불이었던 자리'들을 다시 볼 수 있게 빨간 램프 후보를 전부 남김
+        # Keep every red-lamp candidate so wait_green can re-read the spots that were red.
         self.lamps["red_all"] = [(int(x), int(y), int(w), int(h)) for x, y, w, h, c in self.boxes if c == "red"]
         if biggest["red"] or biggest["green"]:
             self.state = "red" if biggest["red"] >= biggest["green"] else "green"
@@ -752,9 +769,11 @@ class TrafficLight:
         return self.state
 
     def color_at(self, frame, box):
-        """빨간불이었던 박스 자리(주변 번짐 포함)만 다시 봐서 "red" / "green" / None.
-        위치를 아니까 색 기준을 넓게 씀: 초록은 청록빛까지(LIGHT_G_HUE), 채도/밝기 기준도 낮게.
-        LED 가운데가 하얗게 날아가도 둘레 번짐에 색이 남아서 잡힘"""
+        """Re-read only the box where red was, including the glow around it. Returns "red", "green", or None.
+
+        The position is known, so the color test is wide: green includes cyan (LIGHT_G_HUE), and the saturation and value limits are lower.
+        A center blown out to white still leaves color in the surrounding glow.
+        """
         x, y, w, h = box
         pad = max(w, h)
         x0, y0 = max(x - pad, 0), max(y - pad, 0)
@@ -769,11 +788,11 @@ class TrafficLight:
         return color
 
     def draw(self, dbg, regions=True):
-        """regions: 램프를 찾는 영역(좌우 위쪽) 테두리도 그릴지. 주행 화면은 신호 대기 중에만 그림"""
+        """regions: also draw the lamp search areas (upper left and right). The drive view draws them only while waiting for a light."""
         if regions:
             for x0, y0, x1, y1 in self.regions():
                 cv2.rectangle(dbg, (x0, y0), (x1 - 1, y1 - 1), C_DIM, 1)
-        for x0, y0, x1, y1, color in self.local:    # wait_green이 다시 보는 '빨간불이었던 자리' (노랑)
+        for x0, y0, x1, y1, color in self.local:    # Spot wait_green re-reads, where red was (yellow).
             cv2.rectangle(dbg, (x0, y0), (x1 - 1, y1 - 1), C_AT, 1, cv2.LINE_AA)
             if color:
                 chip(dbg, color.upper(), x0, y1 + 2, C_AT, 0.35)
@@ -784,7 +803,7 @@ class TrafficLight:
 
 
 class Steering:
-    """(위치오차, 방향오차) → 조향각(도). P + 필터링된 D + 저역통과로 가변 조향"""
+    """Turn (position error, heading error) into a steering angle in degrees. Variable steering from P, filtered D, and a low-pass."""
 
     def __init__(self):
         self.prev_err = 0.0
@@ -795,22 +814,22 @@ class Steering:
         self.out_t = None
 
     def lane(self, offset, heading, now, kp=1.0, kh=1.0):
-        """차선 추종 조향 목표(도). 출력은 하지 않음. kp, kh: style= 배수"""
-        # 차로 중앙에서 멀어질수록 방향 오차의 비중을 줄임 → 차선 끝에 붙었을 때는 무조건 복귀부터
+        """Lane-follow steering target in degrees. Does not output it. kp and kh are the style= scales."""
+        # As the car gets farther from the lane center, heading error counts less, so a car stuck on the lane edge returns first.
         err = kp * KP * offset + kh * KH * heading * max(0.0, 1 - abs(offset) / OFFSET_PRIORITY)
         if self.prev_t is not None and now > self.prev_t:
-            # 프레임 간 미분은 노이즈가 커서 그대로 쓰면 지그재그의 원인이 됨 → 필터링
+            # Frame-to-frame derivatives are noisy and cause zigzag if used raw, so filter them.
             self.d = 0.7 * self.d + 0.3 * (err - self.prev_err) / (now - self.prev_t)
         self.prev_err, self.prev_t = err, now
         return float(np.clip(err + KD * self.d, -1, 1)) * AUTO_STEER_MAX
 
     def output(self, target, now, smooth=None):
-        """목표 각도 → 부드럽게, 변화 속도 제한을 걸어 실제 조향각으로. 모든 코스 동작이 이걸 거침"""
+        """Turn a target angle into the actual steering angle, smoothed and rate-limited. Every course action goes through this."""
         dt = now - self.out_t if self.out_t is not None and now > self.out_t else 1 / 30
         self.out_t = now
         smooth = SMOOTH if smooth is None else smooth
         target = smooth * self.angle + (1 - smooth) * target
-        step = STEER_RATE * dt      # 한 프레임에 꺾을 수 있는 최대량
+        step = STEER_RATE * dt      # Maximum turn in one frame.
         self.angle += float(np.clip(target - self.angle, -step, step))
         return self.angle
 
@@ -819,39 +838,42 @@ class Steering:
 
 
 class CourseRunner:
-    """COURSE의 동작을 위에서부터 순서대로 실행.
-    각 동작은 sec(정해진 시간) 또는 until(교차로/횡단보도/새 차선/차선 끊김/초록불) 조건으로 끝나고,
-    min_sec ~ max_sec 범위를 지킨다. speed는 그 동작 동안만 적용된다."""
+    """Run COURSE actions from top to bottom.
+
+    Each action ends on sec (a fixed time) or until (junction, crosswalk, new lane, lane gap, or green light),
+    and stays inside min_sec to max_sec. speed applies only during that action.
+    """
 
     EVENT_NAMES = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선",
                    "gap": "차선 끊김", "green": "초록불", "obstacle": "장애물 감지", "clear": "장애물 없어짐",
                    "lost": "차선 놓침", "aligned": "정렬"}
-    STATE_EVENTS = ("lane", "green", "clear", "aligned")   # '지금 상태'로 판단: 써도 다시 셀 필요 없음 (장애물은 한 번 쓰면 없어졌다 다시 나타나야 셈)
-    AT_EVENTS = ("junction", "crosswalk", "gap")    # at= (화면 어디까지 내려와야 하는지)을 쓸 수 있는 이벤트
+    STATE_EVENTS = ("lane", "green", "clear", "aligned")   # Judged as the current state: using one does not require it to count again. An obstacle counts again only after it goes away and comes back.
+    AT_EVENTS = ("junction", "crosswalk", "gap")    # Events that can use at= (how far down the frame the line must come).
 
     def __init__(self, course, start=1):
         from course import _flat
-        self.course = _flat(course)     # 묶음(리스트)이 섞여 있어도 펼쳐서 씀 → COURSE에 _flat 안 써도 됨
-        self.idx = start - 1        # 지금 실행 중인 동작 번호 (0부터)
+        self.course = _flat(course)     # Expand even if groups (lists) are mixed in, so COURSE does not have to call _flat.
+        self.idx = start - 1        # Index of the action running now (from 0).
         self.step_start = None
         self.done = False
-        self.hold = None            # straight(angle="hold"): 시작 순간의 조향각
-        self.red_hits = 0           # wait_green: 빨간불 연속 감지 프레임 수
-        self.red_seen = False       # wait_green: 이 동작에서 빨간불을 확실히 봤는지 (빨강 → 초록으로 바뀌어야 출발)
-        self.red_box = None         # wait_green: 마지막으로 본 빨간 램프 박스 (초록불은 이 근처여야 인정)
-        self.red_boxes = []         # wait_green: 빨간불일 때 보인 빨간 램프 후보 전부 (그 자리들을 다시 봄)
-        self.local_light = None     # wait_green: 그 자리들을 다시 본 결과 (Driver가 매 프레임 채움)
-        # 이벤트별: 연속 감지 프레임 수, 무장 여부 (출발선처럼 처음부터 보이던 것, 방금 쓴 것은 한 번 사라져야 다시 셈)
-        # 초록불, 장애물/없음은 처음부터 그 상태여도 바로 인정해야 하므로 항상 무장
+        self.hold = None            # straight(angle="hold"): steering angle at the moment it started.
+        self.red_hits = 0           # wait_green: consecutive frames of red.
+        self.red_seen = False       # wait_green: whether this action has definitely seen red. The car starts only on a change from red to green.
+        self.red_box = None         # wait_green: last red lamp box. Green counts only near it.
+        self.red_boxes = []         # wait_green: every red-lamp candidate seen while the light was red. Those spots are re-read.
+        self.local_light = None     # wait_green: result of re-reading those spots. Driver fills this every frame.
+        # Per event: consecutive detection frames, and whether it is armed. Something visible from the start (the start line) or just consumed must disappear once before it counts again.
+        # Green, and obstacle present or clear, must be accepted even if that was already the state, so they stay armed.
         self.hits = {"junction": 0, "crosswalk": 0, "lane": 0, "gap": 0, "green": 0, "obstacle": 0, "clear": 0,
                      "lost": 0, "aligned": 0}
         self.armed = {"junction": False, "crosswalk": False, "lane": True, "gap": False, "green": True,
                       "obstacle": True, "clear": True, "lost": True, "aligned": True}
-        self.since = {k: None for k in self.hits}   # 이벤트별: 지금 상태가 시작된 시각 (hold_sec 판단용)
+        self.since = {k: None for k in self.hits}   # Per event: time the current state started (used for hold_sec).
+        self.turn_clear = 0     # Consecutive frames during a turn with no horizontal line. Used for the exit decision.
 
     def step(self):
         step = self.course[self.idx] if self.idx < len(self.course) else None
-        if step is not None and step["angle"] is None:     # right()/left() 기본: 차가 꺾을 수 있는 최대 각도
+        if step is not None and step["angle"] is None:     # right()/left() default: the largest angle the car can steer.
             step = dict(step, angle=AUTO_STEER_MAX if step["do"] == "right" else -AUTO_STEER_MAX)
         return step
 
@@ -863,6 +885,7 @@ class CourseRunner:
     def begin(self, now):
         self.step_start = now
         self.hits["lane"] = 0
+        self.turn_clear = 0
         self.hold = None
         self.red_hits, self.red_seen, self.red_box = 0, False, None
         self.red_boxes, self.local_light = [], None
@@ -871,10 +894,13 @@ class CourseRunner:
             print(f"\n[코스 끝] 이제부터 차선만 따라감")
             return
         if step["do"] in ("straight", "left", "right") and step["until"] == "lane":
-            # 직진(끊김 통과)/회전: 처음 보이던 차선(끊기기 전, 돌기 전)으로 바로 끝나지 않게 한 번 사라졌다가 다시 잡혀야 끝
+            # Straight through a gap, or a turn: the lane visible at the start (before the gap, before the turn) must disappear once and be found again, so the action does not end immediately.
             self.armed["lane"] = False
+        if step.get("blind") and step["until"]:
+            # Even after the blind period, do not end immediately on the line visible then. Count it again only after it has disappeared once.
+            self.armed[step["until"]] = False
         if step["until"] is not None:
-            # 이 동작의 종료 이벤트는 이 동작 안에서 새로 세기 시작 (이전 동작 동안 쌓인 감지로 시작하자마자 끝나지 않게)
+            # This action's end event starts counting fresh inside this action, so detections piled up during the previous action do not end it at once.
             self.hits[step["until"]] = 0
             self.since[step["until"]] = None
         if step["sec"] is not None:
@@ -887,6 +913,8 @@ class CourseRunner:
                 how += f" {step['hold']}초 유지"
             if step["min"]:
                 how += f" 최소 {step['min']}초"
+            if step.get("blind"):
+                how += f" 시작 {step['blind']:g}초 감지 안 함"
             if step["max"] is not None:
                 how += f" 최대 {step['max']}초"
         if step["do"] in ("left", "right", "curve"):
@@ -899,7 +927,7 @@ class CourseRunner:
         print(f"\n[{self.idx + 1}/{len(self.course)}] {step['do']}{angle} {how}{speed}")
 
     def near_red(self, box):
-        """초록 램프가 빨간 램프가 있던 자리 근처인지 (같은 신호등). 램프 크기에 비례한 거리로 판단"""
+        """Whether the green lamp is near where the red lamp was, on the same traffic light. Distance scales with lamp size."""
         if self.red_box is None or box is None:
             return False
         rx, ry, rw, rh = self.red_box
@@ -908,48 +936,65 @@ class CourseRunner:
         return dist <= LIGHT_NEAR * max(rw, rh)
 
     def watch(self, junction, crosswalk, det, ys=None, light=None, lamps=None, obstacle=None, now=0.0):
-        """이벤트별 연속 감지 프레임 수 갱신.
-        ys = {"junction": y, "crosswalk": y, "gap": y}: 화면에서 그 선이 보인 가장 아래 y.
-        지금 동작에 at=이 있으면 그 이벤트는 선이 화면의 at 지점까지 내려와야 감지로 침.
-        light = 신호등 색 ("red" / "green" / None).
-        초록불은 이 동작에서 빨간불을 JUNCTION_FRAMES 연속으로 본 뒤에만 셈 (빨강 → 초록으로 바뀌어야 출발).
-        처음부터 보이던 초록 물체나, 차가 오기 전부터 켜져 있던 초록불로는 출발하지 않음.
-        lamps = 색별 램프 박스 (TrafficLight.lamps): 초록은 빨간 램프가 있던 자리 근처(LIGHT_NEAR)여야 인정.
-        lamps를 안 주면 위치는 비교하지 않음.
-        obstacle = 앞 적외선 센서에 물체가 있는지 (센서가 없으면 None → 항상 '없음')"""
+        """Update the consecutive-detection count for each event.
+
+        ys = {"junction": y, "crosswalk": y, "gap": y}: the lowest y where that line was seen.
+        end is the line where the lane stops ahead, at the same place as gap. It is None when a junction horizontal line is present.
+        If the current action has at=, that event counts only once the line has come down to the at= height.
+        light is the traffic-light color ("red", "green", or None).
+        Green counts only after red has been seen for JUNCTION_FRAMES in a row during this action. Red must change to green before the car starts.
+        A green object that was visible from the start, or a green light that was already on before the car arrived, does not start the car.
+        lamps is the per-color lamp boxes (TrafficLight.lamps): green must be near where the red lamp was (LIGHT_NEAR).
+        If lamps is omitted, position is not compared.
+        obstacle is whether the front infrared sensor sees an object. None if there is no sensor, which always means clear.
+        """
         ys = ys or {}
         self.red_hits = self.red_hits + 1 if light == "red" else 0
         if self.red_hits >= JUNCTION_FRAMES:
             self.red_seen = True
             if lamps and lamps.get("red"):
                 self.red_box = lamps["red"]
-            # 본 적 있는 빨간 자리는 지우지 않고 쌓음: 램프가 초록으로 바뀌면 그 빨간 박스는 사라지지만
-            # (다른 빨간 물체 때문에 여전히 '빨강'이어도) 그 자리를 계속 다시 봐야 하므로
+            # Spots that were red are kept, not cleared: when the lamp turns green that red box disappears,
+            # The spot must still be re-read (the frame can stay 'red' because of some other red object).
             for box in (lamps or {}).get("red_all", []):
                 if len(self.red_boxes) < 6 and not any(
                         abs(box[0] - b[0]) < max(b[2], 4) and abs(box[1] - b[1]) < max(b[3], 4) for b in self.red_boxes):
                     self.red_boxes.append(box)
         green_here = lamps is None or self.near_red(lamps.get("green"))
         step = self.step()
-        # 회전 중 새 차선: 바로 앞 선 + 위치 오차만 봄 (TURN_END_*). 남은 차선이 화면을 비스듬히 가로질러
-        # '교차로 가로선'으로 잡히고, 선이 하나만 보여 방향 오차가 튀기 때문
+        # During a turn, a new lane needs a line just ahead plus position and heading (TURN_END_*). Corner tape can match position alone.
+        # Its heading is near ±1, so it is rejected here, while the exit straight has heading near 0 and is accepted.
         turning = step is not None and step["do"] in ("left", "right")
-        seen = {"junction": junction, "crosswalk": crosswalk,
-                # 새 차선: 차 바로 앞에 선이 보이면서 차로가 대략 맞음. 끊긴 구간 위처럼 앞에 선이 없으면 '사라짐'으로 봄
-                # (끊김 너머 차선이 위쪽에 계속 보여도, 바로 앞 선이 사라졌다 다시 보여야 straight(until="lane")이 끝남)
-                "lane": (det is not None and abs(det[0]) < TURN_END_OFFSET and ys.get("near", True)) if turning else
+        self.turn_clear = self.turn_clear + 1 if turning and not junction else 0
+        # While a corner horizontal line is still present, heading is judged strictly. Once it is gone, a slanted exit line is accepted.
+        heading_limit = TURN_EXIT_HEADING if self.turn_clear >= TURN_EXIT_CLEAR else TURN_END_HEADING
+        seen = {"junction": junction and det is not None, "crosswalk": crosswalk,
+                # New lane: a line is visible just in front of the car and the lane roughly matches. No line just ahead, as when sitting over a gap, counts as gone.
+                # The lane beyond a gap may stay visible higher up, but straight(until="lane") ends only after the line just ahead disappears and comes back.
+                # A junction counts only while the lane is visible with it. A floor edge seen after the lane is lost is not a junction.
+                "lane": (det is not None and abs(det[0]) < TURN_END_OFFSET and abs(det[1]) < heading_limit
+                         and ys.get("near", True)) if turning else
                         (not junction and det is not None and abs(det[0]) < 0.6 and abs(det[1]) < 0.5
                          and ys.get("near", True)),
                 "gap": ys.get("gap") is not None,
-                # 초록: 화면 전체에서 빨간불 근처에 초록불이 보이거나, 빨간불이었던 자리가 초록(청록 포함)으로 바뀜
+                # Green: a green light near the red light anywhere in the frame, or the spot that was red has changed to green (cyan included).
                 "green": self.red_seen and ((light == "green" and green_here) or self.local_light == "green"),
                 "obstacle": bool(obstacle), "clear": not obstacle,
                 "lost": det is None,
                 "aligned": det is not None and abs(det[0]) < ALIGN_OFFSET and abs(det[1]) < ALIGN_HEADING}
         if step is not None and step.get("at") is not None and step["until"] in self.AT_EVENTS:
             y = ys.get(step["until"])
-            seen[step["until"]] = y is not None and y >= step["at"] * FRAME_H - 1    # -1: 0.55*360=198.00000000000003 같은 오차
+            seen[step["until"]] = y is not None and y >= step["at"] * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+        until = step["until"] if step is not None else None
+        # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
+        # A line that flickers during that time does not end the action the moment the blind period finishes.
+        blind = (until is not None and self.step_start is not None
+                 and now - self.step_start < (step.get("blind") or 0))
         for k, v in seen.items():
+            if blind and k == until:
+                self.hits[k] = 0
+                self.since[k] = None
+                continue
             self.hits[k] = self.hits[k] + 1 if v else 0
             self.since[k] = (self.since[k] if self.since[k] is not None else now) if v else None
             if not v:
@@ -983,7 +1028,7 @@ class CourseRunner:
                   and self.happened(step["until"], now, step.get("hold", 0.0))):
                 reason = self.EVENT_NAMES[step["until"]]
                 if step["until"] not in self.STATE_EVENTS:
-                    self.armed[step["until"]] = False   # 같은 선을 다음 동작에서 또 세지 않게
+                    self.armed[step["until"]] = False   # Do not count the same line again in the next action.
             else:
                 reason = None
             if reason is None:
@@ -997,13 +1042,13 @@ class CourseRunner:
         return (step or {}).get("side") or "center"
 
     def opt(self, key, default=None):
-        """지금 동작의 옵션 (shift, steer, style ...). 코스가 끝났거나 안 썼으면 default"""
+        """Option on the current action (shift, steer, style, ...). default if the course has ended or the option was not set."""
         step = self.step()
         value = (step or {}).get(key)
         return default if value is None else value
 
     def turning(self, now):
-        """회전 동작 중이면서 아직 차선 추종으로 넘어가기 전"""
+        """True during a turn action, before control has handed over to lane following."""
         step = self.step()
         if step is None or step["do"] not in ("left", "right"):
             return False
@@ -1014,9 +1059,11 @@ class CourseRunner:
         return step is None or step["do"] == "follow"
 
     def target(self, lane, now, current=0.0):
-        """지금 동작의 조향 목표(도). lane = 차선 추종 조향(차선이 안 보이면 None),
-        current = 지금 실제 조향각 (straight(angle="hold")가 시작 순간 각도를 기억하는 데 씀).
-        고정 각도는 없음: 모든 동작이 차선이 보이는 만큼 차선 추종 조향을 섞어 씀"""
+        """Steering target in degrees for the current action. lane is the lane-follow steering, or None if the lane is not visible.
+
+        current is the actual steering angle now. straight(angle="hold") uses it to remember the angle at the start.
+        There is no fixed angle: every action mixes in lane-follow steering to the extent the lane is visible.
+        """
         step = self.step()
         if step is None or step["do"] in ("follow", "stop", "wait", "finish"):
             return lane
@@ -1033,7 +1080,7 @@ class CourseRunner:
             return angle
         if step["do"] == "curve":
             return angle + CURVE_ASSIST * (lane - angle)
-        # 회전: 최소 시간 동안은 지정 각도로, 그 뒤 새 차선이 잡힐수록 차선 추종 조향으로 넘어감
+        # Turn: hold the set angle for the minimum time, then hand over to lane-follow steering as the new lane stays found.
         if now - self.step_start < step["min"]:
             return angle
         w = max(0.0, 1 - self.hits["lane"] / TURN_CLEAR_FRAMES)
@@ -1044,7 +1091,7 @@ class CourseRunner:
         return step is not None and step["do"] in ("stop", "wait")
 
     def needs_light(self):
-        """신호등 인식이 필요한 동작인지 (wait_green). 아닐 때는 신호등 계산을 건너뜀"""
+        """Whether this action needs traffic-light detection (wait_green). Otherwise the light computation is skipped."""
         step = self.step()
         return step is not None and step["do"] == "wait" and step["until"] == "green"
 
@@ -1067,18 +1114,19 @@ class CourseRunner:
 
 
 def speed_for(angle, base):
-    """조향이 클수록 감속"""
-    if base <= MIN_SPEED:   # 동작별로 아주 느린 속도를 정했으면 그대로
+    """Slow down as steering grows."""
+    if base <= MIN_SPEED:   # An action that set a very slow speed keeps that speed.
         return base
     ratio = min(abs(angle) / STEER_LIMIT, 1.0)
     return base - (base - MIN_SPEED) * ratio
 
 
 class Stream:
-    """디버그 화면을 브라우저로 송출.
-    페이지가 최신 화면을 한 장씩 받아감(/frame.jpg): 와이파이가 잠깐 끊기거나 프로그램이 다시 시작돼도
-    페이지가 알아서 다시 연결하고, 늦게 받는 쪽은 밀린 화면 없이 항상 최신 화면만 받음.
-    JPEG 인코딩은 메인 루프가 아니라 브라우저 요청 스레드에서, 보는 사람이 있을 때만 함"""
+    """Send the debug view to a browser.
+
+    The page fetches the latest frame one at a time (/frame.jpg). If Wi-Fi drops briefly or the program restarts, the page reconnects on its own, and a slow client always gets the latest frame with none queued up.
+    JPEG encoding runs on the browser request thread, not the main loop, and only while someone is watching.
+    """
 
     LEGEND = [("#3cd2ff", "흰 선으로 인식"), ("#288cff", "왼쪽 선"), ("#ff3c3c", "오른쪽 선"),
               ("#50e650", "따라갈 차로 중앙 / 화살표 = 지금 조향"), ("#ff00ff", "교차로 가로선 (점선: 멀리서 미리 본 것)"),
@@ -1137,13 +1185,13 @@ loop();
     def __init__(self, port, title="AICAR", legend=False):
         import logging
         from flask import Flask, Response
-        logging.getLogger("werkzeug").setLevel(logging.ERROR)   # 한 장마다 찍히는 요청 기록 끄기
-        self.img, self.seq = None, 0            # 메인 루프가 넣은 최신 화면과 번호
-        self.jpg, self.jpg_seq = None, -1       # 마지막으로 인코딩한 JPEG와 그 화면 번호
+        logging.getLogger("werkzeug").setLevel(logging.ERROR)   # Turn off the request log printed for every frame.
+        self.img, self.seq = None, 0            # Latest frame and its number, written by the main loop.
+        self.jpg, self.jpg_seq = None, -1       # Last encoded JPEG and the frame number it came from.
         self.lock = threading.Lock()
-        self.last_request = -1e9                # 브라우저가 마지막으로 화면을 받아 간 시각 (watching 판단)
+        self.last_request = -1e9                # Time a browser last fetched a frame (used for watching).
         app = Flask(__name__)
-        # LEGEND 색은 화면 색(BGR)을 웹 색(RGB)으로 바꾼 것
+        # LEGEND colors are the on-screen BGR colors converted to web RGB.
         items = "".join(f'<span><i style="background:{c}"></i>{t}</span>' for c, t in self.LEGEND) if legend else ""
         page = self.PAGE.replace("__TITLE__", title).replace("__LEGEND__", items)
 
@@ -1153,11 +1201,11 @@ loop();
 
         @app.route("/frame.jpg")
         def frame():
-            # after보다 새 화면이 나올 때까지 최대 1초 기다렸다가 최신 화면 하나만 보냄
+            # Wait up to 1 second for a frame newer than after, then send only the latest one.
             from flask import request
             self.last_request = time.monotonic()
             after = request.args.get("after", -1, type=int)
-            if after > self.seq:        # 프로그램이 다시 시작돼서 번호가 처음부터: 그냥 최신 화면
+            if after > self.seq:        # The program restarted and the number went back to the start, so just send the latest frame.
                 after = -1
             end = time.monotonic() + 1.0
             while (self.img is None or self.seq <= after) and time.monotonic() < end:
@@ -1170,7 +1218,7 @@ loop();
 
         @app.route("/video")
         def video():
-            """예전 방식(MJPEG 연속 스트림). 다른 프로그램에서 주소로 바로 볼 때용"""
+            """Legacy MJPEG stream, for other programs that open the URL directly."""
             def gen():
                 last = -1
                 while True:
@@ -1187,16 +1235,16 @@ loop();
 
     @property
     def watching(self):
-        """최근 2초 안에 브라우저가 화면을 받아 갔는지. 아무도 안 보면 화면을 그릴 필요가 없음"""
+        """Whether a browser fetched a frame in the last 2 seconds. If nobody is watching, the view does not need to be drawn."""
         return time.monotonic() - self.last_request < 2.0
 
     def update(self, img):
-        """화면만 넘겨 둠 (인코딩 안 함). img는 이후에 다시 고치지 않는 새 배열이어야 함"""
+        """Store the frame without encoding it. img must be a new array that is not modified afterward."""
         self.img = img
         self.seq += 1
 
     def encoded(self):
-        """최신 화면의 JPEG. 새 화면이 있을 때만 인코딩 (브라우저가 여러 개여도 한 번)"""
+        """JPEG of the latest frame. Encodes only when the frame is new, once even if several browsers are connected."""
         with self.lock:
             img, seq = self.img, self.seq
             if img is not None and seq != self.jpg_seq:
@@ -1206,8 +1254,10 @@ loop();
 
 
 class Recorder:
-    """원본 프레임 + 로그를 runs/<시각>/ 에 저장. 맥에서 replay.py로 다시 돌려볼 수 있음.
-    JPEG 저장은 별도 스레드에서 해서 주행 루프가 기다리지 않음 (close()에서 남은 것까지 다 저장)"""
+    """Save raw frames and a log under runs/<time>/. Replay them on a Mac with replay.py.
+
+    JPEGs are written on a separate thread so the drive loop does not wait. close() finishes whatever is left.
+    """
 
     def __init__(self):
         self.dir = Path(__file__).with_name("runs") / time.strftime("%Y%m%d-%H%M%S")
@@ -1215,7 +1265,7 @@ class Recorder:
         self.log = open(self.dir / "log.csv", "w")
         self.log.write("frame,t,offset,heading,junction,steer,speed,step,status\n")
         self.n = 0
-        self.queue = queue.Queue(maxsize=300)   # 저장이 밀리면(약 5초치) 루프가 잠깐 기다림. 프레임은 안 버림
+        self.queue = queue.Queue(maxsize=300)   # If saving falls behind (about 5 seconds), the loop waits briefly. Frames are not dropped.
         self.writer = threading.Thread(target=self._save_frames, daemon=True)
         self.writer.start()
         print(f"녹화: {self.dir}")
@@ -1239,39 +1289,41 @@ class Recorder:
 
 
 class Driver:
-    """카메라 한 프레임 → (조향각, 속도). 실제 주행(main)과 시뮬레이터가 똑같이 이걸 씀"""
+    """One camera frame to (steering angle, speed). Real driving (main) and the simulator both use this."""
 
     def __init__(self, course, start=1, base_speed=BASE_SPEED, obstacle=None):
         self.detect, self.traffic, self.steering = LaneDetector(), TrafficLight(), Steering()
         self.course = CourseRunner(course, start)
         self.base_speed = base_speed
         self.obs = obstacle
-        self.lost_since = None      # 차선을 놓친 시각
-        self.stopped_since = 0.0    # 속도 0이 된 시각 (출발 킥 판단)
+        self.lost_since = None      # Time the lane was lost.
+        self.stopped_since = 0.0    # Time speed became 0 (used for the start kick).
         self.kick_until = 0.0
         self.cw_since = None
         self.speed = 0.0
         self.edge = False
         self.done = False
         self.det, self.junction, self.light = None, False, None
-        self.approach = (0.0, -1.0, -1)    # slow=: (감속 정도 0~1, 마지막으로 선을 본 시각, 동작 번호)
+        self.approach = (0.0, -1.0, -1)    # slow=: (slowdown amount 0 to 1, time the line was last seen, action index).
 
     def approach_speed(self, base, now):
-        """slow=: 교차로/횡단보도/끊김 선이 화면 위쪽에 처음 보이면 base로 시작해서,
-        선이 끝나는 지점(at, 없으면 JUNCTION_Y)까지 내려오는 동안 slow 속도까지 점점 줄임"""
+        """slow=: ease from base down to the slow speed as the line approaches.
+
+        When a junction, crosswalk, or gap line first appears near the top, start at base and reduce toward the slow speed until the line reaches the end height (at=, or JUNCTION_Y if at= is unset).
+        """
         course = self.course
         step = course.step()
         slow = course.opt("slow")
         if slow is None or step["until"] not in CourseRunner.AT_EVENTS:
             return base
         level, seen_t, idx = self.approach
-        if idx != course.idx:       # 새 동작: 처음부터
+        if idx != course.idx:       # New action: start over.
             level, seen_t = 0.0, -1.0
         y = {"junction": self.detect.junction_y, "crosswalk": self.detect.crosswalk_y,
              "gap": self.detect.gap_y}[step["until"]]
         far = step["until"] == "junction"
         if y is None and far:
-            y = self.detect.far_y       # 아직 ROI에 안 들어왔으면 원거리에서 본 가로선
+            y = self.detect.far_y       # Horizontal line seen in the distance, if it has not entered the ROI yet.
         if y is not None:
             start = FRAME_H * (FAR_TOP if far else ROI_TOP)
             end = (course.opt("at") or JUNCTION_Y) * FRAME_H
@@ -1280,10 +1332,10 @@ class Driver:
         elif now - seen_t > APPROACH_HOLD:
             level = 0.0
         self.approach = (level, seen_t, course.idx)
-        slow = max(min(slow, base), MIN_SPEED)      # 모터가 서지 않는 최소 속도 아래로는 안 내림
+        slow = max(min(slow, base), MIN_SPEED)      # Do not go below the minimum speed that keeps the motor turning.
         return base - (base - slow) * level
 
-    # ---------- 인식 화면 (브라우저 Live View / replay) ----------
+    # --- Detection View (Browser Live View / Replay) ---
     PANEL_W = 240
     EVENT_EN = {"junction": "JUNCTION", "crosswalk": "CROSSWALK", "lane": "NEW LANE", "gap": "LANE ENDS",
                 "green": "GREEN LIGHT", "obstacle": "OBSTACLE", "clear": "CLEAR", "lost": "LANE LOST",
@@ -1292,7 +1344,7 @@ class Driver:
              "curve": "CURVE", "stop": "STOP", "wait": "WAIT", "finish": "FINISH"}
 
     def step_text(self, step):
-        """동작 하나 → (큰 글자, 작은 글자 줄들)"""
+        """One action to (large text, lines of small text)."""
         if step is None:
             return "COURSE END", ["follow lane"]
         title = self.DO_EN[step["do"]]
@@ -1312,26 +1364,26 @@ class Driver:
         return title, [c for c in (cond, "  ".join(tags[:2]), "  ".join(tags[2:])) if c]
 
     def view(self, dbg, now, fps=None):
-        """카메라 인식 화면 + 오른쪽 정보 패널을 합친 화면"""
+        """Camera detection view with the info panel on the right."""
         course, detect, steering = self.course, self.detect, self.steering
         step = course.step()
         self.traffic.draw(dbg, regions=course.needs_light())
 
-        # at= 지점: 교차로/횡단보도 선이 이 점선까지 내려오면 이 동작이 끝남
+        # at= height: this action ends when the junction or crosswalk line comes down to this dashed line.
         if step is not None and step["until"] in CourseRunner.AT_EVENTS and step["sec"] is None:
-            at = step.get("at") or JUNCTION_Y       # at을 안 쓰면 JUNCTION_Y에서 끝남
+            at = step.get("at") or JUNCTION_Y       # With no at=, it ends at JUNCTION_Y.
             ay = int(at * FRAME_H)
             dashed_hline(dbg, ay, C_AT, thick=2)
             chip(dbg, f"END @{at:g}", FRAME_W - 90, ay - 22, C_AT, 0.38)
 
-        # 차 위치(아래 가운데)와 지금 조향 방향 화살표
+        # Car position (bottom center) and an arrow for the current steering direction.
         cx0, by = int(FRAME_W * CAMERA_X), FRAME_H - 6
         a = np.radians(steering.angle * 1.6)
         tip = (int(cx0 + 70 * np.sin(a)), int(by - 70 * np.cos(a)))
         cv2.arrowedLine(dbg, (cx0, by), tip, (20, 20, 20), 7, cv2.LINE_AA, tipLength=0.3)
         cv2.arrowedLine(dbg, (cx0, by), tip, (255, 255, 255), 3, cv2.LINE_AA, tipLength=0.3)
 
-        # 가운데 위 큰 알림 (가장 중요한 하나만)
+        # One large notice at the top center, only the most important.
         lost = self.det is None
         banner = None
         if step is None or step["do"] == "finish" or self.done:
@@ -1355,7 +1407,7 @@ class Driver:
             cv2.addWeighted(over, 0.8, dbg, 0.2, 0, dbg)
             cv2.putText(dbg, banner[0], (x + 12, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
-        # ---- 오른쪽 패널 ----
+        # --- Right Panel ---
         W = self.PANEL_W
         p = np.full((FRAME_H, W, 3), 32, np.uint8)
         white, grey = (240, 240, 240), (150, 150, 150)
@@ -1372,7 +1424,7 @@ class Driver:
                 mx = 12 + int((W - 24) * float(np.clip(mark, 0, 1)))
                 cv2.line(p, (mx, y + 3), (mx, y + 19), C_AT, 2)
 
-        # 지금 동작 / 다음 동작
+        # Current action / next action.
         idx, n = min(course.idx + 1, len(course.course)), len(course.course)
         text(f"STEP {idx}/{n}", 12, 24, 0.5, grey)
         el = now - course.step_start if course.step_start is not None else 0.0
@@ -1391,7 +1443,7 @@ class Driver:
         text("next: " + (self.step_text(nxt)[0] if nxt else "-"), 12, 134, 0.42, grey)
         cv2.line(p, (12, 146), (W - 12, 146), (70, 70, 70), 1)
 
-        # 속도 / 조향
+        # Speed / steering.
         slow = course.opt("slow")
         bar(168, "SPEED", self.speed / 0.6, f"{self.speed:.2f}", C_PATH if self.speed > 0 else (40, 40, 220),
             None if slow is None else slow / 0.6)
@@ -1406,8 +1458,8 @@ class Driver:
         cv2.line(p, (mid, 209), (mid, 225), white, 1)
         cv2.line(p, (12, 236), (W - 12, 236), (70, 70, 70), 1)
 
-        # 상태 표시 (켜진 것만 색)
-        on_light = course.local_light or self.light     # 빨간불이었던 자리를 다시 본 결과가 더 정확
+        # Status marks, colored only when on.
+        on_light = course.local_light or self.light     # Re-reading the spot that was red is more accurate.
         items = [("LANE", True, (60, 200, 60) if not lost else (40, 40, 220), "OK" if not lost else "LOST"),
                  ("JUNCTION", detect.junction_y is not None or detect.far_y is not None, C_JUNC, None),
                  ("CROSSWALK", detect.crosswalk_any, C_XWALK, None),
@@ -1424,7 +1476,7 @@ class Driver:
             cv2.putText(p, label, (x + 6, yy + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
                         (20, 20, 20) if dark else (white if on else grey), 1, cv2.LINE_AA)
 
-        # 아래: 흰 선 기준, fps
+        # Bottom: white-line threshold and fps.
         track = "white line" if LINE_COLOR == "white" else "black line"
         foot = f"{track}  thr {detect.thr:.0f} {'auto' if WHITE_THR is None else 'set'}"
         if fps:
@@ -1433,23 +1485,23 @@ class Driver:
         return np.hstack([dbg, p])
 
     def tick(self, frame, now, show=False):
-        """반환: (조향각 또는 None(유지), 모터 명령, 디버그 이미지)"""
+        """Return (steering angle, or None to hold, motor command, debug image)."""
         course, detect, steering = self.course, self.detect, self.steering
         if course.turning(now):
-            # 회전 중에는 차가 빠르게 돌아서 직전 프레임의 선 위치 기억이 오히려 틀림 → 매 프레임 새로 판단
+            # During a turn the car rotates quickly, so remembered line positions from the previous frame are wrong. Judge each frame fresh.
             detect.left, detect.right, detect.center = [None] * SLICES, [None] * SLICES, [None] * SLICES
-        det, junction, dbg = detect(frame, course.lane_side(now), draw=show)     # 화면을 안 보낼 땐 안 그림
+        det, junction, dbg = detect(frame, course.lane_side(now), draw=show)     # Skip drawing when the view is not being sent.
         step = course.step()
         detect.far_y = None
         if step is not None and step.get("slow") is not None and step["until"] == "junction":
-            detect.far_y = detect.far_hline(frame)      # 필요할 때만 계산 (fps 절약)
+            detect.far_y = detect.far_hline(frame)      # Compute only when needed (saves fps).
             if detect.far_y is not None and show:
                 dashed_hline(dbg, detect.far_y, C_JUNC, dash=6, gap=6)
                 chip(dbg, "JUNCTION AHEAD", FRAME_W - 130, detect.far_y - 20, C_JUNC, 0.38)
         light = self.traffic(frame) if course.needs_light() or show else None
         course.local_light = None
         if step is not None and step["do"] == "wait" and step["until"] == "green" and course.red_seen:
-            # 빨간불이었던 자리들 중 하나라도 초록으로 바뀌었는지 (다른 빨간 물체가 있어도 램프 자리는 바뀜)
+            # Whether any spot that was red has changed to green. The lamp spot still changes even if another red object is present.
             colors = [self.traffic.color_at(frame, box) for box in course.red_boxes]
             course.local_light = "green" if "green" in colors else ("red" if "red" in colors else None)
         course.update(junction, now, det, detect.crosswalk,
@@ -1465,58 +1517,74 @@ class Driver:
         base = self.approach_speed(base, now)
         kp, kh, smooth = STYLES[course.opt("style", "normal")]
         if det is not None:
-            # shift=+3: 차로 중앙보다 3cm 오른쪽을 따라감.
-            # offset은 '차로 중앙이 카메라보다 오른쪽에 있는 정도'라, 차가 오른쪽에 붙으려면 차로 중앙이 왼쪽(-)에
-            # 보여야 함 → 그 상태를 0으로 맞추도록 shift만큼 더함
+            # shift=+3: follow a line 3 cm to the right of the lane center.
+            # offset is how far the lane center is to the right of the camera, so the car must see the lane center on its left (negative) to sit on the right.
+            # Add shift so that state reads as zero.
             det = (det[0] + course.opt("shift", 0.0) * LANE_PX_PER_CM / (FRAME_W / 2), det[1])
-        # 차 바로 앞 횡단보도: 줄무늬 때문에 차선 인식이 흔들리므로 잠깐 지금 조향을 유지하며 통과
+        # Crosswalk just in front of the car: the stripes shake lane detection, so hold the current steering briefly and drive through.
         self.cw_since = (self.cw_since or now) if detect.crosswalk else None
         if self.cw_since is not None and now - self.cw_since < CROSSWALK_HOLD_MAX:
             lane = steering.angle
+        elif det is not None:
+            # Clip heading error for steering only. The raw det[1] was already used for the align and turn-end tests.
+            raw_h = det[1]
+            h = float(np.clip(raw_h, -HEADING_STEER_MAX, HEADING_STEER_MAX))
+            # While aligning, a large heading error such as a corner or hairpin is not steered into further. Only position is corrected a little.
+            hold_heading = (course.step() or {}).get("until") == "aligned" and abs(raw_h) > TURN_END_HEADING
+            if hold_heading:
+                h = 0.0
+            lane = steering.lane(det[0], h, now, kp, kh)
+            if hold_heading:
+                lane = float(np.clip(lane, -ALIGN_STEER_MAX, ALIGN_STEER_MAX))
+            # When a junction line is visible ahead, do not snap the steering toward a large position error.
+            now_step = course.step()
+            if (now_step and now_step["do"] == "follow" and now_step.get("until") == "junction"
+                    and (detect.junction_y is not None or detect.far_y is not None)):
+                lane = float(np.clip(lane, -APPROACH_STEER_MAX, APPROACH_STEER_MAX))
         else:
-            lane = steering.lane(*det, now, kp, kh) if det is not None else None
+            lane = None
         target = course.target(lane, now, steering.angle)
         steer = None
-        if target is None:      # follow 중 차선을 놓침: 직전 조향 유지 (LOST_HOLD초까지)
+        if target is None:      # Lane lost during follow: hold the previous steering, up to LOST_HOLD seconds.
             self.lost_since = self.lost_since if self.lost_since is not None else now
         else:
             self.lost_since = None
             limit = course.opt("steer", AUTO_STEER_MAX)
             steer = steering.output(float(np.clip(target, -limit, limit)), now, smooth)
         lost_long = self.lost_since is not None and now - self.lost_since > LOST_HOLD
-        # 매트 끝 정지: 차선이 보이는 동안이나 회전 중에는 안 함 (오감지로 서는 것 방지)
+        # Mat-edge stop is skipped while the lane is visible or during a turn, so a false hit does not stop the car.
         self.edge = detect.edge and det is None and not course.turning(now)
         if course.stopped(now) or lost_long or self.edge:
             speed = 0.0
         elif self.lost_since is not None:
-            speed = min(base, MIN_SPEED)     # 놓친 동안은 천천히
+            speed = min(base, MIN_SPEED)     # Creep while the lane is lost.
         elif course.following():
-            speed = speed_for(steering.angle, base)   # 차선 따라갈 때만 많이 꺾으면 감속
+            speed = speed_for(steering.angle, base)   # Slow for a large steer only while following the lane.
         else:
-            speed = base        # 회전/직진/커브는 지정한 속도 그대로
+            speed = base        # Turn, straight, and curve keep the speed that was set.
         if speed > 0 and self.lost_since is None and abs(steering.angle) > HARD_STEER:
-            speed += HARD_STEER_BOOST   # 많이 꺾으면 바퀴가 끌려 느려지므로 보충 (차선 놓친 동안은 제외)
+            speed += HARD_STEER_BOOST   # A large steer drags the wheels and slows the car, so add this back. Skipped while the lane is lost.
         if speed == 0:
             if self.speed > 0:
                 self.stopped_since = now
         elif self.speed == 0 and now - self.stopped_since >= KICK_AFTER_STOP:
-            self.kick_until = now + KICK_TIME   # 실제로 서 있다가 출발할 때만 킥
+            self.kick_until = now + KICK_TIME   # Kick only when actually starting after standing still.
         self.speed = speed
         cmd = KICK_SPEED if speed > 0 and now < self.kick_until else speed
         if cmd > 0:
-            # 바닥에서는 너무 낮은 모터값으로는 차가 서 버림 (특히 많이 꺾었을 때, 배터리가 약할 때) → 최소값까지 올림
+            # On the floor a motor command that is too low leaves the car stopped, especially at a large steer or on a weak battery, so raise it to the minimum.
             cmd = max(cmd, motor_floor(steering.angle))
         return steer, cmd, dbg
 
 
 def open_camera(locked=True):
-    """locked: calibrate.py가 저장한 고정 노출/화이트밸런스(CAMERA_LOCK)를 씀. False면 카메라 자동"""
+    """locked: use the fixed exposure and white balance saved by calibrate.py (CAMERA_LOCK). False leaves the camera automatic."""
     from libcamera import Transform, controls
     from picamera2 import Picamera2
 
     cam = Picamera2()
     cam.configure(cam.create_video_configuration(
-        main={"size": (FRAME_W, FRAME_H), "format": "RGB888"},   # OpenCV BGR 순서
+        main={"size": (FRAME_W, FRAME_H), "format": "RGB888"},   # OpenCV BGR order.
         sensor={"output_size": CAMERA_SENSOR},
         transform=Transform(hflip=HFLIP, vflip=VFLIP),
         controls={"FrameRate": CAMERA_FPS}))
@@ -1526,7 +1594,7 @@ def open_camera(locked=True):
     else:
         cam.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": LENS_POSITION})
     if locked and CAMERA_LOCK:
-        # 경기장 조명에서 잰 값으로 고정: 매트 반사나 사람 그림자에 밝기/색이 흔들리지 않게
+        # Lock the values measured under venue lighting so brightness and color do not swing with mat reflections or a person's shadow.
         cam.set_controls({"AeEnable": False, "AwbEnable": False,
                           "ExposureTime": int(CAMERA_LOCK["ExposureTime"]),
                           "AnalogueGain": float(CAMERA_LOCK["AnalogueGain"]),
@@ -1558,24 +1626,24 @@ def main():
         try:
             new = ast.literal_eval(val)
         except (ValueError, SyntaxError):
-            new = val       # "line" 같은 문자열
+            new = val       # A string such as "line".
         print(f"{key}: {globals()[key]} -> {new}")
         globals()[key] = new
 
-    # 백그라운드(&)로 시작하면 SIGINT가 무시된 채로 시작되므로 직접 다시 등록해야 Ctrl+C / kill -INT로 멈춤
+    # Started in the background with &, SIGINT is ignored, so register it again. Ctrl+C and kill -INT can then stop the process.
     signal.signal(signal.SIGINT, stop_on_signal)
     signal.signal(signal.SIGTERM, stop_on_signal)
-    signal.signal(signal.SIGHUP, signal.SIG_IGN)   # ssh가 끊겨도 계속 주행 (정지는 Ctrl+C / aicar stop)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)   # Keep driving if ssh drops. Stop with Ctrl+C or aicar stop.
 
     car = Car()
     try:
         from obstacle import Obstacle
         obs = Obstacle()
-    except Exception as e:      # 센서/모듈이 없어도 주행은 되게
+    except Exception as e:      # Driving still works if the sensor or module is missing.
         print(f"[경고] 장애물 센서 사용 안 함: {e}")
         obs = None
     if AUTO_TRIM:
-        car.load_bias()     # 이전 주행에서 배운 중앙 보정을 이어서 사용
+        car.load_bias()     # Continue with the center trim learned on a previous run.
     cam = open_camera()
     driver = Driver(COURSE, args.start, args.speed, obs)
     stream = None if args.no_stream else Stream(args.port, "AICAR 주행", legend=True)
@@ -1590,7 +1658,7 @@ def main():
         while True:
             frame = cam.capture_array()
             now = time.monotonic()
-            # 이번 프레임을 브라우저로 보낼지: 누가 보고 있을 때만, 2프레임에 한 번 (아무도 안 보면 그리기 비용 0)
+            # Send this frame to the browser only if someone is watching, and only every other frame. If nobody is watching, drawing costs nothing.
             show = stream is not None and stream.watching and frames % 2 == 0
             steer, cmd, dbg = driver.tick(frame, now, show)
             if driver.done:
@@ -1604,7 +1672,7 @@ def main():
             course, detect, steering, traffic = driver.course, driver.detect, driver.steering, driver.traffic
             det, junction, light, speed = driver.det, driver.junction, driver.light, driver.speed
 
-            # 자동 중앙 보정: 직선을 달리는데 계속 한쪽으로 꺾고 있다면 서보 중앙이 틀어진 것
+            # Auto center trim: if straight driving keeps steering to one side, the servo center is off.
             both = sum(l is not None and r is not None for l, r in zip(detect.left, detect.right))
             if (AUTO_TRIM and args.drive and speed > 0 and course.following() and det is not None
                     and both >= SLICES - 2 and abs(det[1]) < 0.05 and abs(steering.angle) < 8):

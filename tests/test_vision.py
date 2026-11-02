@@ -1,10 +1,10 @@
-"""합성 영상으로 인식/코스 로직을 점검 (녹화나 카메라 없이 맥이나 파이에서 실행)
+"""Check detection and course logic with synthetic images. Runs on a Mac or a Pi, with no recording and no camera.
 
-  aicar test-vision                       맥에서 (.venv 사용)
-  python tests/test_vision.py             직접 (pi/ 폴더를 찾아서 import)
+  aicar test-vision                       on a Mac (uses .venv)
+  python tests/test_vision.py             run it directly (locates the pi/ folder and imports it)
 
-설정값(LANE_WIDTH_PX, HORIZON_Y 등)이 바뀌어도 그 값으로 영상을 그려서 테스트하므로
-화각/트랙을 바꾼 뒤에도 그대로 쓸 수 있음. 실패가 하나라도 있으면 종료 코드 1
+Images are drawn from the current settings (LANE_WIDTH_PX, HORIZON_Y, and the rest),
+so the test still applies after the field of view or the track changes. Any failure exits with code 1.
 """
 import contextlib
 import io
@@ -32,7 +32,7 @@ def quiet():
     return contextlib.redirect_stdout(io.StringIO())
 
 
-# ---------------- 합성 영상 ----------------
+# --- Synthetic Images ---
 def lane_x(y, shift=0.0):
     w = lf.LANE_WIDTH_PX * (y - lf.HORIZON_Y) / (342 - lf.HORIZON_Y)
     cx = W * lf.CAMERA_X + shift
@@ -40,7 +40,7 @@ def lane_x(y, shift=0.0):
 
 
 def lane_frame(y_end=0, left=True, right=True, shift=0.0, bg=30, line=235, crosswalk=False):
-    """바닥(bg) 위 차선(line). y_end보다 위(먼 쪽)는 선이 없음 (= 끊김)"""
+    """Lane (line) on a floor (bg). Above y_end, the far side, there is no line, which is a gap."""
     rng = np.random.default_rng(0)
     img = np.clip(rng.normal(bg, 4, (H, W, 3)), 0, 255).astype(np.uint8)
     for y in range(max(y_end, int(H * lf.ROI_TOP) - 10), H):
@@ -92,7 +92,7 @@ def feed_img(course, img, frames, t):
     return t
 
 
-# ---------------- 테스트 ----------------
+# --- Tests ---
 def test_fast_math():
     print("[빠른 계산 = 원래 계산]")
     rng = np.random.default_rng(1)
@@ -132,22 +132,22 @@ def test_gap():
     def blank(img, y0, y1, x0=0, x1=W):
         img[y0:y1, x0:x1] = np.clip(np.random.default_rng(3).normal(30, 4, (y1 - y0, x1 - x0, 3)), 0, 255)
         return img
-    y4 = H - 5 * band_h                          # 아래에서 5번째 띠(4번) 영역만 비움 → 위(5번 띠)에서 선이 다시 보임
+    y4 = H - 5 * band_h                          # Clear only band 4, the fifth from the bottom, so the line resumes in band 5 above it.
     d6, _ = run_detector(blank(lane_frame(), y4, y4 + band_h))
     check("짧은 끊김(빈 띠 1개, 위에서 선이 다시 보임) → gap", d6.gap_y is not None, f"gap_y={d6.gap_y}")
     img = lane_frame()
-    blank(img, H - 4 * band_h, H - 2 * band_h, W // 2, W)     # 오른쪽 선이 먼저 끊김
-    blank(img, H - 4 * band_h, H - 3 * band_h, 0, W // 2)     # 왼쪽 선은 한 띠 늦게 끊김
+    blank(img, H - 4 * band_h, H - 2 * band_h, W // 2, W)     # The right line ends first.
+    blank(img, H - 4 * band_h, H - 3 * band_h, 0, W // 2)     # The left line ends one band later.
     d7, _ = run_detector(img)
     check("양쪽 선이 끊기는 위치가 어긋나도 gap", d7.gap_y is not None, f"gap_y={d7.gap_y}")
     d8, _ = run_detector(blank(lane_frame(), int(H * lf.ROI_TOP), int(H * lf.ROI_TOP) + band_h))
     check("맨 위 띠 하나만 빔(먼 선이 흐림) → gap 아님", d8.gap_y is None, f"why={d8.gap_why}")
     img = lane_frame(y_end=250)
-    img[int(H * 0.82):, W // 2:] = 30           # 가까운 오른쪽 선이 화면 아래에서 잘려 안 보임
+    img[int(H * 0.82):, W // 2:] = 30           # The near right line is cut off at the bottom of the frame and is not visible.
     d4, _ = run_detector(img)
     check("가까운 선 하나가 화면 밖으로 잘려도 끊기기 직전에 양쪽이 보이면 gap", d4.gap_y is not None,
           f"gap_y={d4.gap_y}")
-    img = lane_frame(y_end=0, bg=200, line=20)  # 나무 바닥(밝음) + 검은 테이프, 아래 모서리만 어두움(비네팅)
+    img = lane_frame(y_end=0, bg=200, line=20)  # Bright wood floor plus black tape. Only the bottom corners are dark from vignetting.
     yy, xx = np.mgrid[0:H, 0:W]
     shade = (1 - 0.35 * (((xx - W / 2) / (W / 2)) ** 2 + ((yy - H) / H) ** 2)).clip(0.6, 1)
     img = (img * shade[..., None]).astype(np.uint8)
@@ -159,8 +159,8 @@ def test_gap():
 def test_mat_mask():
     print("[매트 마스크]")
     img = lane_frame(y_end=0, bg=25, line=235)
-    img[:, :int(W * 0.12)] = 170                # 왼쪽은 나무 테두리 (매트 밖)
-    cv2.line(img, (int(W * 0.06), int(H * 0.45)), (int(W * 0.06), H), (250, 250, 250), 8)   # 테두리 위 흰 것
+    img[:, :int(W * 0.12)] = 170                # The left side is a wooden border, outside the mat.
+    cv2.line(img, (int(W * 0.06), int(H * 0.45)), (int(W * 0.06), H), (250, 250, 250), 8)   # Something white on that border.
     d, det = run_detector(img)
     top = int(H * lf.ROI_TOP)
     mask = d.line_mask(img[top:])
@@ -215,7 +215,7 @@ def test_course_logic():
 
     with quiet():
         c = lf.CourseRunner([straight(until="lane", max_sec=30), finish()])
-        for near, n in ((True, 5), (False, 20)):     # 끊긴 구간 위: 너머 차선은 위쪽에 계속 보이지만 바로 앞 선이 없음
+        for near, n in ((True, 5), (False, 20)):     # Over a gap the lane beyond stays visible higher up, but there is no line just ahead.
             for _ in range(n):
                 c.update(False, t, (0.0, 0.0), False, {"near": near}); t += 0.05
     check("끊긴 구간 위(바로 앞 선 없음)에서는 직진 계속", c.idx == 0)
@@ -267,7 +267,7 @@ def test_course_logic():
 def test_calibration():
     print("[자동 캘리브레이션 계산]")
     import calibrate as cal
-    true_w, true_h, true_shift = 430.0, 70.0, 12.0      # 지금 설정과 다른 '실제' 트랙
+    true_w, true_h, true_shift = 430.0, 70.0, 12.0      # A real track that differs from the current settings.
 
     def frame(bg, line):
         rng = np.random.default_rng(2)
@@ -297,7 +297,7 @@ def test_calibration():
         lf.LINE_COLOR = old
     check("흰 바닥/검은 선에서도 같은 측정", isinstance(geo_b, dict) and abs(geo_b["lane_width_px"] - true_w) < 8,
           geo_b["lane_width_px"] if isinstance(geo_b, dict) else geo_b)
-    # 파이에서 실제로 잰 렌즈 위치별 선명도 (먼 / 가운데 / 가까운): 가까운 쪽에 비중을 둔 4.5가 골라져야 함
+    # Sharpness measured on the Pi at each lens position (far, middle, near). The near-weighted choice must be 4.5.
     table = {1.5: [349, 159, 92], 3.0: [506, 356, 216], 3.75: [495, 447, 319], 4.5: [408, 462, 418],
              5.25: [305, 388, 467], 6.0: [217, 292, 445], 7.5: [111, 133, 277]}
     check("초점: 차선 영역(가까운 쪽 비중) 기준으로 고름", cal.best_focus(table) == 4.5, cal.best_focus(table))
@@ -318,7 +318,7 @@ def test_motor():
     check("아주 느린 명령(0.1)도 최소값 이상으로 보냄", min(c for c in cmds if c > 0) >= lf.MOTOR_MIN - 1e-9,
           f"최소 {min(c for c in cmds if c > 0):.2f}")
     a = cm.small_gray(lane_frame())
-    b = cm.small_gray(np.roll(lane_frame(), 25, axis=0))     # 차가 몇 cm 움직이면 화면이 밀림
+    b = cm.small_gray(np.roll(lane_frame(), 25, axis=0))     # A few centimeters of car motion shifts the image.
     noise = cm.frame_diff(a, cm.small_gray(lane_frame()))
     check("가만히 있으면 '움직임' 아님", noise <= cm.moved_threshold(noise), f"{noise:.1f}")
     check("화면이 밀리면 '움직임'", cm.frame_diff(a, b) > cm.moved_threshold(noise), f"{cm.frame_diff(a, b):.1f}")
@@ -329,49 +329,49 @@ def test_turn_align_stop():
     import course as cs
     with quiet():
         c = lf.CourseRunner([cs.tr(stop_sec=1.0), finish()])
-        t = feed(c, 12, 0.0, det=None)                  # 도는 중: 차선 안 보임 (0.6초)
-        t = feed(c, lf.TURN_CLEAR_FRAMES, t, det=(0.3, 0.3))     # 새 차선이 비스듬히 잡힘
+        t = feed(c, 22, 0.0, det=None)                  # Still no lane after the 1 second blind period, so counting starts after that.
+        t = feed(c, lf.TURN_END_FRAMES, t, det=(0.3, 0.3))       # New lane: both position and heading match.
     check("새 차선이 잡히면 3초를 안 채우고 회전 끝", c.idx == 1 and t < 3.0, f"{t:.2f}초, 동작 {c.idx + 1}")
     with quiet():
-        t = feed(c, 10, t, det=(0.3, 0.2))              # 아직 덜 정렬됨
+        t = feed(c, 10, t, det=(0.3, 0.2))              # Still not aligned enough.
     check("덜 정렬되면 계속 차선 따라감", c.idx == 1 and not c.stopped(t))
     with quiet():
-        t = feed(c, lf.ALIGN_FRAMES, t, det=(0.05, 0.03))       # 차로 가운데, 똑바로
+        t = feed(c, lf.ALIGN_FRAMES, t, det=(0.05, 0.03))       # Lane center, pointed straight.
     check("정렬되면 그 자리에서 정지", c.idx == 2 and c.stopped(t), c.status(t))
     with quiet():
         t = feed(c, 25, t, det=(0.05, 0.03))
     check("정지 시간(1초) 뒤 다음 동작", c.idx == 3 or c.done, f"동작 {c.idx + 1}")
     with quiet():
         c = lf.CourseRunner([cs.tr(), finish()])
-        t = feed(c, 70, 0.0, det=None)                  # 끝내 차선을 못 찾음
+        t = feed(c, 70, 0.0, det=None)                  # The lane is never found.
     check("차선을 못 찾으면 3초 안전장치로 회전 끝", c.idx >= 1, f"{t:.1f}초, 동작 {c.idx + 1}")
     check("tl(0): 정지 없이 회전 → 정렬만", [s["do"] for s in cs._flat(cs.tl(0))] == ["left", "follow"])
 
-    with quiet():   # 회전 중 남은 차선이 비스듬히 가로질러 '가로선'으로 잡혀도 새 차선이면 회전 끝
+    with quiet():   # A leftover lane crossing at an angle during a turn may look like a horizontal line, but a new lane still ends the turn.
         c = lf.CourseRunner([cs.tl(0), finish()])
         t = 0.0
-        for _ in range(12):
-            c.update(False, t, None, False, {}); t += 0.05          # 도는 중: 차선 놓침
-        for _ in range(lf.TURN_CLEAR_FRAMES + 1):
-            c.update(True, t, (0.1, -0.3), False, {"near": True}); t += 0.05   # 교차로처럼 보이지만 새 차선
+        for _ in range(22):
+            c.update(False, t, None, False, {}); t += 0.05          # The lane stays lost until the 1 second blind period ends.
+        for _ in range(lf.TURN_END_FRAMES):
+            c.update(True, t, (0.1, -0.3), False, {"near": True}); t += 0.05   # It looks like a junction, but it is a new lane.
     check("회전: 가로선(교차로)으로 보여도 새 차선이 잡히면 끝", c.idx == 1, f"{t:.2f}초, 동작 {c.idx + 1}")
-    with quiet():   # 회전 시작 순간 보이던(돌기 전) 차선으로는 끝나지 않음
+    with quiet():   # The lane already visible at the start of the turn, before the car turns, must not end the turn.
         c = lf.CourseRunner([cs.tr(0), finish()])
         t = feed(c, 30, 0.0, det=(0.05, 0.05))
     check("회전: 돌기 전부터 보이던 차선으로는 안 끝남", c.idx == 0)
-    with quiet():   # 이전 동작 동안 계속 보이던 끊김으로 다음 동작이 시작하자마자 끝나지 않음
+    with quiet():   # A gap that stayed visible during the previous action must not end the next action the moment it starts.
         c = lf.CourseRunner([stop(1.0), follow(until="gap", max_sec=30), finish()])
-        t = feed(c, 5, 0.0)                           # 처음엔 끊김 없음
-        t = feed(c, 16, t, gap=int(H * 0.8))          # 정지 중에 (가짜) 끊김이 보이기 시작 → 1초에 정지가 끝남
+        t = feed(c, 5, 0.0)                           # No gap at first.
+        t = feed(c, 16, t, gap=int(H * 0.8))          # A fake gap appears during the stop, and the stop ends at 1 second.
         started = c.idx
-        t = feed(c, 2, t, gap=int(H * 0.8))           # 새 동작에서 2프레임째
+        t = feed(c, 2, t, gap=int(H * 0.8))           # Second frame of the new action.
     check("이전 동작의 감지로 즉시 끝나지 않음 (새 동작에서 다시 3프레임)", started == 1 and c.idx == 1,
           f"동작 {c.idx + 1}")
     with quiet():
         feed(c, 1, t, gap=int(H * 0.8))
     check("새 동작에서 3프레임 계속 보이면 끝", c.idx == 2)
     old = lf.GAP_MAX_HEADING
-    lf.GAP_MAX_HEADING = -1.0       # 방향 오차가 아무리 작아도 '어긋남'으로 보게 해서 확인
+    lf.GAP_MAX_HEADING = -1.0       # Treat even a tiny heading error as misalignment, so the guard can be checked.
     try:
         d9, _ = run_detector(lane_frame(y_end=250))
     finally:

@@ -1,9 +1,9 @@
-"""차선 끊김(gap) 진단: 모터 없이, 차를 손으로 끊긴 구간 쪽으로 천천히 밀면서 실행
+"""Log why a lane gap is or is not detected. Motors stay off. Push the car slowly toward a gap.
 
-  python gap_probe.py            20초 동안 프레임마다 끊김 위치(화면 비율)나 아닌 이유를 기록
-  python gap_probe.py 30         30초
+  python gap_probe.py            Record for 20 seconds.
+  python gap_probe.py 30         Record for 30 seconds.
 
-결과는 화면에 요약하고 gap_probe.csv에 프레임별로 저장 (맥에서 aicar gap-probe로 실행하면 받아 옴)
+Prints a summary and writes gap_probe.csv. `aicar gap-probe` copies it to the Mac.
 """
 import csv
 import sys
@@ -36,7 +36,7 @@ def main():
     print(f"프레임 {len(rows)}개 중 끊김 감지 {sum(gaps.values())}개")
     print("  감지된 위치(화면 비율 → at= 값과 비교):", dict(sorted(gaps.items())))
     print("  감지 안 된 이유:", dict(whys.most_common(6)))
-    # 시간 순서로 위치가 어떻게 바뀌었는지 (0.5초 단위)
+    # How the detected position moved, sampled across the recording.
     print("  시간별:", "  ".join(
         f"{t:.1f}s:{p if p is not None else '-'}" for t, p, _, _ in rows[::max(1, len(rows) // 40)]))
 

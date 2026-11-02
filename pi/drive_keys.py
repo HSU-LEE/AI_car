@@ -1,12 +1,12 @@
-"""키보드로 직접 운전
+"""Keyboard drive.
 
-  w / s     속도 +0.1 / -0.1 (음수 = 후진)
-  a / d     조향 5도씩 왼쪽 / 오른쪽
-  스페이스  정지 (속도 0)
-  c         조향 중앙
-  q         종료
+  w / s     Speed +0.1 / -0.1 (negative = reverse)
+  a / d     Steer 5 degrees left / right
+  space     Stop (speed 0)
+  c         Center the steering
+  q         Quit
 
-조향은 car.py의 STEER_LIMIT, 중앙 보정(calib.json)이 그대로 적용된다.
+Steering uses car.py STEER_LIMIT and the center trim in calib.json.
 """
 import argparse
 import select
@@ -17,7 +17,7 @@ import tty
 
 from car import STEER_LIMIT, Car
 
-KICK_SPEED, KICK_TIME = 0.6, 0.25   # lane_follow.py와 같은 출발 킥 (낮은 속도에서는 모터가 안 돌기 때문)
+KICK_SPEED, KICK_TIME = 0.6, 0.25   # Same launch kick as lane_follow.py. Low speeds do not turn the motor.
 
 
 def main():

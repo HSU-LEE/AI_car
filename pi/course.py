@@ -1,31 +1,23 @@
 
 
-# < 속도 조정 >
-
 SPEED = 0.375
 
-
-
-
-
-
-
-
-# at= 값은 넓은 화각(센서 전체, 약 66도) 기준. 예전 좁은 화각 값 f는 0.5 + (f - 0.5) / 1.5 로 환산
-#   (예: 0.85 → 0.73, 0.75 → 0.67, 0.7 → 0.63, 0.65 → 0.6). 0.8보다 크면 예전 화면보다 더 가까운 바닥을 봄
+# --- 동작이 받을 수 있는 값 ---
 EVENTS = ("junction", "crosswalk", "lane", "gap", "green", "obstacle", "clear", "lost", "aligned", None)
 SIDES = ("left", "right", "center", None)
 STYLES = ("soft", "normal", "sharp", None)
-OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow")
+OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow", "blind_sec")
 
 
 def _hint(word, choices):
+    """잘못된 이름과 가장 가까운 선택지를 안내 문구로 돌려준다."""
     import difflib
     near = difflib.get_close_matches(str(word), [str(c) for c in choices if c is not None], 1)
     return f' → "{near[0]}" 말인가요?' if near else ""
 
 
 def _step(do, angle, sec, until, **opt):
+    """동작 하나를 검사해서 코스가 실행할 값으로 만든다."""
     for k in opt:
         if k not in OPTIONS:
             raise ValueError(f"{do}(): 옵션 {k}= 는 없음{_hint(k, OPTIONS)} (쓸 수 있는 옵션: {', '.join(OPTIONS)})")
@@ -50,142 +42,146 @@ def _step(do, angle, sec, until, **opt):
     return {"do": do, "angle": angle, "sec": sec, "until": until,
             "min": opt.get("min_sec", 0.0), "max": opt.get("max_sec"), "speed": opt.get("speed"),
             "at": at, "hold": opt.get("hold_sec", 0.0), "side": opt.get("side"), "shift": shift,
-            "steer": opt.get("steer"), "style": opt.get("style"), "slow": opt.get("slow")}
+            "steer": opt.get("steer"), "style": opt.get("style"), "slow": opt.get("slow"),
+            "blind": opt.get("blind_sec") or 0.0}
 
 
-def follow(sec=None, until="junction", **opt):
-    return _step("follow", 0.0, sec, until, **opt)
+def follow(sec=None, until="junction", speed=0.225, **opt):
+    """차선을 따라가다가 until 조건이 되면 끝낸다."""
+    return _step("follow", 0.0, sec, until, speed=speed, **opt)
 
 
-def straight(sec=None, until=None, angle=0, **opt):
+def straight(sec=None, until=None, angle="hold", speed=None, **opt):
+    """시작 순간의 조향각을 유지한 채 직진하고, 0이면 정면으로 간다."""
     if not (angle == "hold" or isinstance(angle, (int, float))):
         raise ValueError('straight(): angle은 숫자 또는 "hold"')
-    return _step("straight", angle, sec, until, **opt)
+    return _step("straight", angle, sec, until, speed=speed, **opt)
 
 
-def right(sec=None, angle=None, until="lane", **opt):
-    """우회전. angle을 안 쓰면 차가 꺾을 수 있는 최대 각도 (lane_follow.py AUTO_STEER_MAX)"""
+def right(sec=None, angle=None, until="lane", speed=None, **opt):
+    """새 차선이 잡힐 때까지 오른쪽으로 꺾는다."""
     opt.setdefault("min_sec", 0.5)
     opt.setdefault("max_sec", 3.0)
-    return _step("right", None if angle is None else abs(angle), sec, until, **opt)
+    return _step("right", None if angle is None else abs(angle), sec, until, speed=speed, **opt)
 
 
-def left(sec=None, angle=None, until="lane", **opt):
-    """좌회전. angle을 안 쓰면 차가 꺾을 수 있는 최대 각도"""
+def left(sec=None, angle=None, until="lane", speed=None, **opt):
+    """새 차선이 잡힐 때까지 왼쪽으로 꺾는다."""
     opt.setdefault("min_sec", 0.5)
     opt.setdefault("max_sec", 3.0)
-    return _step("left", None if angle is None else -abs(angle), sec, until, **opt)
+    return _step("left", None if angle is None else -abs(angle), sec, until, speed=speed, **opt)
 
 
 def turn(direction, **opt):
-    """turn("right") = right(), turn("left") = left(). 묶음 안에서 방향을 변수로 받을 때 편함"""
+    """방향을 변수로 받아 좌회전이나 우회전을 만든다."""
     if direction not in ("left", "right"):
         raise ValueError(f'turn(): 방향은 "left" / "right"{_hint(direction, ("left", "right"))}')
     return (right if direction == "right" else left)(**opt)
 
 
-def curve(angle, sec=None, until=None, **opt):
-    return _step("curve", angle, sec, until, **opt)
+def curve(angle, sec=None, until=None, speed=None, **opt):
+    """지정 각도로 돌면서 차선 추종을 섞는다."""
+    return _step("curve", angle, sec, until, speed=speed, **opt)
 
 
-def stop(sec):
-    return _step("stop", 0.0, sec, None, speed=0.0)
+def stop(sec, speed=0.0):
+    """그 자리에서 지정한 시간만큼 선다."""
+    return _step("stop", 0.0, sec, None, speed=speed)
 
 
-def wait_green(max_sec=10, min_sec=0.0):
-    """정지한 채로 신호등이 빨강 → 초록으로 바뀌면 끝 → 다음 동작으로 출발.
-    빨간불을 3프레임 연속 본 뒤, 그 빨간 램프 근처에서 초록불이 3프레임 연속 보여야 함 (JUNCTION_FRAMES).
-    처음부터 보이던 초록 물체나, 다른 곳에 있는 초록 물체로는 출발하지 않음.
-    max_sec: 신호 인식이 실패해도 이 시간이 지나면 출발 (로봇 정지 판정 방지)"""
-    return _step("wait", 0.0, None, "green", min_sec=min_sec, max_sec=max_sec, speed=0.0)
+def wait_green(max_sec=10, min_sec=0.0, speed=0.0):
+    """선 채로 신호등이 빨강에서 초록으로 바뀌면 출발한다."""
+    return _step("wait", 0.0, None, "green", min_sec=min_sec, max_sec=max_sec, speed=speed)
 
 
-def wait(sec=None, until="clear", min_sec=0.0, max_sec=None, hold_sec=0.0):
-    """정지한 채로 기다림. 기본은 앞 장애물이 없어질 때까지.
-    until="obstacle"이면 물체가 나타날 때까지, sec를 주면 그 시간만큼.
-    hold_sec: 그 상태가 이 시간(초) 동안 끊김 없이 계속되어야 끝 (중간에 바뀌면 처음부터 다시 셈)
-    max_sec: 센서가 계속 같은 상태여도 이 시간이 지나면 다음 동작으로"""
-    return _step("wait", 0.0, sec, until, min_sec=min_sec, max_sec=max_sec, speed=0.0, hold_sec=hold_sec)
+def wait(sec=None, until="clear", min_sec=0.0, max_sec=None, hold_sec=0.0, speed=0.0):
+    """선 채로 앞 장애물이 없어질 때까지 기다린다."""
+    return _step("wait", 0.0, sec, until, min_sec=min_sec, max_sec=max_sec, speed=speed, hold_sec=hold_sec)
 
 
-def start_gate(hold_sec=1.0):
-    """출발 대기: 앞을 막고 있던 장애물이 치워진 상태가 hold_sec초 계속되면 출발"""
-    return wait(until="clear", hold_sec=hold_sec)
+def start_gate(hold_sec=1.0, speed=0.0):
+    """앞을 막던 장애물이 치워지면 출발한다."""
+    return wait(until="clear", hold_sec=hold_sec, speed=speed)
 
 
 def finish():
+    """코스를 끝내고 정지한다."""
     return _step("finish", 0.0, 0, None)
 
 
-def to_junction(at=None, slow=0.2):
-    """다음 교차로까지. at: 교차로 선 앞 얼마까지 (0.53 멀리 ~ 0.8 바로 앞)
-    slow: 교차로 선이 보이면 점점 줄여서 이 속도로 도착 (None이면 감속 안 함)"""
-    return follow(until="junction", speed=SPEED, at=at, slow=slow)
+def to_junction(at=None, slow=0.2, blind_sec=1.5, speed=SPEED):
+    """다음 교차로 선 앞까지 가서 끝낸다."""
+    return follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec)
 
 
-def to_crosswalk(at=None):  # 횡단보도까지. at: 횡단보도 앞 얼마까지 (0.53 멀리 ~ 0.8 바로 앞)
-    return follow(until="crosswalk", speed=SPEED, at=at)
+def to_crosswalk(at=None, speed=SPEED):
+    """횡단보도 앞까지 가서 끝낸다."""
+    return follow(until="crosswalk", speed=speed, at=at)
 
 
-def to_gap(at=None, speed=SPEED):  # 차선이 끊기는 곳까지. at: 끊기는 곳 앞 얼마까지 (0.6 일찍 ~ 0.8 바로 앞)
+def to_gap(at=None, speed=SPEED):
+    """차선이 끊기는 곳 앞까지 가서 끝낸다."""
     return follow(until="gap", speed=speed, at=at)
 
 
-def cross_gap(at=0.7, angle=0, speed=SPEED):     # 끊긴 구간 통과 → 다시 차선 따라감
-    # angle=0: 직선 위 끊김, angle="hold": 곡선 위 끊김 (들어갈 때 조향각 유지)
-    # max_sec=3은 차선을 끝내 못 찾을 때만 쓰는 안전장치. 보통은 새 차선이 잡혀서 끝남
+def to_end(at=0.5, slow=0.18, blind_sec=0.0, speed=SPEED):
+    """교차로가 아닌 바로 앞 끝 선 앞에서 끝낸다."""
+    return follow(until="gap", speed=speed, at=at, slow=slow, blind_sec=blind_sec)
+
+
+def cross_gap(at=0.7, angle=0, speed=SPEED):
+    """끊긴 구간을 지나 다시 차선을 따라간다."""
     return [to_gap(at, speed), straight(until="lane", angle=angle, max_sec=3, speed=speed)]
 
 
-def traffic(at=0.73, max_sec=10):   # 횡단보도 앞 정지 → 초록불에 출발
-    # signal이 아니라 traffic: lane_follow.py가 쓰는 signal 모듈과 헷갈리지 않게
-    return [to_crosswalk(at), wait_green(max_sec=max_sec)]
+def traffic(at=0.73, max_sec=10, speed=SPEED):
+    """횡단보도 앞에서 서서 초록불에 출발한다."""
+    return [to_crosswalk(at, speed=speed), wait_green(max_sec=max_sec)]
 
 
 def cross(at=0.67, speed=None):
-    """십자 교차로 직진 통과: 횡단보도(교차로 앞)까지 → 직진 → 건너편 차선이 잡히면 끝"""
+    """십자 교차로를 직진으로 건너 반대편 차선에서 끝낸다."""
     return [follow(until="crosswalk", at=at, speed=speed),
-            straight(until="lane", min_sec=0.8, max_sec=4, speed=speed)]
+            straight(until="lane", angle=0, min_sec=0.8, max_sec=4, speed=speed)]
 
 
 def corner(direction, at=0.6, speed=None, wide=0):
-    """ㄱ자 직각 코너: 앞을 가로막는 선까지 → 최대로 꺾어 회전 → 새 차선이 잡히면 끝
-    at: 클수록 늦게 꺾음 (0.6 기본, 차선 아래로 빠지면 줄이기 / 안쪽 모서리를 밟으면 키우기)
-    wide=3: 코너 전에 바깥쪽으로 3cm 붙어서 들어감"""
-    shift = wide if direction == "left" else -wide     # 좌회전이면 바깥 = 오른쪽(+)
+    """앞을 막는 선에서 직각으로 꺾고 새 차선이 잡히면 끝낸다."""
+    shift = wide if direction == "left" else -wide  # 좌회전의 바깥은 오른쪽.
     return [follow(until="junction", at=at, speed=speed, shift=shift or None),
             turn(direction, min_sec=0.5, max_sec=4, speed=speed)]
 
 
 def uturn(direction, speed=0.2):
-    """U자 급커브 (30cm 타일): 앞을 가로막는 바깥 선이 보이면 → 최대로 꺾어 돌기 → 새 차선이 잡히면 끝"""
+    """앞을 막는 선에서 급하게 돌아 새 차선이 잡히면 끝낸다."""
     return [follow(until="junction", speed=speed),
             turn(direction, min_sec=1.0, max_sec=5, speed=speed)]
 
 
-def tr(stop_sec=1.0):
-    """우회전: 새 차선이 잡힐 때까지 돌고(최대 3초) → 차로에 맞춰 정렬될 때까지만 조금 가고 → 그 자리에서 정지.
-    stop_sec: 정렬 뒤 멈춰 있는 시간(초). 0이면 멈추지 않고 바로 다음 동작"""
-    return _turn_align_stop(right, stop_sec)
+def tr(stop_sec=0.20, speed=None):
+    """우회전한 뒤 차로에 맞춰 정렬하고 선다."""
+    return _turn_align_stop(right, stop_sec, speed)
 
 
-def tl(stop_sec=1.0):
-    """좌회전: tr()과 같고 방향만 왼쪽"""
-    return _turn_align_stop(left, stop_sec)
+def tl(stop_sec=0.20, speed=None):
+    """좌회전한 뒤 차로에 맞춰 정렬하고 선다."""
+    return _turn_align_stop(left, stop_sec, speed)
 
 
-TURN_SPEED = 0.3      # tr()/tl() 회전 속도 (빠르면 반경이 커지고 과회전). 모터 최소값보다 낮으면 최소값으로 달림
-ALIGN_SPEED = 0.2     # 회전 뒤 정렬할 때 속도 (천천히 맞추고 멈춤)
+TURN_SPEED = 0.35  # tr()/tl() 이 speed 를 안 쓸 때 회전 속도.
+ALIGN_SPEED = 0.2  # tr()/tl() 이 speed 를 안 쓸 때 정렬 속도.
 
 
-def _turn_align_stop(turn_fn, stop_sec):
-    steps = [turn_fn(until="lane", angle=21, min_sec=0.5, max_sec=3, speed=TURN_SPEED),  # 3초는 차선을 못 찾을 때의 안전장치
-             # 천천히, 부드러운 조향으로 정렬. 못 하면 3초 뒤 그냥 넘어감
-             follow(until="aligned", max_sec=3, speed=ALIGN_SPEED, style="soft")]
+def _turn_align_stop(turn_fn, stop_sec, speed=None):
+    """회전 다음 정렬, 그다음 정지로 이어 붙인다."""
+    turn_speed = TURN_SPEED if speed is None else speed
+    align_speed = ALIGN_SPEED if speed is None else speed
+    steps = [turn_fn(until="lane", angle=21, min_sec=0.5, max_sec=3, speed=turn_speed, blind_sec=1.0),
+             follow(until="aligned", max_sec=3, speed=align_speed, style="soft")]
     return steps + [stop(stop_sec)] if stop_sec > 0 else steps
 
 def _flat(steps):
-    """묶음(리스트)을 펼쳐서 동작 하나하나의 목록으로. 묶음 안의 묶음도 펼침"""
+    """중첩된 동작 묶음을 한 줄 목록으로 펼친다."""
     out = []
     for s in steps:
         out.extend(_flat(s) if isinstance(s, list) else [s])
@@ -193,7 +189,7 @@ def _flat(steps):
 
 
 def describe(step):
-    """동작 하나를 사람이 읽는 문장으로"""
+    """동작 하나를 읽을 수 있는 문장으로 만든다."""
     names = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선", "gap": "차선 끊김",
              "green": "초록불", "lost": "차선 놓침", "obstacle": "장애물", "clear": "장애물 없어짐",
              "aligned": "정렬"}
@@ -205,46 +201,75 @@ def describe(step):
     elif step["until"]:
         parts.append(f"{names[step['until']]}까지" + (f"(화면 {step['at']})" if step["at"] else ""))
     for key, fmt in (("side", "{}쪽 선 기준"), ("shift", "{:+}cm 치우쳐"), ("steer", "최대 {}도"),
-                     ("style", "{}"), ("speed", "속도 {}"), ("slow", "→ {}까지 감속")):
-        if step.get(key) is not None and not (key == "speed" and step["do"] in ("stop", "wait")):
+                     ("style", "{}"), ("speed", "속도 {}"), ("slow", "→ {}까지 감속"),
+                     ("blind", "시작 {}초 감지 안 함")):
+        if step.get(key) is not None and not (key == "speed" and step["do"] in ("stop", "wait")) \
+                and not (key == "blind" and not step[key]):
             parts.append(fmt.format({"left": "왼", "right": "오른"}.get(step[key], step[key])))
     return " ".join(parts)
 
 
-# ↓↓↓ 여기를 코스에 맞게 수정 ↓↓↓
+# --- 코스 ---
 
 COURSE = _flat([
     cross_gap(0.85, speed=0.2),    
     to_junction(),
-    follow(1.5),
+    straight(0.5),
     tr(),
     to_junction(),
-    follow(1.5),
+    straight(1),
     tl(),
-    to_gap(0.75),
+    follow(3),
     finish(),
+
+ 
+
+
 ])
 
 if __name__ == "__main__":
     for i, step in enumerate(_flat(COURSE), 1):
         print(f"{i:2d}. {describe(step)}")
 
-"""
-    start_gate(1.0),                   
-    to_junction(),
-    tr(),
-    follow(5,speed=SPEED),
-    follow(until="crosswalk", at=0.63, max_sec=8.5, speed=SPEED, slow=0.2), 
-    wait_green(max_sec=10),    
-    stop(1),
-    straight(max_sec=4, speed=SPEED),  
-    to_junction(),
-    tr(),
-    to_junction(),
-    straight(max_sec=4, speed=SPEED),  
-    follow(until="junction", speed=SPEED, slow=0.2),
-    right(6, speed=0.35, angle=21),
-    to_junction(),
-    straight(max_sec=7, speed=SPEED),  
-    finish(),
-"""
+
+
+# --- 예시 코스 ---
+#
+# start_gate(1.0),
+# to_junction(),
+# tr(),
+# follow(5, speed=SPEED),
+# follow(until="crosswalk", at=0.63, max_sec=8.5, speed=SPEED, slow=0.2),
+# wait_green(max_sec=10),
+# stop(1),
+# straight(max_sec=4, speed=SPEED),
+# to_junction(),
+# tr(),
+# to_junction(),
+# straight(max_sec=4, speed=SPEED),
+# follow(until="junction", speed=SPEED, slow=0.2),
+# right(6, speed=0.35, angle=21),
+# to_junction(),
+# straight(max_sec=7, speed=SPEED),
+# finish(),
+#
+# to_end(speed=0.24),
+# straight(0.5),
+# tr(),
+# to_junction(),
+# straight(0.5),
+# tl(),
+# follow(3),
+# cross_gap(0.85, speed=0.2),
+# follow(2),
+# finish(),
+#
+# cross_gap(0.85, speed=0.2),
+# to_junction(),
+# straight(0.5),
+# tr(),
+# to_junction(),
+# straight(1),
+# tl(),
+# follow(3),
+# finish(),

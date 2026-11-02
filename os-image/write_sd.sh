@@ -1,5 +1,5 @@
 #!/bin/bash
-# AICAR 이미지를 128GB SD 카드에 씁니다. 이동식 128GB 디스크가 아니면 중단합니다.
+# Write the AICAR image to a 128 GB SD card. Stops unless the disk is removable and 128 GB.
 set -euo pipefail
 DISK=$(diskutil list physical | awk '/^\/dev\/disk/ {d=$1} /\*128\.0 GB/ {print d; exit}' | sed "s#/dev/##")
 [ -n "$DISK" ] || { echo "중단: 128GB SD 카드를 찾지 못했습니다"; exit 1; }

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 흰 선 인식 기준 맞추기 (브라우저 보며 w/s, Enter 저장)
+# Set the white-line threshold while watching the browser. w/s adjust, Enter saves.
 source "$(dirname "$0")/Commands/_common.sh"
 
 $A tune-white

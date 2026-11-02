@@ -1,5 +1,5 @@
 #!/bin/bash
-# 차선 인식 + 조향만, 모터 꺼짐 (손으로 밀며 확인)
+# Lane detection and steering only. The motor stays off. Push the car by hand.
 source "$(dirname "$0")/../_common.sh"
 
 $A view

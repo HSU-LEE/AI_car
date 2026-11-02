@@ -1,5 +1,5 @@
 #!/bin/bash
-# 조향 + 전진/후진 한 번에 테스트
+# Test steering, then forward and reverse.
 source "$(dirname "$0")/../_common.sh"
 
 $A test

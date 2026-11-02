@@ -1,5 +1,5 @@
 #!/bin/bash
-# 주행 설정(lane_follow.py) 편집
+# Edit drive settings in lane_follow.py.
 source "$(dirname "$0")/../_common.sh"
 
 $A set

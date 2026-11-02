@@ -1,5 +1,5 @@
 #!/bin/bash
-# 카메라 원본 + 인식 화면 보기 (모터 안 움직임, Ctrl+C 종료)
+# Raw camera plus the detection view. The motor does not move. Ctrl+C to stop.
 source "$(dirname "$0")/../_common.sh"
 
 $A camera

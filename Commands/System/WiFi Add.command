@@ -1,5 +1,5 @@
 #!/bin/bash
-# 파이 USB 랜카드를 새 와이파이에 등록
+# Save a new Wi-Fi network on the Pi USB adapter.
 source "$(dirname "$0")/../_common.sh"
 
 $A wifi

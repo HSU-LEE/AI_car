@@ -1,14 +1,14 @@
 #!/bin/bash
-# 더블클릭하면 열리는 AICAR 메뉴. 실제 동작은 모두 같은 폴더의 aicar 명령이 합니다.
+# Double-click menu. Every action is the `aicar` command in this folder.
 cd "$(dirname "$0")" || exit 1
 A=./aicar
 STATE=.aicar
 
 B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; R=$'\033[31m'; Y=$'\033[33m'; C=$'\033[36m'; N=$'\033[0m'
 
-ask() { read -r -p "  $1" REPLY || return 1; echo "$REPLY"; }   # 입력이 끝나면(창 닫힘) 실패
+ask() { read -r -p "  $1" REPLY || return 1; echo "$REPLY"; }   # Fail when input ends because the window closed.
 
-# ---------------- 상태 줄 ----------------
+# --- Status line ---
 pi_status() {
     local h state
     h=$(cat "$STATE/host" 2>/dev/null)
@@ -40,8 +40,8 @@ section() { echo "  ${D}$1${N}"; }
 
 pause() { echo; read -r -p "  ${D}엔터를 누르면 돌아갑니다...${N}" _; }
 
-# ---------------- 하위 메뉴 ----------------
-# 형식: "키|이름|실행할 명령". 키 s는 어디서나 정지
+# --- Submenus ---
+# Form: "key|label|command". Key s stops from anywhere.
 submenu() {
     local title="$1"; shift
     local entries=("$@") e key label cmd n
@@ -84,10 +84,10 @@ menu_manual() {
 
 menu_auto() {
     submenu "자율주행" \
-        '1|자율주행 시작|s=$(ask "속도 (엔터 = 기본값): "); $A go $s' \
-        '2|자율주행 + 녹화|s=$(ask "속도 (엔터 = 기본값): "); $A go $s --record' \
-        '3|코스 N번 동작부터 시작|k=$(ask "몇 번 동작부터: "); s=$(ask "속도 (엔터 = 기본값): "); $A go $s --start "$k"' \
-        '4|설정 바꿔서 한 번만 주행 (예: KP=1.8)|v=$(ask "KEY=값 (여러 개는 띄어쓰기): "); s=$(ask "속도 (엔터 = 기본값): "); $A go $s --set $v' \
+        '1|자율주행 시작|$A go' \
+        '2|자율주행 + 녹화|$A go --record' \
+        '3|코스 N번 동작부터 시작|k=$(ask "몇 번 동작부터: "); $A go --start "$k"' \
+        '4|설정 바꿔서 한 번만 주행 (예: KP=1.8)|v=$(ask "KEY=값 (여러 개는 띄어쓰기): "); $A go --set $v' \
         '-' \
         '5|인식만 보기 (모터 꺼짐, 손으로 밀며 확인)|$A view' \
         '6|주행 화면 다시 보기 (연결 끊긴 뒤)|$A log' \
@@ -138,7 +138,7 @@ menu_system() {
         '0|파이 끄기 (전원 뽑기 전에)|y=$(ask "파이를 끌까요? [y/N] "); [ "$y" = y ] && $A shutdown'
 }
 
-# ---------------- 메인 화면 ----------------
+# --- Main screen ---
 while true; do
     header
     section "빠른 실행"
@@ -159,7 +159,7 @@ while true; do
     echo
     n=$(ask "선택 › ") || exit 0
     case "$n" in
-        g|G) echo; s=$(ask "속도 (엔터 = 기본값): "); $A go $s; pause ;;
+        g|G) echo; $A go; pause ;;
         s|S) echo; $A stop; pause ;;
         c|C) echo; $A camera; pause ;;
         u|U) echo; $A push; pause ;;

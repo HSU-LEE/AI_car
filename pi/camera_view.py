@@ -1,10 +1,10 @@
-"""카메라 원본 화면 + 차선 인식 화면을 나란히 브라우저로 보기 (모터/서보는 움직이지 않음)
+"""Show the raw camera and the lane view side by side. Motors and servo stay off.
 
-  python camera_view.py             맥 브라우저에서 http://<파이 IP>:8000
+  python camera_view.py             Open http://<pi-ip>:8000
   python camera_view.py --port 8001
 
-왼쪽: 카메라 원본 / 오른쪽: lane_follow.py가 보는 인식 결과와 그때 줄 조향각
-Ctrl+C로 종료
+Left: raw frame. Right: what lane_follow.py sees, and the steer it would command.
+Ctrl+C to stop.
 """
 import argparse
 import time
@@ -39,7 +39,7 @@ def main():
                 state = "LOST"
             else:
                 state = f"off {det[0]:+.2f} head {det[1]:+.2f}  steer {steering(*det, now):+.1f}"
-            # 선이 보이는 위치(화면 높이 비율) = course.py at= 에 넣을 값
+            # Line position as a fraction of frame height. That number is course.py at=.
             if detect.junction_y is not None:
                 state += f"  JUNCTION {detect.junction_y / lf.FRAME_H:.2f}"
             if detect.crosswalk_y is not None:

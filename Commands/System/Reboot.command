@@ -1,5 +1,5 @@
 #!/bin/bash
-# 파이 재부팅
+# Reboot the Pi.
 source "$(dirname "$0")/../_common.sh"
 
 $A reboot

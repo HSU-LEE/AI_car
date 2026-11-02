@@ -1,5 +1,5 @@
 #!/bin/bash
-# 파이에서 직접 고친 코드를 맥으로 가져오기
+# Copy code edited on the Pi back to the Mac.
 source "$(dirname "$0")/../_common.sh"
 
 $A pull-code

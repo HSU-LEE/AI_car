@@ -1,5 +1,5 @@
 #!/bin/bash
-# 파이 파이썬 환경 점검
+# Check the Python environment on the Pi.
 source "$(dirname "$0")/../_common.sh"
 
 $A check

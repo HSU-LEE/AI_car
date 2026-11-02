@@ -1,9 +1,10 @@
 #!/bin/bash
-# 실행 중인 주행/조작 프로그램을 모두 멈추고 모터를 끈다 (aicar stop, 자율주행 중 Ctrl+C에서 사용)
+# Stop every running drive or manual-control program and turn the motor off.
+# Used by `aicar stop` and by Ctrl+C during autonomous driving.
 cd ~/aicar || exit 1
 
 find_pids() {
-    # 실제 python 프로세스만 고름. pgrep -f는 이 스크립트를 부른 셸의 명령줄까지 잡아서 쓰지 않음
+    # Real python processes only. `pgrep -f` also matches the shell that launched this script.
     ps -eo pid=,comm=,args= |
         awk '$2 ~ /^python/ && /(lane_follow|drive_keys|tune_center|tune_white|tune_light|camera_view|calibrate|calibrate_motor|gap_probe|car)\.py/ {print $1}'
 }
@@ -13,7 +14,7 @@ if [ -z "$pids" ]; then
     echo "실행 중인 주행 없음"
 else
     kill -TERM $pids 2>/dev/null
-    for _ in $(seq 25); do      # 최대 5초 동안 정상 종료(모터 정지, 녹화 저장)를 기다림
+    for _ in $(seq 25); do      # Wait up to 5s for a clean exit (motor off, recording saved).
         [ -z "$(find_pids)" ] && break
         sleep 0.2
     done
@@ -26,7 +27,7 @@ else
     echo "주행 프로그램 종료"
 fi
 
-# 강제 종료됐을 때도 모터가 확실히 꺼지도록 모터 핀을 다시 잡아 정지시킴
+# If the process was killed, grab the motor pins again and stop them.
 if venv/bin/python car.py center >/dev/null 2>&1; then
     echo "모터 정지, 조향 중앙"
 else

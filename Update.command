@@ -1,5 +1,5 @@
 #!/bin/bash
-# 코드 업데이트 (맥 pi/ → 파이)
+# Upload code from the Mac pi/ folder to the Pi.
 source "$(dirname "$0")/Commands/_common.sh"
 
 $A push

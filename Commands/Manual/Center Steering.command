@@ -1,5 +1,5 @@
 #!/bin/bash
-# 조향 중앙
+# Center the steering.
 source "$(dirname "$0")/../_common.sh"
 
 $A center

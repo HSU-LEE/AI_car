@@ -1,5 +1,5 @@
 #!/bin/bash
-# 파이의 녹화 목록
+# List recordings on the Pi.
 source "$(dirname "$0")/../_common.sh"
 
 $A runs

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 파이 터미널 열기
+# Open a terminal on the Pi.
 source "$(dirname "$0")/../_common.sh"
 
 $A ssh

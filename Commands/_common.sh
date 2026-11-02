@@ -1,5 +1,5 @@
-# Commands/ 안의 모든 .command 파일이 불러오는 공통 부분
-cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1     # 프로젝트 루트 (aicar가 있는 곳)
+# Shared setup for every .command file under Commands/.
+cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1     # Project root, where `aicar` lives.
 A=./aicar
 
 ask() { read -r -p "$1" REPLY; echo "$REPLY"; }

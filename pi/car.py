@@ -1,20 +1,20 @@
-"""AICAR 서보(조향) + DC 모터(구동) 제어
+"""AICAR steering servo and drive motor.
 
-배선 (TB6612FNG A채널)
-  서보 신호  -> GPIO18 (물리 12번)
-  PWMA       -> GPIO13 (물리 33번)
-  AIN1       -> GPIO23 (물리 16번)
-  AIN2       -> GPIO24 (물리 18번)
-  STBY, VCC  -> 3.3V
-  GND 공통
+Wiring (TB6612FNG channel A):
+  Servo signal -> GPIO18 (physical pin 12)
+  PWMA         -> GPIO13 (physical pin 33)
+  AIN1         -> GPIO23 (physical pin 16)
+  AIN2         -> GPIO24 (physical pin 18)
+  STBY, VCC    -> 3.3V
+  Common GND
 
-사용법
-  python car.py center          서보 중앙
-  python car.py steer 20        1초간 조향 후 중앙 복귀 (-35 ~ 35, 음수=왼쪽)
-                                -> 바퀴가 오른쪽으로 꺾여야 정상. 왼쪽이면 STEER_INVERT = True
-  python car.py drive 0.4 2     속도(-1 ~ 1, 음수=후진)로 2초 주행
-  python car.py test            조향 + 전진/후진 테스트
-  python car.py trim -4.2       서보 중앙 보정값을 -4.2도만큼 옮겨 저장 (직진에서 계속 한쪽으로 꺾을 때)
+Usage:
+  python car.py center          Center the servo.
+  python car.py steer 20        Steer for 1s, then recenter (-35..35, negative = left).
+                                Wheels should turn right. If they turn left, set STEER_INVERT = True.
+  python car.py drive 0.4 2     Drive at speed -1..1 (negative = reverse) for 2 seconds.
+  python car.py test            Steer, then forward and reverse.
+  python car.py trim -4.2       Shift the saved center trim by -4.2 degrees.
 """
 import json
 import sys
@@ -24,9 +24,9 @@ from time import sleep
 SERVO_PIN = 18
 MOTOR_PWM, MOTOR_IN1, MOTOR_IN2 = 13, 23, 24
 
-STEER_LIMIT = 26    # 중앙(보정 후)에서 좌우 최대 서보 각도. 어떤 명령이 와도 이 이상은 안 꺾임
-STEER_SCALE = 1.0   # 조향 명령 1도당 실제 서보 회전량 (1.0이면 명령값 = 서보 각도)
-STEER_INVERT = True     # + 각도에서 바퀴가 왼쪽으로 꺾이면 True (확인 완료: 반전 필요)
+STEER_LIMIT = 26        # Max servo angle either side of the trimmed center.
+STEER_SCALE = 1.0       # Servo degrees per commanded degree. 1.0 means they match.
+STEER_INVERT = True     # Flip the sign when a positive angle turns the wheels left.
 CALIB_FILE = Path(__file__).with_name("calib.json")
 
 
@@ -38,20 +38,20 @@ def load_calib():
 
 
 def load_trim():
-    """중앙 보정값. tune_center.py로 측정해 calib.json에 저장"""
+    """Center trim saved in calib.json by tune_center.py."""
     return float(load_calib().get("steer_trim", 0.0))
 
 
 STEER_TRIM = load_trim()
-BIAS_MAX = 8    # 자동 중앙 보정의 최대 범위(도)
+BIAS_MAX = 8    # Largest automatic center correction, in degrees.
 
 
 class HardwareServo:
-    """GPIO18 하드웨어 PWM(sysfs)으로 구동하는 서보. 떨림 없이 1° 미만 단위로 제어
+    """Servo driven by the GPIO18 hardware PWM (sysfs), steady below 1 degree.
 
-    /boot/firmware/config.txt 에 `dtoverlay=pwm,pin=18,func=2` 필요
+    Requires `dtoverlay=pwm,pin=18,func=2` in /boot/firmware/config.txt.
     """
-    PERIOD_NS = 20_000_000   # 50Hz
+    PERIOD_NS = 20_000_000   # 50 Hz.
 
     def __init__(self, min_angle=-90, max_angle=90,
                  min_pulse_width=0.0005, max_pulse_width=0.0025):
@@ -68,7 +68,7 @@ class HardwareServo:
         self._angle = None
 
     def _write(self, name, value):
-        # export 직후 udev가 권한을 줄 때까지 잠깐 걸림
+        # Right after export, udev may not have granted write access yet.
         for _ in range(50):
             try:
                 (self.pwm / name).write_text(str(value))
@@ -109,9 +109,9 @@ def make_servo():
 
 class Car:
     def __init__(self):
-        from gpiozero import Motor   # 맥에서 replay.py가 이 파일을 import할 수 있게 지연 import
+        from gpiozero import Motor   # Imported late so replay.py can load this file on a Mac.
         self.servo = make_servo()
-        self.bias = 0.0     # 주행 중 자동으로 배운 중앙 보정 (lane_follow.py의 AUTO_TRIM이 켜져 있을 때만 사용)
+        self.bias = 0.0     # Learned center offset. Used only when lane_follow.AUTO_TRIM is on.
         self.motor = Motor(forward=MOTOR_IN1, backward=MOTOR_IN2,
                            enable=MOTOR_PWM, pwm=True)
 
@@ -151,11 +151,11 @@ class Car:
         self.motor.stop()
 
     def close(self):
-        """모터 정지 → 조향 중앙 → 해제. 어떤 프로그램이 끝나도 바퀴가 중앙으로 돌아옴"""
+        """Stop the motor, center the wheels, then release the pins."""
         self.stop()
         try:
             self.center()
-            sleep(0.4)      # 서보가 중앙까지 도는 시간 (PWM을 끄면 그 자리에 멈춤)
+            sleep(0.4)      # Time for the servo to reach center before PWM turns off.
         except OSError:
             pass
         self.servo.close()
@@ -175,7 +175,7 @@ def main():
             print(f"명령 {float(sys.argv[2]):+.0f} → 서보 각도 {car.servo.angle:+.1f}도 (펄스 {pulse:.0f}us) | "
                   f"중앙보정 {STEER_TRIM:+.1f}, 민감도 {STEER_SCALE}, 반전 {STEER_INVERT}")
             sleep(1)
-            car.center()    # 확인 후 중앙 복귀
+            car.center()    # Return to center after the check.
             sleep(0.5)
         elif cmd == "drive":
             car.center()
@@ -187,7 +187,7 @@ def main():
             data["steer_trim"] = round(old + float(sys.argv[2]), 1)
             CALIB_FILE.write_text(json.dumps(data))
             print(f"중앙 보정 {old:+.1f} → {data['steer_trim']:+.1f}도 저장")
-            car.servo.angle = data["steer_trim"]    # 새 중앙으로 바로 이동해서 확인
+            car.servo.angle = data["steer_trim"]    # Move to the new center so it can be checked.
             sleep(1)
         elif cmd == "test":
             for a in (0, -STEER_LIMIT, STEER_LIMIT, 0):

@@ -1,35 +1,33 @@
-"""적외선 거리 센서(샤프 GP2Y0A21) 장애물 감지 — 켜짐/꺼짐을 안정적으로
+"""Sharp GP2Y0A21 obstacle detector with a stable on/off reading.
 
-배선
-  빨강(VCC) -> 5V (물리 2번)
-  검정(GND) -> GND (물리 9번)
-  노랑(Vo)  -> GPIO17 (물리 11번)
+Wiring:
+  Red (VCC)   -> 5V (physical pin 2)
+  Black (GND) -> GND (physical pin 9)
+  Yellow (Vo) -> GPIO17 (physical pin 11)
 
-센서 출력은 아날로그라 감지 경계 거리에서 0/1이 빠르게 깜빡인다. 그래서
-  1) 백그라운드에서 5ms마다 핀을 읽어 최근 WINDOW 동안 '켜짐' 비율을 구하고
-  2) 비율이 ON_RATIO 이상이면 '있음', OFF_RATIO 이하로 떨어져야 '없음' (히스테리시스)
-  3) '있음'이 되면 최소 HOLD 동안은 유지
-해서 깜빡임 없이 판단한다.
+The analog output chatters at the detection edge, so this:
+  1. Samples the pin every 5 ms and keeps the on-ratio over WINDOW.
+  2. Turns on at ON_RATIO and off only at OFF_RATIO (hysteresis).
+  3. Holds an on reading for at least HOLD seconds.
 
-사용 (다른 코드에서)
+From other code:
   from obstacle import Obstacle
   obs = Obstacle()
-  if obs.near: ...          # 장애물 있음
+  if obs.near: ...
   obs.close()
 
-사용법 (단독 테스트)
-  python obstacle.py        상태가 바뀔 때만 출력, 0.5초마다 켜짐 비율 표시 (Ctrl+C로 종료)
+  python obstacle.py    Print on change, and the on-ratio every 0.5 s. Ctrl+C to stop.
 """
 import threading
 import time
 from collections import deque
 
 OBSTACLE_PIN = 17
-SAMPLE_DT = 0.005       # 핀 읽는 간격(초)
-WINDOW = 0.15           # 이 시간(초) 동안의 샘플로 판단
-ON_RATIO = 0.6          # 켜짐 비율이 이 이상이면 '있음'
-OFF_RATIO = 0.2         # 이 이하로 떨어져야 '없음' (중간 값에서는 이전 상태 유지)
-HOLD = 0.3              # '있음'이 되면 최소 이 시간(초)은 유지
+SAMPLE_DT = 0.005       # Sample period, seconds.
+WINDOW = 0.15           # Window used for the on-ratio.
+ON_RATIO = 0.6          # On-ratio at or above this means an obstacle.
+OFF_RATIO = 0.2         # Must fall to this or below before it clears.
+HOLD = 0.3              # Minimum time an on reading is kept, seconds.
 
 
 class Obstacle:

@@ -1,4 +1,4 @@
-"""AICAR 환경 점검: 설치된 모듈과 카메라/GPIO 상태를 확인합니다."""
+"""Check installed modules and whether the camera and GPIO stack import."""
 import importlib
 
 MODULES = ["numpy", "cv2", "picamera2", "gpiozero", "lgpio", "smbus2", "spidev", "serial",
