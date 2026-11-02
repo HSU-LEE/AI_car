@@ -2,7 +2,7 @@
 
 # < 속도 조정 >
 
-SPEED = 0.3
+SPEED = 0.45
 
 
 
@@ -164,10 +164,10 @@ def uturn(direction, speed=0.2):
 
 
 def tr():
-    return [right(4, speed=SPEED-0.075, angle=21)]
+    return [right(4, speed=SPEED, angle=21)]
 
 def tl():
-    return [left(4, speed=SPEED-0.075, angle=21)]
+    return [left(4, speed=SPEED, angle=21)]
 
 def _flat(steps):
     """묶음(리스트)을 펼쳐서 동작 하나하나의 목록으로. 묶음 안의 묶음도 펼침"""
@@ -199,6 +199,9 @@ def describe(step):
 
 COURSE = _flat([
     to_junction(),
+    tr(),
+    stop(3),
+    to_gap(0.6),
     finish(),
 ])
 

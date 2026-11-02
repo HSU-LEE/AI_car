@@ -33,7 +33,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from car import STEER_LIMIT
+from car import STEER_LIMIT, load_calib
 from course import COURSE
 
 # ---------------- 설정 ----------------
@@ -95,6 +95,9 @@ FAR_HLINE = 1.2         # 원거리 가로선: 한 줄에서 이어진 흰 픽�
                         # 감속에만 쓰고 교차로 판정(until)에는 안 씀 → 곡선을 가로선으로 잘못 봐도 잠깐 느려질 뿐
 APPROACH_HOLD = 0.5     # slow=: 선이 잠깐 안 보여도 이 시간(초) 동안은 감속 상태 유지 (오감지 한두 프레임엔 반응 안 하게)
 KICK_AFTER_STOP = 0.3   # 이 시간(초) 이상 서 있다가 출발할 때만 출발 킥 (잠깐 멈칫한 것에는 킥 안 함)
+MOTOR_MIN = 0.35        # 바닥에서 직진으로 실제로 굴러가는 최소 모터값. 이보다 낮은 명령은 이 값으로 올려서 보냄
+MOTOR_MIN_TURN = 0.42   # 최대로 꺾었을 때의 최소 모터값 (바퀴가 꺾이면 저항이 커짐). 그 사이는 조향각에 비례
+                        #   두 값은 calibrate_motor.py(캘리브레이션 마지막 단계)가 바닥에서 재서 calib.json에 저장
 LANE_PX_PER_CM = REF_LANE_PX / 20.0     # 1cm가 위치 오차 단위로 몇 px인지 (차로 폭 20cm). shift= 계산용
                                         #   위치 오차가 REF_LANE_PX 기준 단위라서 같은 기준을 씀
 # style= 조향 성격: (KP 배수, KH 배수, SMOOTH)
@@ -154,6 +157,20 @@ def load_vision():
     CAMERA_LOCK = data.get("camera_lock", CAMERA_LOCK)
 
 
+def load_motor_min():
+    """calibrate_motor.py가 calib.json에 저장한 모터 최소값을 불러옴 (없으면 기본값)"""
+    global MOTOR_MIN, MOTOR_MIN_TURN
+    calib = load_calib()
+    MOTOR_MIN = calib.get("motor_min", MOTOR_MIN)
+    MOTOR_MIN_TURN = max(MOTOR_MIN, calib.get("motor_min_turn", MOTOR_MIN_TURN))
+
+
+def motor_floor(angle):
+    """이 조향각에서 차가 실제로 굴러가는 최소 모터값"""
+    r = min(abs(angle) / STEER_LIMIT, 1.0)
+    return MOTOR_MIN + (MOTOR_MIN_TURN - MOTOR_MIN) * r
+
+
 def save_vision(**values):
     """vision.json에서 주어진 항목만 바꿔 저장 (다른 항목은 유지)"""
     try:
@@ -165,6 +182,7 @@ def save_vision(**values):
 
 
 load_vision()
+load_motor_min()
 
 
 _ELLIPSE_RECTS = {}
@@ -1417,6 +1435,9 @@ class Driver:
             self.kick_until = now + KICK_TIME   # 실제로 서 있다가 출발할 때만 킥
         self.speed = speed
         cmd = KICK_SPEED if speed > 0 and now < self.kick_until else speed
+        if cmd > 0:
+            # 바닥에서는 너무 낮은 모터값으로는 차가 서 버림 (특히 많이 꺾었을 때, 배터리가 약할 때) → 최소값까지 올림
+            cmd = max(cmd, motor_floor(steering.angle))
         return steer, cmd, dbg
 
 

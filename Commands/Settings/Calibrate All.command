@@ -6,4 +6,7 @@ source "$(dirname "$0")/../_common.sh"
 echo "차를 직선 차로 가운데에, 차로 방향으로 똑바로 놓으세요. 측정하는 동안(약 15초) 차와 카메라 앞을 가리지 마세요."
 read -r -p "준비되면 엔터 (취소: Ctrl+C) " _
 $A calibrate
+echo
+read -r -p "모터 최소값도 잴까요? 차가 앞으로 몇 cm 움직였다 돌아옵니다 (앞에 30cm 비워 두기) [y/N] " yn
+[ "$yn" = y ] || [ "$yn" = Y ] && $A calibrate-motor
 finish

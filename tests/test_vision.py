@@ -252,6 +252,25 @@ def test_calibration():
           isinstance(cal.fit_geometry(cal.measure_lanes([np.full((H, W, 3), 30, np.uint8)] * 4)), str))
 
 
+def test_motor():
+    print("[모터 최소값]")
+    import calibrate_motor as cm
+    check("직진 최소값", abs(lf.motor_floor(0) - lf.MOTOR_MIN) < 1e-9, lf.motor_floor(0))
+    check("최대로 꺾으면 꺾음 최소값", abs(lf.motor_floor(lf.STEER_LIMIT) - lf.MOTOR_MIN_TURN) < 1e-9,
+          lf.motor_floor(lf.STEER_LIMIT))
+    check("반쯤 꺾으면 그 사이", lf.MOTOR_MIN <= lf.motor_floor(lf.STEER_LIMIT / 2) <= lf.MOTOR_MIN_TURN)
+    with quiet():
+        d = lf.Driver([follow(until="junction", speed=0.1, max_sec=99), finish()])
+        cmds = [d.tick(lane_frame(), i / 30)[1] for i in range(40)]
+    check("아주 느린 명령(0.1)도 최소값 이상으로 보냄", min(c for c in cmds if c > 0) >= lf.MOTOR_MIN - 1e-9,
+          f"최소 {min(c for c in cmds if c > 0):.2f}")
+    a = cm.small_gray(lane_frame())
+    b = cm.small_gray(np.roll(lane_frame(), 12, axis=0))     # 차가 움직이면 화면이 밀림
+    noise = cm.frame_diff(a, cm.small_gray(lane_frame()))
+    check("가만히 있으면 '움직임' 아님", noise <= cm.moved_threshold(noise), f"{noise:.1f}")
+    check("화면이 밀리면 '움직임'", cm.frame_diff(a, b) > cm.moved_threshold(noise), f"{cm.frame_diff(a, b):.1f}")
+
+
 def test_driver_smoke():
     print("[Driver 전체 한 바퀴]")
     frames = [lane_frame(), lane_frame(shift=30), lane_frame(y_end=250), lane_frame(crosswalk=True),
@@ -274,7 +293,7 @@ def test_driver_smoke():
 
 def main():
     for t in (test_fast_math, test_lane, test_gap, test_crosswalk, test_track_color,
-              test_traffic_light, test_course_logic, test_calibration, test_driver_smoke):
+              test_traffic_light, test_course_logic, test_calibration, test_motor, test_driver_smoke):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")

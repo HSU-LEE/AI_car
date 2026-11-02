@@ -15,7 +15,7 @@ import sys
 import termios
 import tty
 
-from car import CALIB_FILE, Car, load_trim
+from car import CALIB_FILE, Car, load_calib, load_trim
 
 MAX_TRIM = 20
 
@@ -47,7 +47,9 @@ def main():
                 trim = 0.0
             elif key == "s":
                 # 중앙을 새로 맞췄으니 주행 중 자동으로 배운 보정값은 초기화
-                CALIB_FILE.write_text(json.dumps({"steer_trim": trim, "steer_bias": 0.0}))
+                data = load_calib()     # 다른 보정값(모터 최소값 등)은 그대로 두고
+                data.update(steer_trim=trim, steer_bias=0.0)
+                CALIB_FILE.write_text(json.dumps(data))
                 print(f"\n저장됨: {CALIB_FILE} (steer_trim = {trim:+.1f})")
                 break
             elif key in ("q", "\x03"):
