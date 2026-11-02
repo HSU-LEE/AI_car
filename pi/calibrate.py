@@ -2,10 +2,11 @@
 
   python calibrate.py           측정 후 vision.json에 저장 (이전 값은 vision.json.bak)
   python calibrate.py --dry     측정만 하고 저장 안 함
+  python calibrate.py --focus-only   초점만 다시
 
 순서
   1. 트랙 색       바닥이 밝으면 흰 바닥/검은 선, 어두우면 검은 바닥/흰 선
-  2. 초점          오토포커스를 한 번 돌려 트랙 바닥에 맞춘 뒤 그 값으로 고정
+  2. 초점          렌즈를 가까이~멀리 훑어서 차선 영역(가까운 쪽에 비중)이 가장 선명한 값으로 고정
   3. 조도          자동 노출/화이트밸런스로 맞춘 뒤 고정. 흰 선이 하얗게 날아가지 않게 줄이고,
                    주행 중 흔들림(번짐)이 없게 노출 시간은 MAX_EXPOSURE_US 이하로 (부족한 밝기는 게인으로)
   4. 차로 폭/소실점 띠마다 양쪽 선 위치를 재서 원근 모델(LANE_WIDTH_PX, HORIZON_Y)을 맞춤
@@ -96,20 +97,44 @@ def capture(cam, n=1, settle=0.0):
     return [cam.capture_array() for _ in range(n)]
 
 
+# 초점: 차선을 읽는 영역의 선명도로 고름 (오토포커스는 화면 가운데=먼 바닥에 맞춰서 가까운 차선이 흐려짐)
+FOCUS_REGIONS = ((0.0, 0.3, 0.2), (0.3, 0.7, 0.4), (0.7, 1.0, 0.4))   # ROI 안의 (위, 아래, 가중치): 먼 / 가운데 / 가까운
+
+
+def sharpness(frame):
+    """ROI 영역별 선명도(Laplacian 분산)"""
+    top = int(lf.FRAME_H * lf.ROI_TOP)
+    lap = cv2.Laplacian(cv2.cvtColor(frame[top:], cv2.COLOR_BGR2GRAY), cv2.CV_64F)
+    n = lap.shape[0]
+    return [float(lap[int(a * n):int(b * n)].var()) for a, b, _ in FOCUS_REGIONS]
+
+
+def best_focus(table):
+    """{렌즈 위치: 영역별 선명도} → 영역마다 최고값으로 나눠 가중 평균이 가장 큰 렌즈 위치"""
+    peaks = [max(v[i] for v in table.values()) or 1.0 for i in range(len(FOCUS_REGIONS))]
+    score = {lp: sum(w * v[i] / peaks[i] for i, (_, _, w) in enumerate(FOCUS_REGIONS)) for lp, v in table.items()}
+    return max(score, key=score.get)
+
+
 def calibrate_focus(cam, controls):
-    """오토포커스 한 번 → 렌즈 위치(디옵터). 실패하면 None"""
-    cam.set_controls({"AfMode": controls.AfModeEnum.Auto})
-    time.sleep(0.2)
-    cam.set_controls({"AfTrigger": controls.AfTriggerEnum.Start})
-    end = time.monotonic() + 4
-    while time.monotonic() < end:
-        md = cam.capture_metadata()
-        state = md.get("AfState")
-        if state == controls.AfStateEnum.Focused:
-            return float(md["LensPosition"])
-        if state == controls.AfStateEnum.Failed:
-            return None
-    return None
+    """렌즈를 가까이~멀리 훑어서 차선 영역(가까운 쪽에 비중)이 가장 선명한 렌즈 위치(디옵터). 실패하면 None"""
+    table = {}
+
+    def measure(lp):
+        cam.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": float(lp)})
+        time.sleep(0.35)
+        cam.capture_array()
+        table[round(float(lp), 2)] = sharpness(cam.capture_array())
+
+    for lp in np.arange(1.5, 12.01, 0.75):      # 67cm ~ 8cm
+        measure(lp)
+    coarse = best_focus(table)
+    for lp in np.arange(coarse - 0.5, coarse + 0.51, 0.25):     # 그 주변을 촘촘히
+        if 0.5 <= lp <= 12 and round(float(lp), 2) not in table:
+            measure(lp)
+    if max(sum(v) for v in table.values()) < 1.0:
+        return None     # 화면이 완전히 균일 (카메라가 가려짐 등)
+    return best_focus(table)
 
 
 def calibrate_exposure(cam):
@@ -160,8 +185,25 @@ def annotate(dbg, lines):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true", help="측정만 하고 저장 안 함")
+    ap.add_argument("--focus-only", action="store_true", help="초점만 다시 맞춤 (차를 트랙 위에)")
     args = ap.parse_args()
     from libcamera import controls
+
+    if args.focus_only:
+        cam = lf.open_camera()      # 저장된 고정 노출 그대로
+        try:
+            lens = calibrate_focus(cam, controls)
+        finally:
+            cam.stop()
+            cam.close()
+        if lens is None:
+            print("초점: 측정 실패 (카메라 앞이 가려졌는지 확인) → 기존 값 유지")
+            return
+        print(f"초점: 렌즈 {lf.LENS_POSITION} → {lens:.2f} (약 {100 / lens:.0f}cm에 초점)")
+        if not args.dry:
+            lf.save_vision(lens_position=round(lens, 2))
+            print(f"저장: {lf.VISION_FILE}")
+        return
 
     print(__doc__.split("\n\n")[0])
     cam = lf.open_camera(locked=False)
@@ -180,7 +222,7 @@ def main():
             saved["lens_position"] = round(lens, 2)
             print(f"      렌즈 {lens:.2f} (약 {100 / lens:.0f}cm에 초점)")
         else:
-            notes.append("초점: 오토포커스 실패 → 기존 값 유지")
+            notes.append("초점: 측정 실패 → 기존 값 유지")
             print(f"      실패 → 기존 값 {lf.LENS_POSITION} 유지")
         cam.set_controls({"AfMode": controls.AfModeEnum.Manual,
                           "LensPosition": saved.get("lens_position", lf.LENS_POSITION)})

@@ -248,6 +248,10 @@ def test_calibration():
         lf.LINE_COLOR = old
     check("흰 바닥/검은 선에서도 같은 측정", isinstance(geo_b, dict) and abs(geo_b["lane_width_px"] - true_w) < 8,
           geo_b["lane_width_px"] if isinstance(geo_b, dict) else geo_b)
+    # 파이에서 실제로 잰 렌즈 위치별 선명도 (먼 / 가운데 / 가까운): 가까운 쪽에 비중을 둔 4.5가 골라져야 함
+    table = {1.5: [349, 159, 92], 3.0: [506, 356, 216], 3.75: [495, 447, 319], 4.5: [408, 462, 418],
+             5.25: [305, 388, 467], 6.0: [217, 292, 445], 7.5: [111, 133, 277]}
+    check("초점: 차선 영역(가까운 쪽 비중) 기준으로 고름", cal.best_focus(table) == 4.5, cal.best_focus(table))
     check("선이 안 보이면 측정 안 하고 이유를 알려 줌",
           isinstance(cal.fit_geometry(cal.measure_lanes([np.full((H, W, 3), 30, np.uint8)] * 4)), str))
 

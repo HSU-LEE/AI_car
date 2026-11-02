@@ -128,7 +128,8 @@ LIGHT_LOCAL_V_MIN = 100 # 그 자리에서 색으로 볼 최소 밝기 (초록 L
 LIGHT_NEAR = 4          # wait_green: 초록불은 빨간불이 있던 자리에서 (빨간 램프 크기 × 이 값) 안에 있어야 인정
                         #   같은 신호등의 램프 간격은 허용하고, 다른 곳의 초록 물체는 무시
 
-LENS_POSITION = 3.0     # 수동 초점(디옵터 = 1/거리m). 3.0 ≈ 33cm. None이면 오토포커스. calibrate.py가 측정해 저장
+LENS_POSITION = 4.5     # 수동 초점(디옵터 = 1/거리m). 4.5 ≈ 22cm (차선을 읽는 가까운 바닥). None이면 오토포커스.
+                        #   calibrate.py가 차선 영역 선명도로 재서 vision.json에 저장
 CAMERA_LOCK = None      # 고정 노출/게인/화이트밸런스 {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
                         #   None이면 카메라 자동. calibrate.py가 경기장 조명에서 측정해 vision.json에 저장
 VISION_FILE = Path(__file__).with_name("vision.json")
