@@ -318,7 +318,7 @@ def test_motor():
     check("아주 느린 명령(0.1)도 최소값 이상으로 보냄", min(c for c in cmds if c > 0) >= lf.MOTOR_MIN - 1e-9,
           f"최소 {min(c for c in cmds if c > 0):.2f}")
     a = cm.small_gray(lane_frame())
-    b = cm.small_gray(np.roll(lane_frame(), 12, axis=0))     # 차가 움직이면 화면이 밀림
+    b = cm.small_gray(np.roll(lane_frame(), 25, axis=0))     # 차가 몇 cm 움직이면 화면이 밀림
     noise = cm.frame_diff(a, cm.small_gray(lane_frame()))
     check("가만히 있으면 '움직임' 아님", noise <= cm.moved_threshold(noise), f"{noise:.1f}")
     check("화면이 밀리면 '움직임'", cm.frame_diff(a, b) > cm.moved_threshold(noise), f"{cm.frame_diff(a, b):.1f}")

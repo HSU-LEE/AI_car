@@ -40,8 +40,8 @@ def frame_diff(a, b):
 
 
 def moved_threshold(noise):
-    """가만히 있을 때의 화면 변화(noise)보다 확실히 큰 변화만 '움직임'으로"""
-    return max(3 * noise, noise + 4.0)
+    """가만히 있을 때의 화면 변화(noise)보다 확실히 큰 변화만 '움직임'으로 (+4는 경계값에서 애매하게 걸려서 +6)"""
+    return max(3 * noise, noise + 6.0)
 
 
 def measure(car, cam, angle, threshold):

@@ -71,9 +71,22 @@ def measure_lanes(frames):
     return bands
 
 
+FIT_TOLERANCE = 6.0     # 차로 폭 직선에서 이 px보다 벗어난 띠는 빼고 다시 맞춤 (먼 곳이 굽은 선 등)
+
+
 def fit_geometry(bands):
     """띠별 양쪽 선 → 차로 폭 모델(y=342에서의 폭, 소실점 y), 카메라 중앙, 차의 기울어짐.
-    반환: dict 또는 오류 메시지(str)"""
+    가장 믿을 만한 가까운 띠 3개로 시작해서, 먼 띠는 그 직선에서 FIT_TOLERANCE 안일 때만 하나씩 더함
+    (먼 곳이 굽거나 끊김 근처라 어긋난 띠가 직선 전체를 끌고 가지 않게). 반환: dict 또는 오류 메시지(str)"""
+    bands = sorted(bands, key=lambda b: -b[0])     # 가까운(아래) 띠부터
+    used = bands[:3]
+    for b in bands[3:]:
+        ys = np.array([u[0] for u in used], float)
+        coef = np.polyfit(ys, [u[2] - u[1] for u in used], 1)
+        if abs(np.polyval(coef, b[0]) - (b[2] - b[1])) > FIT_TOLERANCE:
+            break                                   # 여기부터 위는 직선 모델에서 벗어남
+        used.append(b)
+    bands = used
     if len(bands) < 3:
         return f"양쪽 선이 같이 보인 띠가 {len(bands)}개뿐 (3개 이상 필요). 차를 직선 차로 가운데에 놓았는지 확인"
     ys = np.array([b[0] for b in bands], float)
