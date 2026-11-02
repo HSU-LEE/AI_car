@@ -128,6 +128,20 @@ def test_gap():
           f"{d1.gap_y} → {d2.gap_y}")
     d3, _ = run_detector(lane_frame(y_end=250, right=False))
     check("한쪽 선만(급커브) → gap 아님", d3.gap_y is None, f"gap_y={d3.gap_y}")
+    band_h = (H - int(H * lf.ROI_TOP)) // lf.SLICES
+    def blank(img, y0, y1, x0=0, x1=W):
+        img[y0:y1, x0:x1] = np.clip(np.random.default_rng(3).normal(30, 4, (y1 - y0, x1 - x0, 3)), 0, 255)
+        return img
+    y4 = H - 5 * band_h                          # 아래에서 5번째 띠(4번) 영역만 비움 → 위(5번 띠)에서 선이 다시 보임
+    d6, _ = run_detector(blank(lane_frame(), y4, y4 + band_h))
+    check("짧은 끊김(빈 띠 1개, 위에서 선이 다시 보임) → gap", d6.gap_y is not None, f"gap_y={d6.gap_y}")
+    img = lane_frame()
+    blank(img, H - 4 * band_h, H - 2 * band_h, W // 2, W)     # 오른쪽 선이 먼저 끊김
+    blank(img, H - 4 * band_h, H - 3 * band_h, 0, W // 2)     # 왼쪽 선은 한 띠 늦게 끊김
+    d7, _ = run_detector(img)
+    check("양쪽 선이 끊기는 위치가 어긋나도 gap", d7.gap_y is not None, f"gap_y={d7.gap_y}")
+    d8, _ = run_detector(blank(lane_frame(), int(H * lf.ROI_TOP), int(H * lf.ROI_TOP) + band_h))
+    check("맨 위 띠 하나만 빔(먼 선이 흐림) → gap 아님", d8.gap_y is None, f"why={d8.gap_why}")
     img = lane_frame(y_end=250)
     img[int(H * 0.82):, W // 2:] = 30           # 가까운 오른쪽 선이 화면 아래에서 잘려 안 보임
     d4, _ = run_detector(img)
@@ -198,6 +212,17 @@ def test_course_logic():
         t = feed(c, 5, t, det=None)
         t = feed(c, lf.TURN_CLEAR_FRAMES + 1, t)
     check("straight(until=lane): 사라졌다 다시 잡히면 끝", c.idx == 1)
+
+    with quiet():
+        c = lf.CourseRunner([straight(until="lane", max_sec=30), finish()])
+        for near, n in ((True, 5), (False, 20)):     # 끊긴 구간 위: 너머 차선은 위쪽에 계속 보이지만 바로 앞 선이 없음
+            for _ in range(n):
+                c.update(False, t, (0.0, 0.0), False, {"near": near}); t += 0.05
+    check("끊긴 구간 위(바로 앞 선 없음)에서는 직진 계속", c.idx == 0)
+    with quiet():
+        for _ in range(lf.TURN_CLEAR_FRAMES + 1):
+            c.update(False, t, (0.0, 0.0), False, {"near": True}); t += 0.05
+    check("건너서 바로 앞 선이 다시 보이면 직진 끝", c.idx == 1)
 
     with quiet():
         c = lf.CourseRunner([wait_green(max_sec=30), finish()])

@@ -2,7 +2,7 @@
 
 # < 속도 조정 >
 
-SPEED = 0.45
+SPEED = 0.375
 
 
 
@@ -127,14 +127,14 @@ def to_crosswalk(at=None):  # 횡단보도까지. at: 횡단보도 앞 얼마까
     return follow(until="crosswalk", speed=SPEED, at=at)
 
 
-def to_gap(at=None):        # 차선이 끊기는 곳까지. at: 끊기는 곳 앞 얼마까지 (0.6 일찍 ~ 0.8 바로 앞)
-    return follow(until="gap", speed=SPEED, at=at)
+def to_gap(at=None, speed=SPEED):  # 차선이 끊기는 곳까지. at: 끊기는 곳 앞 얼마까지 (0.6 일찍 ~ 0.8 바로 앞)
+    return follow(until="gap", speed=speed, at=at)
 
 
-def cross_gap(at=0.7, angle=0):     # 끊긴 구간 통과 → 다시 차선 따라감
+def cross_gap(at=0.7, angle=0, speed=SPEED):     # 끊긴 구간 통과 → 다시 차선 따라감
     # angle=0: 직선 위 끊김, angle="hold": 곡선 위 끊김 (들어갈 때 조향각 유지)
     # max_sec=3은 차선을 끝내 못 찾을 때만 쓰는 안전장치. 보통은 새 차선이 잡혀서 끝남
-    return [to_gap(at), straight(until="lane", angle=angle, max_sec=3, speed=SPEED)]
+    return [to_gap(at, speed), straight(until="lane", angle=angle, max_sec=3, speed=speed)]
 
 
 def traffic(at=0.73, max_sec=10):   # 횡단보도 앞 정지 → 초록불에 출발
@@ -209,12 +209,13 @@ def describe(step):
 # ↓↓↓ 여기를 코스에 맞게 수정 ↓↓↓
 
 COURSE = _flat([
-    to_gap(0.85),
-    cross_gap(),
+    cross_gap(0.85, speed=0.2),    
     to_junction(),
-    follow(0.75),
+    follow(1.5),
     tr(),
-    to_gap(0.85),
+    to_junction(),
+    tl(),
+    to_gap(0.75),
     finish(),
 ])
 

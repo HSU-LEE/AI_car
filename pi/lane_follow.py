@@ -112,7 +112,8 @@ EDGE_STOP_Y = 0.63      # 차 앞쪽 매트가 화면 높이의 이 지점에서
 
 JUNCTION_BY_BRANCH = False  # True면 선이 3개 이상 보일 때도 교차로로 봄 (갈림길)
 JUNCTION_FRAMES = 3     # 연속 몇 프레임 감지되어야 인정 (오감지 방지). gap/green도 같은 값
-GAP_BANDS = 2           # 아래에서 이어지던 선 위로 이 개수만큼 띠에 선이 하나도 없으면 "차선이 끊김"(gap)
+GAP_BANDS = 2           # 차선 끊김(gap): 빈 띠 위에서 선이 다시 보이면 빈 띠 1개로도 끊김. 위에서 다시 안 보이면
+                        #   빈 띠가 이 개수 이상이어야 끊김 (맨 위 띠 하나만 빈 건 먼 선을 놓친 것일 수 있어서)
 CROSSWALK_HOLD_MAX = 1.5    # 차 바로 앞 횡단보도 위에서 조향을 유지하는 최대 시간(초). 그 뒤엔 다시 차선 따라감
 TURN_CLEAR_FRAMES = 8   # 회전: 새 차선이 이 프레임 수만큼 잡히면 회전 각도 → 차선 추종 조향으로 완전히 넘어감
 ALIGN_OFFSET = 0.15     # until="aligned": 위치 오차가 이 안이고 (차로 가운데)
@@ -284,6 +285,8 @@ class LaneDetector:
         self.crosswalk_any = False      # 화면 어디든 횡단보도가 보임 (지나가는 중)
         self.junction_y = self.crosswalk_y = None
         self.gap_y = None               # 앞에서 차선이 끊기는 곳: 선이 마지막으로 보인 띠의 y. 없으면 None
+        self.gap_why = ""               # gap_y가 None인 이유 (진단용)
+        self.near_line = False          # 차 바로 앞(맨 아래 띠)에 선이 보이는지. 끊긴 구간 위에서는 False
         self.far_y = None               # ROI 위쪽(원거리)에서 본 가로선 y. slow= 감속용 (Driver가 필요할 때만 채움)
         top = int(FRAME_H * ROI_TOP)
         h = (FRAME_H - top) // SLICES
@@ -446,31 +449,47 @@ class LaneDetector:
         return l, r, None
 
     def find_gap(self, bands, ls, rs):
-        """앞에서 차선이 끊기는지 → 선이 마지막으로 보인 띠의 y (없으면 None).
-        아래 띠부터 선이 이어지다가 그 위로 GAP_BANDS개 띠에 선이 하나도 없으면 끊김으로 봄.
-        오감지 방지: 끊기기 직전 띠에서 양쪽 선이 다 보이고 둘 다 화면 가장자리가 아닐 때만
-        (급커브는 선이 화면 옆으로 빠져나가며 사라짐 → 제외. 맨 아래 띠는 가까운 선이 화면 밖으로 잘리기 쉬워서 안 봄),
-        매트 끝이 아닐 때만, 빈 띠가 매트 안일 때만, 가로선/횡단보도 띠가 있으면 아님"""
-        if self.edge or not bands[0][1] or any(special for _, _, special in bands):
+        """앞에서 차선이 끊기는지 → 선이 마지막으로 보인 띠의 y (없으면 None). (ls, rs는 쓰지 않음, 호환용)
+        아래 띠부터 선이 이어지다가 그 위에 선이 하나도 없는 띠가 있으면 끊김.
+          - 빈 띠가 1개여도, 그 위에서 선이 다시 보이면 끊김 (트랙의 짧은 끊김은 화면에서 띠 하나 정도)
+          - 맨 위 띠만 비고 위에서 다시 안 보이면 아님 (먼 선이 흐려서 놓친 것일 수 있음) → 빈 띠가 GAP_BANDS개 이상일 때만
+        오감지 방지
+          - 끊기기 직전 띠와 그 아래 띠를 합쳐서 왼쪽/오른쪽 선이 다 보여야 함 (양쪽이 끊기는 위치는 어긋나도 됨)
+          - 끊기기 직전 띠의 선이 화면 가장자리면 아님 (급커브: 선이 화면 옆으로 빠져나가며 사라짐)
+          - 화면 맨 가장자리(5%)의 것은 선으로 안 셈 (바닥 밖 물체)
+          - 매트 끝, 빈 띠가 매트 밖, 가로선/횡단보도 띠가 있으면 아님"""
+        self.gap_why = ""      # 끊김이 아닌 이유 (진단용: gap_probe.py / 화면)
+        inner = [[x for x in lines if 0.05 * FRAME_W <= x <= 0.95 * FRAME_W] for _, lines, _ in bands]
+        self.near_line = bool(inner[0])
+        if self.edge or any(special for _, _, special in bands):
+            self.gap_why = "mat edge" if self.edge else "junction/crosswalk"
+            return None
+        if not inner[0]:
+            self.gap_why = "no near line"
             return None
         k = 0
-        while k + 1 < len(bands) and bands[k + 1][1]:    # 아래에서부터 선이 이어진 마지막 띠
+        while k + 1 < len(bands) and inner[k + 1]:      # 아래에서부터 선이 이어진 마지막 띠
             k += 1
-        margin = FRAME_W * 0.04
-        if ls[k] is None or rs[k] is None or ls[k] < margin or rs[k] > FRAME_W - margin:
+        if k == len(bands) - 1:
+            self.gap_why = "lines continue to top"
             return None
-        empty = bands[k + 1:k + 1 + GAP_BANDS]
-        if len(empty) < GAP_BANDS:
+        e = 0
+        while k + 1 + e < len(bands) and not inner[k + 1 + e]:
+            e += 1
+        resumed = k + 1 + e < len(bands)
+        if not resumed and e < GAP_BANDS:
+            self.gap_why = "only far band empty"
             return None
-        # 빈 띠: 차로가 이어졌다면 있을 자리(끊기기 직전 양쪽 선에서 원근으로 줄인 폭 ± 1/4) 안에 선이 없어야 함.
-        # 화면 가장자리의 바닥 밖 물체 같은 것은 차로 자리 밖이라 세지 않음
-        center, width_k = (ls[k] + rs[k]) / 2, rs[k] - ls[k]
-        for j in range(k + 1, k + 1 + GAP_BANDS):
-            w = width_k * self.model_width(j) / self.model_width(k)
-            lo, hi = center - 0.75 * w, center + 0.75 * w
-            if any(lo <= x <= hi for x in bands[j][1]):
-                return None
-        if USE_MAT_MASK and any(cy < self.mat_top for cy, _, _ in empty):
+        if any(not 0.08 * FRAME_W <= x <= 0.92 * FRAME_W for x in inner[k]):
+            self.gap_why = f"band{k}: line at edge (curve)"
+            return None
+        cx0 = FRAME_W * CAMERA_X
+        near = [x for j in range(max(0, k - 1), k + 1) for x in inner[j]]
+        if not any(x < cx0 for x in near) or not any(x >= cx0 for x in near):
+            self.gap_why = f"band{k}: one side only"
+            return None
+        if USE_MAT_MASK and any(bands[j][0] < self.mat_top for j in range(k + 1, k + 1 + e)):
+            self.gap_why = "empty area outside mat"
             return None     # 빈 곳이 매트 밖(바닥)이면 끊긴 게 아니라 매트가 끝난 것
         return int(bands[k][0])
 
@@ -901,7 +920,10 @@ class CourseRunner:
                     self.red_boxes.append(box)
         green_here = lamps is None or self.near_red(lamps.get("green"))
         seen = {"junction": junction, "crosswalk": crosswalk,
-                "lane": not junction and det is not None and abs(det[0]) < 0.6 and abs(det[1]) < 0.5,
+                # 새 차선: 차 바로 앞에 선이 보이면서 차로가 대략 맞음. 끊긴 구간 위처럼 앞에 선이 없으면 '사라짐'으로 봄
+                # (끊김 너머 차선이 위쪽에 계속 보여도, 바로 앞 선이 사라졌다 다시 보여야 straight(until="lane")이 끝남)
+                "lane": (not junction and det is not None and abs(det[0]) < 0.6 and abs(det[1]) < 0.5
+                         and ys.get("near", True)),
                 "gap": ys.get("gap") is not None,
                 # 초록: 화면 전체에서 빨간불 근처에 초록불이 보이거나, 빨간불이었던 자리가 초록(청록 포함)으로 바뀜
                 "green": self.red_seen and ((light == "green" and green_here) or self.local_light == "green"),
@@ -1412,7 +1434,8 @@ class Driver:
             colors = [self.traffic.color_at(frame, box) for box in course.red_boxes]
             course.local_light = "green" if "green" in colors else ("red" if "red" in colors else None)
         course.update(junction, now, det, detect.crosswalk,
-                      {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y},
+                      {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
+                       "near": detect.near_line},
                       light, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
         if course.done:
