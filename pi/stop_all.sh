@@ -5,7 +5,7 @@ cd ~/aicar || exit 1
 find_pids() {
     # 실제 python 프로세스만 고름. pgrep -f는 이 스크립트를 부른 셸의 명령줄까지 잡아서 쓰지 않음
     ps -eo pid=,comm=,args= |
-        awk '$2 ~ /^python/ && /(lane_follow|drive_keys|tune_center|tune_white|tune_light|camera_view|car)\.py/ {print $1}'
+        awk '$2 ~ /^python/ && /(lane_follow|drive_keys|tune_center|tune_white|tune_light|camera_view|calibrate|car)\.py/ {print $1}'
 }
 
 pids=$(find_pids)

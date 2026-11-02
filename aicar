@@ -198,6 +198,17 @@ cmd_snap() {
     green "저장: $SNAPS/$name"
 }
 
+cmd_calibrate() {
+    # 경기장 자동 캘리브레이션: 트랙 색, 초점, 조도, 차로 폭/소실점, 카메라 중앙 → 파이 vision.json
+    run "$DRIVING" && die "자율주행이 카메라를 쓰는 중입니다. 먼저 aicar stop"
+    cmd_push || exit 1
+    run "bash ~/$REMOTE/stop_all.sh" >/dev/null     # 카메라를 쓰는 다른 프로그램(Live View 등)이 있으면 끔
+    run_tty "$(in_dir "$PY calibrate.py $*")" || die "캘리브레이션 실패"
+    local name="calib-$(date +%Y%m%d-%H%M%S).jpg"
+    scp -q "${SSH_OPTS[@]}" "pi@$HOST:$REMOTE/calib_view.jpg" "$SNAPS/$name" && open "$SNAPS/$name" &&
+        echo "결과 화면: $SNAPS/$name"
+}
+
 # ---------------- 주행 ----------------
 cmd_stop() {
     run "bash ~/$REMOTE/stop_all.sh"
@@ -294,6 +305,7 @@ AICAR 명령어  (맥 터미널에서: aicar <명령>)
   pull-code              파이에서 직접 고친 코드를 맥 pi/ 폴더로 가져오기
   ssh                    파이 터미널 열기
   check                  파이 파이썬 환경 점검
+  test-vision            합성 영상으로 인식/코스 로직 점검 (맥에서, 파이 연결 없이)
   reboot | shutdown      파이 재부팅 / 안전하게 끄기 (전원 뽑기 전에 shutdown)
   wifi                   파이 와이파이 상태, 저장된 목록, 주변 와이파이
   wifi-add [이름] [비번]  파이 USB 랜카드를 새 와이파이에 연결하고 저장 (안 주면 물어봄)
@@ -318,6 +330,8 @@ AICAR 명령어  (맥 터미널에서: aicar <명령>)
 
 [설정]
   config                 현재 설정 보기 (보정값, 흰 선, 주요 주행값)
+  calibrate [--dry]      경기장 자동 캘리브레이션 (차를 직선 차로 가운데에 놓고): 트랙 색, 초점, 조도,
+                         차로 폭/소실점, 카메라 중앙을 재서 저장. --dry는 측정만
   track [white|black]    트랙 색: white = 검은 바닥 위 흰 선, black = 흰 바닥 위 검은 선 (안 주면 물어봄)
   tune-center            키보드로 서보 중앙 맞추기 (s 저장)
   trim <도>              서보 중앙을 그만큼 옮겨 저장 (예: aicar trim -0.5)
@@ -341,7 +355,7 @@ EOF
 # ---------------- 명령 실행 ----------------
 cmd="${1:-help}"; shift || true
 case "$cmd" in
-    help|-h|--help|course|set) ;;
+    help|-h|--help|course|set|test-vision) ;;   # 파이 연결 없이 되는 명령
     *) host ;;      # 파이 주소를 한 번만 찾고 모든 하위 명령이 같이 씀
 esac
 case "$cmd" in
@@ -350,6 +364,7 @@ case "$cmd" in
     pull-code)   cmd_pull_code ;;
     ssh)         run_tty "cd ~/$REMOTE; exec bash -l" ;;
     check)       run "$(in_dir "$PY check_env.py")" 2>&1 | grep -E '^  (OK|FAIL)|카메라' ;;
+    test-vision) ensure_mac_venv; "$ROOT/.venv/bin/python" "$ROOT/tests/test_vision.py" ;;
     reboot)      run "sudo reboot" 2>/dev/null; green "재부팅합니다. 1분쯤 뒤 다시 연결하세요." ;;
     shutdown)    run "sudo shutdown -h now" 2>/dev/null; green "파이를 끕니다. 초록 LED가 꺼지면 전원을 뽑아도 됩니다." ;;
 
@@ -371,6 +386,7 @@ case "$cmd" in
     trim)        [ $# -ge 1 ] || die "사용법: aicar trim <도>"; run "$(in_dir "$PY car.py trim $1")" ;;
     tune-white)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_white.py")" ;;
     tune-light)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_light.py")" ;;
+    calibrate)   cmd_calibrate "$@" ;;
     camera)      run "$DRIVING" && die "자율주행이 카메라를 쓰는 중입니다. 화면 보기: aicar log   정지: aicar stop"
                  cmd_push && open_stream && run_tty "$(in_dir "$PY camera_view.py")" ;;
     set)         open -t "$CODE/lane_follow.py"; echo "맨 위 '설정' 부분을 고쳐 저장한 뒤: aicar push" ;;

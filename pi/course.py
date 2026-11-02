@@ -212,3 +212,23 @@ COURSE = _flat([
 if __name__ == "__main__":
     for i, step in enumerate(_flat(COURSE), 1):
         print(f"{i:2d}. {describe(step)}")
+
+"""
+    start_gate(1.0),                   
+    to_junction(),
+    tr(),
+    follow(5,speed=SPEED),
+    follow(until="crosswalk", at=0.63, max_sec=8.5, speed=SPEED, slow=0.2), 
+    wait_green(max_sec=10),    
+    stop(1),
+    straight(max_sec=4, speed=SPEED),  
+    to_junction(),
+    tr(),
+    to_junction(),
+    straight(max_sec=4, speed=SPEED),  
+    follow(until="junction", speed=SPEED, slow=0.2),
+    right(6, speed=0.35, angle=21),
+    to_junction(),
+    straight(max_sec=7, speed=SPEED),  
+    finish(),
+"""

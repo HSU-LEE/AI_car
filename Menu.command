@@ -109,6 +109,7 @@ menu_camera() {
 menu_settings() {
     submenu "설정 / 보정" \
         '1|현재 설정 보기|$A config' \
+        '0|자동 캘리브레이션 (차를 직선 차로 가운데에 놓고)|$A calibrate' \
         '-' \
         '2|서보 중앙 맞추기 (키보드)|$A tune-center' \
         '3|서보 중앙 숫자로 옮기기 (trim)|d=$(ask "옮길 각도 (예: -0.5): "); $A trim "$d"' \

@@ -125,15 +125,19 @@ LIGHT_LOCAL_V_MIN = 100 # 그 자리에서 색으로 볼 최소 밝기 (초록 L
 LIGHT_NEAR = 4          # wait_green: 초록불은 빨간불이 있던 자리에서 (빨간 램프 크기 × 이 값) 안에 있어야 인정
                         #   같은 신호등의 램프 간격은 허용하고, 다른 곳의 초록 물체는 무시
 
-LENS_POSITION = 3.0     # 수동 초점(디옵터 = 1/거리m). 3.0 ≈ 33cm. None이면 오토포커스
+LENS_POSITION = 3.0     # 수동 초점(디옵터 = 1/거리m). 3.0 ≈ 33cm. None이면 오토포커스. calibrate.py가 측정해 저장
+CAMERA_LOCK = None      # 고정 노출/게인/화이트밸런스 {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
+                        #   None이면 카메라 자동. calibrate.py가 경기장 조명에서 측정해 vision.json에 저장
 VISION_FILE = Path(__file__).with_name("vision.json")
 # --------------------------------------
 
 
 def load_vision():
-    """vision.json에 저장한 트랙 색(line_color), 흰 선 기준값(tune_white.py), 신호등 기준값(tune_light.py),
-    카메라 중앙(camera_x)을 불러옴. 없으면 기본값"""
+    """vision.json에 저장한 값을 불러옴. 없으면 기본값.
+    트랙 색(line_color), 흰 선 기준값(tune_white.py), 신호등 기준값(tune_light.py),
+    calibrate.py가 잰 카메라 중앙(camera_x), 차로 폭/소실점, 초점, 노출/화이트밸런스"""
     global LINE_COLOR, WHITE_THR, CAMERA_X, LIGHT_S_MIN, LIGHT_V_MIN, LIGHT_AREA_MIN
+    global LANE_WIDTH_PX, HORIZON_Y, LENS_POSITION, CAMERA_LOCK
     try:
         data = json.loads(VISION_FILE.read_text())
     except (OSError, ValueError):
@@ -144,6 +148,10 @@ def load_vision():
     LIGHT_S_MIN = data.get("light_s_min", LIGHT_S_MIN)
     LIGHT_V_MIN = data.get("light_v_min", LIGHT_V_MIN)
     LIGHT_AREA_MIN = data.get("light_area_min", LIGHT_AREA_MIN)
+    LANE_WIDTH_PX = data.get("lane_width_px", LANE_WIDTH_PX)
+    HORIZON_Y = data.get("horizon_y", HORIZON_Y)
+    LENS_POSITION = data.get("lens_position", LENS_POSITION)
+    CAMERA_LOCK = data.get("camera_lock", CAMERA_LOCK)
 
 
 def save_vision(**values):
@@ -1395,7 +1403,8 @@ class Driver:
         return steer, cmd, dbg
 
 
-def open_camera():
+def open_camera(locked=True):
+    """locked: calibrate.py가 저장한 고정 노출/화이트밸런스(CAMERA_LOCK)를 씀. False면 카메라 자동"""
     from libcamera import Transform, controls
     from picamera2 import Picamera2
 
@@ -1410,6 +1419,12 @@ def open_camera():
         cam.set_controls({"AfMode": controls.AfModeEnum.Continuous})
     else:
         cam.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": LENS_POSITION})
+    if locked and CAMERA_LOCK:
+        # 경기장 조명에서 잰 값으로 고정: 매트 반사나 사람 그림자에 밝기/색이 흔들리지 않게
+        cam.set_controls({"AeEnable": False, "AwbEnable": False,
+                          "ExposureTime": int(CAMERA_LOCK["ExposureTime"]),
+                          "AnalogueGain": float(CAMERA_LOCK["AnalogueGain"]),
+                          "ColourGains": tuple(CAMERA_LOCK["ColourGains"])})
     return cam
 
 
