@@ -1,4 +1,16 @@
 
+
+# < 속도 조정 >
+
+SPEED = 0.3
+
+
+
+
+
+
+
+
 # at= 값은 넓은 화각(센서 전체, 약 66도) 기준. 예전 좁은 화각 값 f는 0.5 + (f - 0.5) / 1.5 로 환산
 #   (예: 0.85 → 0.73, 0.75 → 0.67, 0.7 → 0.63, 0.65 → 0.6). 0.8보다 크면 예전 화면보다 더 가까운 바닥을 봄
 EVENTS = ("junction", "crosswalk", "lane", "gap", "green", "obstacle", "clear", "lost", None)
@@ -105,10 +117,6 @@ def finish():
     return _step("finish", 0.0, 0, None)
 
 
-
-SPEED = 0.45
-
-
 def to_junction(at=None, slow=0.2):
     """다음 교차로까지. at: 교차로 선 앞 얼마까지 (0.53 멀리 ~ 0.8 바로 앞)
     slow: 교차로 선이 보이면 점점 줄여서 이 속도로 도착 (None이면 감속 안 함)"""
@@ -190,22 +198,7 @@ def describe(step):
 # ↓↓↓ 여기를 코스에 맞게 수정 ↓↓↓
 
 COURSE = _flat([
-    start_gate(1.0),                   
     to_junction(),
-    tr(),
-    follow(5,speed=SPEED),
-    follow(until="crosswalk", at=0.63, max_sec=8.5, speed=SPEED, slow=0.2), 
-    wait_green(max_sec=10),    
-    stop(1),
-    straight(max_sec=4, speed=SPEED),  
-    to_junction(),
-    tr(),
-    to_junction(),
-    straight(max_sec=4, speed=SPEED),  
-    follow(until="junction", speed=SPEED, slow=0.2),
-    right(6, speed=0.35, angle=21),
-    to_junction(),
-    straight(max_sec=7, speed=SPEED),  
     finish(),
 ])
 

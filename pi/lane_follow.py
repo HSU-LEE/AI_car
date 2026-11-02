@@ -342,7 +342,7 @@ class LaneDetector:
         mask = tophat_ellipse(half, TOPHAT_K) >= self.thr
         hits = 0
         for r in range(mask.shape[0] - 1, -1, -1):      # 아래(가까운 쪽)부터
-            row = np.r_[0, mask[r].astype(np.int8), 0]
+            row = np.concatenate(([0], mask[r].astype(np.int8), [0]))
             edges = np.flatnonzero(np.diff(row))
             longest = (edges[1::2] - edges[::2]).max() * 2 if len(edges) else 0
             y = top + 2 * r
@@ -357,7 +357,7 @@ class LaneDetector:
         """띠 하나 → (세로 선들의 x 목록, 가로선 후보 (시작, 끝) 또는 None, 횡단보도 여부)"""
         cols = band.sum(axis=0).astype(np.float64)
         on = (cols > band.shape[0] * 0.2 * 255).astype(np.int8)
-        edges = np.flatnonzero(np.diff(np.r_[0, on, 0]))
+        edges = np.flatnonzero(np.diff(np.concatenate(([0], on, [0]))))
         runs, hline = [], None
         for a, b in zip(edges[::2], edges[1::2]):
             if b - a >= FRAME_W * HLINE_RATIO:
@@ -432,17 +432,19 @@ class LaneDetector:
             return None     # 빈 곳이 매트 밖(바닥)이면 끊긴 게 아니라 매트가 끝난 것
         return int(bands[k][0])
 
-    def __call__(self, frame, side="center"):
-        """반환: ((위치오차, 방향오차) 또는 None, 교차로 감지 여부, 디버그 이미지)"""
+    def __call__(self, frame, side="center", draw=True):
+        """반환: ((위치오차, 방향오차) 또는 None, 교차로 감지 여부, 디버그 이미지).
+        draw=False면 디버그 그림을 안 그림 (인식 결과는 같음, 디버그 이미지 자리에 None) → 화면을 안 보낼 때 빠르게"""
         top = int(FRAME_H * ROI_TOP)
         mask = self.line_mask(frame[top:])
         h = mask.shape[0] // SLICES
 
-        dbg = frame.copy()
-        roi, on = dbg[top:], mask > 0       # 흰 선 픽셀은 반투명으로 칠해서 원래 화면도 보이게
-        roi[on] = (0.45 * roi[on] + 0.55 * np.array(C_LANE)).astype(np.uint8)
+        dbg = frame.copy() if draw else None
+        if draw:
+            roi, on = dbg[top:], mask > 0       # 흰 선 픽셀은 반투명으로 칠해서 원래 화면도 보이게
+            roi[on] = (0.45 * roi[on] + 0.55 * np.array(C_LANE)).astype(np.uint8)
+            dashed_hline(dbg, top, C_DIM)       # 이 선 아래만 차선 인식에 씀
         cx0 = int(FRAME_W * CAMERA_X)
-        dashed_hline(dbg, top, C_DIM)       # 이 선 아래만 차선 인식에 씀
         jy = int(FRAME_H * JUNCTION_Y)
         marks = {}                          # 교차로/횡단보도 이름표 (종류별 한 번, 마지막에 맨 위에 그림)
 
@@ -469,8 +471,9 @@ class LaneDetector:
                     self.crosswalk = True
             if hline or crosswalk:
                 color, name = (C_JUNC, "JUNCTION") if hline else (C_XWALK, "CROSSWALK")
-                cv2.rectangle(dbg, (0, top + y1 + 2), (5, top + y1 + h - 2), color, -1)   # 양쪽 가장자리 표시
-                cv2.rectangle(dbg, (FRAME_W - 6, top + y1 + 2), (FRAME_W - 1, top + y1 + h - 2), color, -1)
+                if draw:
+                    cv2.rectangle(dbg, (0, top + y1 + 2), (5, top + y1 + h - 2), color, -1)   # 양쪽 가장자리 표시
+                    cv2.rectangle(dbg, (FRAME_W - 6, top + y1 + 2), (FRAME_W - 1, top + y1 + h - 2), color, -1)
                 marks.setdefault(name, (color, cy))
 
             if LINE_MODE == "line":
@@ -504,7 +507,7 @@ class LaneDetector:
         self.left, self.right = list(ls), list(rs)
 
         self.gap_y = self.find_gap(bands, ls[0] is not None and rs[0] is not None)
-        if self.gap_y is not None:
+        if self.gap_y is not None and draw:
             dashed_hline(dbg, self.gap_y, C_GAP, thick=2)
             chip(dbg, "LANE ENDS", FRAME_W // 2 - 40, self.gap_y - 22, C_GAP)
 
@@ -523,19 +526,22 @@ class LaneDetector:
             else:
                 c = None
             self.center[i] = c
-            for x, color in ((l, C_LEFT), (r, C_RIGHT)):
-                if x is not None:
-                    cv2.circle(dbg, (int(x), cy), 5, (20, 20, 20), -1, cv2.LINE_AA)
-                    cv2.circle(dbg, (int(x), cy), 4, color, -1, cv2.LINE_AA)
+            if draw:
+                for x, color in ((l, C_LEFT), (r, C_RIGHT)):
+                    if x is not None:
+                        cv2.circle(dbg, (int(x), cy), 5, (20, 20, 20), -1, cv2.LINE_AA)
+                        cv2.circle(dbg, (int(x), cy), 4, color, -1, cv2.LINE_AA)
             if c is not None:
-                cv2.circle(dbg, (int(c), cy), 3, C_PATH, -1, cv2.LINE_AA)
+                if draw:
+                    cv2.circle(dbg, (int(c), cy), 3, C_PATH, -1, cv2.LINE_AA)
                 pts.append((cy, c))
 
         if not pts:
             self.misses += 1
             if self.misses > 5:     # 오래 놓치면(차를 들었다 놓는 등) 추적 기록 초기화
                 self.left, self.right, self.center = [None] * SLICES, [None] * SLICES, [None] * SLICES
-            self.draw_marks(dbg, marks)
+            if draw:
+                self.draw_marks(dbg, marks)
             return None, junction, dbg
         self.misses = 0
 
@@ -550,9 +556,10 @@ class LaneDetector:
                     if len(inl) > len(best):
                         best = inl
             if len(best) >= 2:
-                for y, x in pts:
-                    if (y, x) not in best:
-                        cv2.circle(dbg, (int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # 오인식으로 뺀 점
+                if draw:
+                    for y, x in pts:
+                        if (y, x) not in best:
+                            cv2.circle(dbg, (int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # 오인식으로 뺀 점
                 pts = best
 
         near_y, far_y = FRAME_H - h // 2, top + h // 2
@@ -561,15 +568,17 @@ class LaneDetector:
             x_near, x_far = np.polyval(fit, near_y), np.polyval(fit, far_y)
         else:
             x_near = x_far = pts[0][1]
-        cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
-        cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
+        if draw:
+            cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
+            cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
 
         # 오차 단위: 화면 반폭 기준 × (REF_LANE_PX / LANE_WIDTH_PX). 화각이 바뀌어 차로가 작게 보여도
         # 같은 차로 이탈은 같은 값이 되게 함 → 조향 게인(KP, KH)과 임계값은 그대로
         half = FRAME_W / 2 * LANE_WIDTH_PX / REF_LANE_PX
         offset = float(np.clip((x_near - cx0) / half, -1, 1))
         heading = float(np.clip((x_far - x_near) / half, -1, 1))
-        self.draw_marks(dbg, marks)
+        if draw:
+            self.draw_marks(dbg, marks)
         return (offset, heading), junction, dbg
 
     @staticmethod
@@ -1048,6 +1057,7 @@ loop();
         self.img, self.seq = None, 0            # 메인 루프가 넣은 최신 화면과 번호
         self.jpg, self.jpg_seq = None, -1       # 마지막으로 인코딩한 JPEG와 그 화면 번호
         self.lock = threading.Lock()
+        self.last_request = -1e9                # 브라우저가 마지막으로 화면을 받아 간 시각 (watching 판단)
         app = Flask(__name__)
         # LEGEND 색은 화면 색(BGR)을 웹 색(RGB)으로 바꾼 것
         items = "".join(f'<span><i style="background:{c}"></i>{t}</span>' for c, t in self.LEGEND) if legend else ""
@@ -1061,6 +1071,7 @@ loop();
         def frame():
             # after보다 새 화면이 나올 때까지 최대 1초 기다렸다가 최신 화면 하나만 보냄
             from flask import request
+            self.last_request = time.monotonic()
             after = request.args.get("after", -1, type=int)
             if after > self.seq:        # 프로그램이 다시 시작돼서 번호가 처음부터: 그냥 최신 화면
                 after = -1
@@ -1080,6 +1091,7 @@ loop();
                 last = -1
                 while True:
                     time.sleep(0.05)
+                    self.last_request = time.monotonic()
                     jpg, seq = self.encoded()
                     if jpg is not None and seq != last:
                         last = seq
@@ -1088,6 +1100,11 @@ loop();
 
         threading.Thread(target=lambda: app.run(host="0.0.0.0", port=port, threaded=True),
                          daemon=True).start()
+
+    @property
+    def watching(self):
+        """최근 2초 안에 브라우저가 화면을 받아 갔는지. 아무도 안 보면 화면을 그릴 필요가 없음"""
+        return time.monotonic() - self.last_request < 2.0
 
     def update(self, img):
         """화면만 넘겨 둠 (인코딩 안 함). img는 이후에 다시 고치지 않는 새 배열이어야 함"""
@@ -1336,12 +1353,12 @@ class Driver:
         if course.turning(now):
             # 회전 중에는 차가 빠르게 돌아서 직전 프레임의 선 위치 기억이 오히려 틀림 → 매 프레임 새로 판단
             detect.left, detect.right, detect.center = [None] * SLICES, [None] * SLICES, [None] * SLICES
-        det, junction, dbg = detect(frame, course.lane_side(now))
+        det, junction, dbg = detect(frame, course.lane_side(now), draw=show)     # 화면을 안 보낼 땐 안 그림
         step = course.step()
         detect.far_y = None
         if step is not None and step.get("slow") is not None and step["until"] == "junction":
             detect.far_y = detect.far_hline(frame)      # 필요할 때만 계산 (fps 절약)
-            if detect.far_y is not None:
+            if detect.far_y is not None and show:
                 dashed_hline(dbg, detect.far_y, C_JUNC, dash=6, gap=6)
                 chip(dbg, "JUNCTION AHEAD", FRAME_W - 130, detect.far_y - 20, C_JUNC, 0.38)
         light = self.traffic(frame) if course.needs_light() or show else None
@@ -1484,7 +1501,8 @@ def main():
         while True:
             frame = cam.capture_array()
             now = time.monotonic()
-            show = stream is not None and frames % 2 == 0      # 이번 프레임을 브라우저로 보낼지
+            # 이번 프레임을 브라우저로 보낼지: 누가 보고 있을 때만, 2프레임에 한 번 (아무도 안 보면 그리기 비용 0)
+            show = stream is not None and stream.watching and frames % 2 == 0
             steer, cmd, dbg = driver.tick(frame, now, show)
             if driver.done:
                 print("\n코스 완료")
