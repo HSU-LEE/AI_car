@@ -112,6 +112,9 @@ JUNCTION_FRAMES = 3     # 연속 몇 프레임 감지되어야 인정 (오감지
 GAP_BANDS = 2           # 아래에서 이어지던 선 위로 이 개수만큼 띠에 선이 하나도 없으면 "차선이 끊김"(gap)
 CROSSWALK_HOLD_MAX = 1.5    # 차 바로 앞 횡단보도 위에서 조향을 유지하는 최대 시간(초). 그 뒤엔 다시 차선 따라감
 TURN_CLEAR_FRAMES = 8   # 회전: 새 차선이 이 프레임 수만큼 잡히면 회전 각도 → 차선 추종 조향으로 완전히 넘어감
+ALIGN_OFFSET = 0.15     # until="aligned": 위치 오차가 이 안이고 (차로 가운데)
+ALIGN_HEADING = 0.12    #   방향 오차가 이 안인 상태가 (차로 방향으로 똑바로)
+ALIGN_FRAMES = 5        #   이 프레임 수만큼 이어지면 '정렬됨'. 회전 뒤 tr()/tl()이 정렬하고 멈출 때 씀
 STRAIGHT_CORR = 6       # straight(): 차선이 보이면 이 범위(±도) 안에서 보정
 CURVE_ASSIST = 0.5      # curve(): 지정 각도와 차선 추종 조향을 섞는 비율 (0: 각도 고정, 1: 차선만)
 
@@ -776,8 +779,8 @@ class CourseRunner:
 
     EVENT_NAMES = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선",
                    "gap": "차선 끊김", "green": "초록불", "obstacle": "장애물 감지", "clear": "장애물 없어짐",
-                   "lost": "차선 놓침"}
-    STATE_EVENTS = ("lane", "green", "clear")   # '지금 상태'로 판단: 써도 다시 셀 필요 없음 (장애물은 한 번 쓰면 없어졌다 다시 나타나야 셈)
+                   "lost": "차선 놓침", "aligned": "정렬"}
+    STATE_EVENTS = ("lane", "green", "clear", "aligned")   # '지금 상태'로 판단: 써도 다시 셀 필요 없음 (장애물은 한 번 쓰면 없어졌다 다시 나타나야 셈)
     AT_EVENTS = ("junction", "crosswalk", "gap")    # at= (화면 어디까지 내려와야 하는지)을 쓸 수 있는 이벤트
 
     def __init__(self, course, start=1):
@@ -795,9 +798,9 @@ class CourseRunner:
         # 이벤트별: 연속 감지 프레임 수, 무장 여부 (출발선처럼 처음부터 보이던 것, 방금 쓴 것은 한 번 사라져야 다시 셈)
         # 초록불, 장애물/없음은 처음부터 그 상태여도 바로 인정해야 하므로 항상 무장
         self.hits = {"junction": 0, "crosswalk": 0, "lane": 0, "gap": 0, "green": 0, "obstacle": 0, "clear": 0,
-                     "lost": 0}
+                     "lost": 0, "aligned": 0}
         self.armed = {"junction": False, "crosswalk": False, "lane": True, "gap": False, "green": True,
-                      "obstacle": True, "clear": True, "lost": True}
+                      "obstacle": True, "clear": True, "lost": True, "aligned": True}
         self.since = {k: None for k in self.hits}   # 이벤트별: 지금 상태가 시작된 시각 (hold_sec 판단용)
 
     def step(self):
@@ -883,7 +886,8 @@ class CourseRunner:
                 # 초록: 화면 전체에서 빨간불 근처에 초록불이 보이거나, 빨간불이었던 자리가 초록(청록 포함)으로 바뀜
                 "green": self.red_seen and ((light == "green" and green_here) or self.local_light == "green"),
                 "obstacle": bool(obstacle), "clear": not obstacle,
-                "lost": det is None}
+                "lost": det is None,
+                "aligned": det is not None and abs(det[0]) < ALIGN_OFFSET and abs(det[1]) < ALIGN_HEADING}
         step = self.step()
         if step is not None and step.get("at") is not None and step["until"] in self.AT_EVENTS:
             y = ys.get(step["until"])
@@ -895,7 +899,7 @@ class CourseRunner:
                 self.armed[k] = True
 
     def happened(self, event, now=0.0, hold=0.0):
-        need = TURN_CLEAR_FRAMES if event == "lane" else JUNCTION_FRAMES
+        need = {"lane": TURN_CLEAR_FRAMES, "aligned": ALIGN_FRAMES}.get(event, JUNCTION_FRAMES)
         held = hold <= 0 or (self.since[event] is not None and now - self.since[event] >= hold)
         return self.armed[event] and self.hits[event] >= need and held
 
@@ -1221,7 +1225,8 @@ class Driver:
     # ---------- 인식 화면 (브라우저 Live View / replay) ----------
     PANEL_W = 240
     EVENT_EN = {"junction": "JUNCTION", "crosswalk": "CROSSWALK", "lane": "NEW LANE", "gap": "LANE ENDS",
-                "green": "GREEN LIGHT", "obstacle": "OBSTACLE", "clear": "CLEAR", "lost": "LANE LOST"}
+                "green": "GREEN LIGHT", "obstacle": "OBSTACLE", "clear": "CLEAR", "lost": "LANE LOST",
+                "aligned": "ALIGNED"}
     DO_EN = {"follow": "FOLLOW LANE", "straight": "STRAIGHT", "right": "TURN RIGHT", "left": "TURN LEFT",
              "curve": "CURVE", "stop": "STOP", "wait": "WAIT", "finish": "FINISH"}
 

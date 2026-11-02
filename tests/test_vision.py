@@ -275,6 +275,30 @@ def test_motor():
     check("화면이 밀리면 '움직임'", cm.frame_diff(a, b) > cm.moved_threshold(noise), f"{cm.frame_diff(a, b):.1f}")
 
 
+def test_turn_align_stop():
+    print("[tr(): 회전 → 정렬 → 정지]")
+    import course as cs
+    with quiet():
+        c = lf.CourseRunner([cs.tr(stop_sec=1.0), finish()])
+        t = feed(c, 12, 0.0, det=None)                  # 도는 중: 차선 안 보임 (0.6초)
+        t = feed(c, lf.TURN_CLEAR_FRAMES, t, det=(0.4, 0.3))     # 새 차선이 비스듬히 잡힘
+    check("새 차선이 잡히면 3초를 안 채우고 회전 끝", c.idx == 1 and t < 3.0, f"{t:.2f}초, 동작 {c.idx + 1}")
+    with quiet():
+        t = feed(c, 10, t, det=(0.3, 0.2))              # 아직 덜 정렬됨
+    check("덜 정렬되면 계속 차선 따라감", c.idx == 1 and not c.stopped(t))
+    with quiet():
+        t = feed(c, lf.ALIGN_FRAMES, t, det=(0.05, 0.03))       # 차로 가운데, 똑바로
+    check("정렬되면 그 자리에서 정지", c.idx == 2 and c.stopped(t), c.status(t))
+    with quiet():
+        t = feed(c, 25, t, det=(0.05, 0.03))
+    check("정지 시간(1초) 뒤 다음 동작", c.idx == 3 or c.done, f"동작 {c.idx + 1}")
+    with quiet():
+        c = lf.CourseRunner([cs.tr(), finish()])
+        t = feed(c, 70, 0.0, det=None)                  # 끝내 차선을 못 찾음
+    check("차선을 못 찾으면 3초 안전장치로 회전 끝", c.idx >= 1, f"{t:.1f}초, 동작 {c.idx + 1}")
+    check("tl(0): 정지 없이 회전 → 정렬만", [s["do"] for s in cs._flat(cs.tl(0))] == ["left", "follow"])
+
+
 def test_driver_smoke():
     print("[Driver 전체 한 바퀴]")
     frames = [lane_frame(), lane_frame(shift=30), lane_frame(y_end=250), lane_frame(crosswalk=True),
@@ -297,7 +321,7 @@ def test_driver_smoke():
 
 def main():
     for t in (test_fast_math, test_lane, test_gap, test_crosswalk, test_track_color,
-              test_traffic_light, test_course_logic, test_calibration, test_motor, test_driver_smoke):
+              test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_driver_smoke):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")

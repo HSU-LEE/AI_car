@@ -13,7 +13,7 @@ SPEED = 0.45
 
 # at= 값은 넓은 화각(센서 전체, 약 66도) 기준. 예전 좁은 화각 값 f는 0.5 + (f - 0.5) / 1.5 로 환산
 #   (예: 0.85 → 0.73, 0.75 → 0.67, 0.7 → 0.63, 0.65 → 0.6). 0.8보다 크면 예전 화면보다 더 가까운 바닥을 봄
-EVENTS = ("junction", "crosswalk", "lane", "gap", "green", "obstacle", "clear", "lost", None)
+EVENTS = ("junction", "crosswalk", "lane", "gap", "green", "obstacle", "clear", "lost", "aligned", None)
 SIDES = ("left", "right", "center", None)
 STYLES = ("soft", "normal", "sharp", None)
 OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow")
@@ -163,11 +163,21 @@ def uturn(direction, speed=0.2):
             turn(direction, min_sec=1.0, max_sec=5, speed=speed)]
 
 
-def tr():
-    return [right(4, speed=SPEED, angle=21)]
+def tr(stop_sec=1.0):
+    """우회전: 새 차선이 잡힐 때까지 돌고(최대 3초) → 차로에 맞춰 정렬될 때까지만 조금 가고 → 그 자리에서 정지.
+    stop_sec: 정렬 뒤 멈춰 있는 시간(초). 0이면 멈추지 않고 바로 다음 동작"""
+    return _turn_align_stop(right, stop_sec)
 
-def tl():
-    return [left(4, speed=SPEED, angle=21)]
+
+def tl(stop_sec=1.0):
+    """좌회전: tr()과 같고 방향만 왼쪽"""
+    return _turn_align_stop(left, stop_sec)
+
+
+def _turn_align_stop(turn_fn, stop_sec):
+    steps = [turn_fn(until="lane", angle=21, min_sec=0.5, max_sec=3, speed=SPEED),   # 3초는 차선을 못 찾을 때의 안전장치
+             follow(until="aligned", max_sec=1.5, speed=SPEED)]                    # 정렬 못 하면 1.5초 뒤 그냥 넘어감
+    return steps + [stop(stop_sec)] if stop_sec > 0 else steps
 
 def _flat(steps):
     """묶음(리스트)을 펼쳐서 동작 하나하나의 목록으로. 묶음 안의 묶음도 펼침"""
@@ -180,7 +190,8 @@ def _flat(steps):
 def describe(step):
     """동작 하나를 사람이 읽는 문장으로"""
     names = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선", "gap": "차선 끊김",
-             "green": "초록불", "lost": "차선 놓침", "obstacle": "장애물", "clear": "장애물 없어짐"}
+             "green": "초록불", "lost": "차선 놓침", "obstacle": "장애물", "clear": "장애물 없어짐",
+             "aligned": "정렬"}
     do = {"follow": "차선 따라", "straight": "직진", "right": "우회전", "left": "좌회전", "curve": "곡선",
           "stop": "정지", "wait": "대기", "finish": "끝"}[step["do"]]
     parts = [do]
