@@ -16,7 +16,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pi"))
 import lane_follow as lf  # noqa: E402
-from course import COURSE, finish, follow, straight, wait_green  # noqa: E402
+from course import COURSE, finish, follow, stop, straight, wait_green  # noqa: E402
 
 W, H = lf.FRAME_W, lf.FRAME_H
 RED, GREEN = (0, 0, 255), (0, 255, 0)
@@ -330,7 +330,7 @@ def test_turn_align_stop():
     with quiet():
         c = lf.CourseRunner([cs.tr(stop_sec=1.0), finish()])
         t = feed(c, 12, 0.0, det=None)                  # 도는 중: 차선 안 보임 (0.6초)
-        t = feed(c, lf.TURN_CLEAR_FRAMES, t, det=(0.4, 0.3))     # 새 차선이 비스듬히 잡힘
+        t = feed(c, lf.TURN_CLEAR_FRAMES, t, det=(0.3, 0.3))     # 새 차선이 비스듬히 잡힘
     check("새 차선이 잡히면 3초를 안 채우고 회전 끝", c.idx == 1 and t < 3.0, f"{t:.2f}초, 동작 {c.idx + 1}")
     with quiet():
         t = feed(c, 10, t, det=(0.3, 0.2))              # 아직 덜 정렬됨
@@ -346,6 +346,37 @@ def test_turn_align_stop():
         t = feed(c, 70, 0.0, det=None)                  # 끝내 차선을 못 찾음
     check("차선을 못 찾으면 3초 안전장치로 회전 끝", c.idx >= 1, f"{t:.1f}초, 동작 {c.idx + 1}")
     check("tl(0): 정지 없이 회전 → 정렬만", [s["do"] for s in cs._flat(cs.tl(0))] == ["left", "follow"])
+
+    with quiet():   # 회전 중 남은 차선이 비스듬히 가로질러 '가로선'으로 잡혀도 새 차선이면 회전 끝
+        c = lf.CourseRunner([cs.tl(0), finish()])
+        t = 0.0
+        for _ in range(12):
+            c.update(False, t, None, False, {}); t += 0.05          # 도는 중: 차선 놓침
+        for _ in range(lf.TURN_CLEAR_FRAMES + 1):
+            c.update(True, t, (0.1, -0.3), False, {"near": True}); t += 0.05   # 교차로처럼 보이지만 새 차선
+    check("회전: 가로선(교차로)으로 보여도 새 차선이 잡히면 끝", c.idx == 1, f"{t:.2f}초, 동작 {c.idx + 1}")
+    with quiet():   # 회전 시작 순간 보이던(돌기 전) 차선으로는 끝나지 않음
+        c = lf.CourseRunner([cs.tr(0), finish()])
+        t = feed(c, 30, 0.0, det=(0.05, 0.05))
+    check("회전: 돌기 전부터 보이던 차선으로는 안 끝남", c.idx == 0)
+    with quiet():   # 이전 동작 동안 계속 보이던 끊김으로 다음 동작이 시작하자마자 끝나지 않음
+        c = lf.CourseRunner([stop(1.0), follow(until="gap", max_sec=30), finish()])
+        t = feed(c, 5, 0.0)                           # 처음엔 끊김 없음
+        t = feed(c, 16, t, gap=int(H * 0.8))          # 정지 중에 (가짜) 끊김이 보이기 시작 → 1초에 정지가 끝남
+        started = c.idx
+        t = feed(c, 2, t, gap=int(H * 0.8))           # 새 동작에서 2프레임째
+    check("이전 동작의 감지로 즉시 끝나지 않음 (새 동작에서 다시 3프레임)", started == 1 and c.idx == 1,
+          f"동작 {c.idx + 1}")
+    with quiet():
+        feed(c, 1, t, gap=int(H * 0.8))
+    check("새 동작에서 3프레임 계속 보이면 끝", c.idx == 2)
+    old = lf.GAP_MAX_HEADING
+    lf.GAP_MAX_HEADING = -1.0       # 방향 오차가 아무리 작아도 '어긋남'으로 보게 해서 확인
+    try:
+        d9, _ = run_detector(lane_frame(y_end=250))
+    finally:
+        lf.GAP_MAX_HEADING = old
+    check("차가 차로와 크게 어긋나 있으면 끊김으로 안 봄", d9.gap_y is None and "aligned" in d9.gap_why, d9.gap_why)
 
 
 def test_driver_smoke():

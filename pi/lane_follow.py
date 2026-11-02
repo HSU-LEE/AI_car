@@ -112,12 +112,16 @@ EDGE_STOP_Y = 0.63      # 차 앞쪽 매트가 화면 높이의 이 지점에서
 
 JUNCTION_BY_BRANCH = False  # True면 선이 3개 이상 보일 때도 교차로로 봄 (갈림길)
 JUNCTION_FRAMES = 3     # 연속 몇 프레임 감지되어야 인정 (오감지 방지). gap/green도 같은 값
+GAP_MAX_HEADING = 0.5   # 방향 오차가 이보다 크면(차가 차로와 크게 어긋남) 끊김 판단 안 함
 GAP_BANDS = 2           # 차선 끊김(gap): 빈 띠 위에서 선이 다시 보이면 빈 띠 1개로도 끊김. 위에서 다시 안 보이면
                         #   빈 띠가 이 개수 이상이어야 끊김 (맨 위 띠 하나만 빈 건 먼 선을 놓친 것일 수 있어서)
 CROSSWALK_HOLD_MAX = 1.5    # 차 바로 앞 횡단보도 위에서 조향을 유지하는 최대 시간(초). 그 뒤엔 다시 차선 따라감
 TURN_CLEAR_FRAMES = 8   # 회전: 새 차선이 이 프레임 수만큼 잡히면 회전 각도 → 차선 추종 조향으로 완전히 넘어감
-ALIGN_OFFSET = 0.15     # until="aligned": 위치 오차가 이 안이고 (차로 가운데)
-ALIGN_HEADING = 0.12    #   방향 오차가 이 안인 상태가 (차로 방향으로 똑바로)
+TURN_END_OFFSET = 0.4   # 회전 끝: 차 바로 앞에 선이 보이고 위치 오차가 이 안인 상태가
+TURN_END_FRAMES = 4     #   이 프레임 수만큼 이어지면 회전을 끝냄. 도는 중엔 선이 하나만 보여 방향 오차가 프레임마다
+                        #   크게 튀어서(실제 녹화 -0.75 ~ +0.65) 방향은 안 보고, 방향 맞추기는 다음 정렬 단계가 함
+ALIGN_OFFSET = 0.2      # until="aligned": 위치 오차가 이 안이고 (차로 가운데)
+ALIGN_HEADING = 0.2     #   방향 오차가 이 안인 상태가 (차로 방향으로 똑바로) [0.12는 실제 트랙에서 거의 안 됨]
 ALIGN_FRAMES = 5        #   이 프레임 수만큼 이어지면 '정렬됨'. 회전 뒤 tr()/tl()이 정렬하고 멈출 때 씀
 STRAIGHT_CORR = 6       # straight(): 차선이 보이면 이 범위(±도) 안에서 보정
 CURVE_ASSIST = 0.5      # curve(): 지정 각도와 차선 추종 조향을 섞는 비율 (0: 각도 고정, 1: 차선만)
@@ -638,6 +642,9 @@ class LaneDetector:
         half = FRAME_W / 2 * LANE_WIDTH_PX / REF_LANE_PX
         offset = float(np.clip((x_near - cx0) / half, -1, 1))
         heading = float(np.clip((x_far - x_near) / half, -1, 1))
+        if self.gap_y is not None and abs(heading) > GAP_MAX_HEADING:
+            # 차가 차로와 크게 어긋나 있으면 차선이 화면 옆으로 빠져서 끊긴 것처럼 보임 → 끊김으로 안 봄
+            self.gap_y, self.gap_why = None, "car not aligned with lane"
         if draw:
             self.draw_marks(dbg, marks)
         return (offset, heading), junction, dbg
@@ -863,9 +870,13 @@ class CourseRunner:
         if step is None:
             print(f"\n[코스 끝] 이제부터 차선만 따라감")
             return
-        if step["do"] == "straight" and step["until"] == "lane":
-            # 끊기기 전 차선이 아직 보여서 바로 "새 차선"으로 끝나지 않게: 한 번 사라졌다가 다시 잡혀야 끝
+        if step["do"] in ("straight", "left", "right") and step["until"] == "lane":
+            # 직진(끊김 통과)/회전: 처음 보이던 차선(끊기기 전, 돌기 전)으로 바로 끝나지 않게 한 번 사라졌다가 다시 잡혀야 끝
             self.armed["lane"] = False
+        if step["until"] is not None:
+            # 이 동작의 종료 이벤트는 이 동작 안에서 새로 세기 시작 (이전 동작 동안 쌓인 감지로 시작하자마자 끝나지 않게)
+            self.hits[step["until"]] = 0
+            self.since[step["until"]] = None
         if step["sec"] is not None:
             how = f"{step['sec']}초"
         else:
@@ -919,10 +930,15 @@ class CourseRunner:
                         abs(box[0] - b[0]) < max(b[2], 4) and abs(box[1] - b[1]) < max(b[3], 4) for b in self.red_boxes):
                     self.red_boxes.append(box)
         green_here = lamps is None or self.near_red(lamps.get("green"))
+        step = self.step()
+        # 회전 중 새 차선: 바로 앞 선 + 위치 오차만 봄 (TURN_END_*). 남은 차선이 화면을 비스듬히 가로질러
+        # '교차로 가로선'으로 잡히고, 선이 하나만 보여 방향 오차가 튀기 때문
+        turning = step is not None and step["do"] in ("left", "right")
         seen = {"junction": junction, "crosswalk": crosswalk,
                 # 새 차선: 차 바로 앞에 선이 보이면서 차로가 대략 맞음. 끊긴 구간 위처럼 앞에 선이 없으면 '사라짐'으로 봄
                 # (끊김 너머 차선이 위쪽에 계속 보여도, 바로 앞 선이 사라졌다 다시 보여야 straight(until="lane")이 끝남)
-                "lane": (not junction and det is not None and abs(det[0]) < 0.6 and abs(det[1]) < 0.5
+                "lane": (det is not None and abs(det[0]) < TURN_END_OFFSET and ys.get("near", True)) if turning else
+                        (not junction and det is not None and abs(det[0]) < 0.6 and abs(det[1]) < 0.5
                          and ys.get("near", True)),
                 "gap": ys.get("gap") is not None,
                 # 초록: 화면 전체에서 빨간불 근처에 초록불이 보이거나, 빨간불이었던 자리가 초록(청록 포함)으로 바뀜
@@ -930,7 +946,6 @@ class CourseRunner:
                 "obstacle": bool(obstacle), "clear": not obstacle,
                 "lost": det is None,
                 "aligned": det is not None and abs(det[0]) < ALIGN_OFFSET and abs(det[1]) < ALIGN_HEADING}
-        step = self.step()
         if step is not None and step.get("at") is not None and step["until"] in self.AT_EVENTS:
             y = ys.get(step["until"])
             seen[step["until"]] = y is not None and y >= step["at"] * FRAME_H - 1    # -1: 0.55*360=198.00000000000003 같은 오차
@@ -941,7 +956,11 @@ class CourseRunner:
                 self.armed[k] = True
 
     def happened(self, event, now=0.0, hold=0.0):
-        need = {"lane": TURN_CLEAR_FRAMES, "aligned": ALIGN_FRAMES}.get(event, JUNCTION_FRAMES)
+        step = self.step()
+        if event == "lane" and step is not None and step["do"] in ("left", "right"):
+            need = TURN_END_FRAMES
+        else:
+            need = {"lane": TURN_CLEAR_FRAMES, "aligned": ALIGN_FRAMES}.get(event, JUNCTION_FRAMES)
         held = hold <= 0 or (self.since[event] is not None and now - self.since[event] >= hold)
         return self.armed[event] and self.hits[event] >= need and held
 

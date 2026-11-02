@@ -174,9 +174,14 @@ def tl(stop_sec=1.0):
     return _turn_align_stop(left, stop_sec)
 
 
+TURN_SPEED = 0.3      # tr()/tl() 회전 속도 (빠르면 반경이 커지고 과회전). 모터 최소값보다 낮으면 최소값으로 달림
+ALIGN_SPEED = 0.2     # 회전 뒤 정렬할 때 속도 (천천히 맞추고 멈춤)
+
+
 def _turn_align_stop(turn_fn, stop_sec):
-    steps = [turn_fn(until="lane", angle=21, min_sec=0.5, max_sec=3, speed=SPEED),   # 3초는 차선을 못 찾을 때의 안전장치
-             follow(until="aligned", max_sec=1.5, speed=SPEED)]                    # 정렬 못 하면 1.5초 뒤 그냥 넘어감
+    steps = [turn_fn(until="lane", angle=21, min_sec=0.5, max_sec=3, speed=TURN_SPEED),  # 3초는 차선을 못 찾을 때의 안전장치
+             # 천천히, 부드러운 조향으로 정렬. 못 하면 3초 뒤 그냥 넘어감
+             follow(until="aligned", max_sec=3, speed=ALIGN_SPEED, style="soft")]
     return steps + [stop(stop_sec)] if stop_sec > 0 else steps
 
 def _flat(steps):
@@ -214,6 +219,7 @@ COURSE = _flat([
     follow(1.5),
     tr(),
     to_junction(),
+    follow(1.5),
     tl(),
     to_gap(0.75),
     finish(),
