@@ -47,7 +47,7 @@ def main():
                 trim = 0.0
             elif key == "s":
                 # A new center makes the learned running bias stale, so clear it.
-                data = load_calib()     # Keep other saved values, such as the motor floor.
+                data = load_calib()     # Keep other saved values, such as the motor minimums.
                 data.update(steer_trim=trim, steer_bias=0.0)
                 CALIB_FILE.write_text(json.dumps(data))
                 print(f"\n저장됨: {CALIB_FILE} (steer_trim = {trim:+.1f})")

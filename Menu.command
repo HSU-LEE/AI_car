@@ -110,7 +110,6 @@ menu_settings() {
     submenu "설정 / 보정" \
         '1|현재 설정 보기|$A config' \
         '0|자동 캘리브레이션 (차를 직선 차로 가운데에 놓고)|$A calibrate' \
-        'm|모터 최소값 측정 (차를 트랙에, 앞에 30cm 공간)|$A calibrate-motor' \
         'f|초점만 다시 맞추기 (차를 트랙 위에)|$A focus' \
         '-' \
         '2|서보 중앙 맞추기 (키보드)|$A tune-center' \

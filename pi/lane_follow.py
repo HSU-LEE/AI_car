@@ -63,6 +63,13 @@ LINE_W_MIN, LINE_W_MAX = 3, 87   # Width of one line inside a band, in px. [narr
 MIN_PIXELS = 40         # Minimum pixels required to accept one line. [narrow FOV 60]
 DOUBLE_GAP = 33         # Two lines closer than this gap (px) are merged into one double line. [narrow FOV 50]
 CROSSWALK_LINES = 4     # This many lines or more in one band means a crosswalk, and that band is ignored.
+STRIPE_MAX = 0.3        # Crosswalk stripe: a separate white blob no longer than this times the lane width at its height. Lane lines are long blobs.
+                        # Run 20261103-202456: stripes 41x15..84x59 px (about 0.2 lane width), lane lines 97x183 px and longer. Far line bits about 0.38.
+STRIPE_MIN_AREA = 120   # Smaller blobs are noise, not stripes.
+SPECK_SIDE = 0.25       # A blob in the far half of the ROI, shorter than 1.5 bands, narrower than a horizontal line, centered in the outer SPECK_SIDE of the frame,
+                        # and not cut by any ROI edge (a lane line leaving the frame) is not a lane line: a dark object or shadow off the track (run 20261103-210839).
+STRIPES_MIN = 3         # This many stripes or more, each inside the lane (lane line on both its left and right), is a crosswalk.
+                        # Then they are removed from lane detection, so a stripe is never taken as a lane line.
 LANE_WIDTH_PX = 482     # Lane width in px at the bottom of the frame (y=342). Corrected automatically when both lines are visible.
                         # Converted from a measured 590 in a narrow-FOV recording. y=342 on the wide FOV is outside the old frame (closer floor).
 HORIZON_Y = 49          # Height y where the two lane lines meet. Sets how quickly the lane narrows toward the top. [narrow FOV -16]
@@ -84,21 +91,28 @@ STEER_RATE = 150        # Maximum change in steering angle per second, in deg/s.
 
 BASE_SPEED = 0.22       # Speed going straight.
 MIN_SPEED = 0.18        # Speed at full steering. Stays at or above the lowest command that keeps the motor turning.
-HARD_STEER = 21         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised a little.
-HARD_STEER_BOOST = 0.1  # Motor command added then. 0 disables it.
+HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
+HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
 KICK_SPEED = 0.6        # Brief speed when starting from a stop, because the motor will not turn at a low speed.
 KICK_TIME = 0.25        # Start-kick duration, in seconds.
 LOST_LIMIT = 15         # Old setting, unused. Lost-lane timing uses LOST_HOLD (seconds) instead of a frame count.
-LOST_HOLD = 1.0         # After the lane is lost, hold the last steering and creep for this many seconds, then stop.
+LOST_HOLD = 1.0         # After the lane is lost, hold the last steering and creep for this many seconds, then back up (LOST_BACK_SEC), then stop.
+LOST_BACK_SEC = 1.5     # Then reverse for up to this long, replaying the recent steering backwards so the car retraces its path, until the lane comes back. 0 = just stop.
+LOST_BACK_SPEED = 0.5   # Motor command while backing up. Reverse needs a higher command than forward to move at all.
+LOST_BACK_TRIES = 2     # Back-ups allowed per action. Each needs a fresh loss of the lane, so the car cannot rock back and forth forever.
+LOST_BACK_MEMORY = 4.0  # Seconds of forward steering kept for the retrace.
 STEP_MAX_SEC = 20       # If an until action sets no max_sec, warn and advance after this many seconds so a step cannot run forever.
-FAR_TOP = 0.3           # slow= far detection also looks for a horizontal line between this frame height and ROI_TOP. [narrow FOV 0.2]
-FAR_HLINE = 1.2         # A far horizontal line counts only if connected white pixels on one row cover at least this times the lane width at that height.
+LIGHT_VIEW_EVERY = 3    # Not waiting for green: the traffic light is detected for the view only once every this many frames.
+FAR_TOP = 0.3           # slow= far detection also looks for a horizontal line between this frame height and FAR_BOT. [narrow FOV 0.2]
+FAR_BOT = 0.6           # A far line that is still thin can sit below ROI_TOP before the near (band) test can see it, so the far search reaches down to here.
+FAR_HLINE = 0.8         # A far horizontal line counts only if connected white pixels on one row cover at least this times the lane width at that height.
+                        # A thin far line shows only its middle in the mask (1.2 missed the T-junction line in runs 20261103-1939/1940 until it was at 0.5).
                         # Used only to slow down, not for the junction decision (until), so a curve mistaken for a line only slows the car briefly.
 APPROACH_HOLD = 0.5     # slow=: keep slowing for this many seconds after the line disappears, so one or two false frames do not react.
 KICK_AFTER_STOP = 0.3   # Use the start kick only after standing still at least this long, in seconds. A brief hesitation gets no kick.
-MOTOR_MIN = 0.35        # Lowest motor command that actually rolls straight on the floor. Lower commands are raised to this.
-MOTOR_MIN_TURN = 0.42   # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
-                        # calibrate_motor.py, the last calibration step, measures both on the floor and saves them in calib.json.
+MOTOR_MIN = 0.27        # Lowest motor command that actually rolls straight on the floor. Lower commands are raised to this.
+MOTOR_MIN_TURN = 0.27   # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
+                        # Fixed values, set by hand. motor_min / motor_min_turn in calib.json on the Pi override them if present.
 LANE_PX_PER_CM = REF_LANE_PX / 20.0     # How many position-error px equal 1 cm, for a 20 cm lane width. Used by shift=.
                                         # Position error is in REF_LANE_PX units, so this uses the same reference.
 # style= steering character: (KP scale, KH scale, SMOOTH).
@@ -115,9 +129,15 @@ GAP_MAX_HEADING = 0.5   # Skip the gap test when heading error is larger than th
 GAP_BANDS = 2           # Lane gap: one empty band is enough if the line resumes above it.
                         # If it does not resume, the empty run must be at least this many bands, because one empty top band may just be a missed far line.
 CROSSWALK_HOLD_MAX = 1.5    # Maximum seconds to hold steering on a crosswalk right in front of the car. After that, follow the lane again.
+                            # Only for a crosswalk found by the band test. Stripes found as blobs are already out of the lane, so the lane is followed.
 TURN_CLEAR_FRAMES = 8   # Turn: once the new lane is held for this many frames, steering moves fully from the turn angle to lane following.
 TURN_END_OFFSET = 0.4   # Turn end: a line is visible just ahead and the position error is within this.
 TURN_END_HEADING = 0.5  # Heading-error limit while a corner horizontal line is still visible. Corner tape is rejected here.
+TURN_YAW_PX = 330       # Turns with deg= also end when the camera view has swung this far sideways for 90 degrees (YawMeter).
+                        # Lane-ended 90-degree turns in runs 20261103-1939..2014 swung 331-352 px; overshooting ones went on to 420-710.
+YAW_TOP = 0.3           # YawMeter uses the frame above this height (the room, not the floor).
+TURN_END_OFFSET_WIDE = 0.65   # Turn end, second way: a lane straight ahead (heading within TURN_END_HEADING_WIDE) that is off to one side by up to this.
+TURN_END_HEADING_WIDE = 0.3
 TURN_EXIT_HEADING = 0.92  # Exit line after the horizontal line disappears. The turn ends when that line comes in front, even if heading has not fallen to 0.5.
 TURN_EXIT_CLEAR = 8     # The horizontal line must stay gone for this many frames before it counts as the exit. A one- or two-frame flicker is still corner tape.
 TURN_END_FRAMES = 4     # Held for this many frames, the turn ends. Later alignment handles any heading that is still wobbling.
@@ -126,6 +146,9 @@ HEADING_STEER_MAX = 0.35  # Cap on the heading error used for steering. Align an
 ALIGN_OFFSET = 0.2      # until="aligned": position error is within this (the lane center).
 ALIGN_HEADING = 0.2     # Heading error is within this (pointed along the lane). 0.12 almost never happens on the real track.
 ALIGN_FRAMES = 5        # Held for this many frames, the car counts as aligned. Used when tr() or tl() aligns and then stops after a turn.
+ALIGN_HOLD_HEADING = False  # True: while aligning, a heading error above TURN_END_HEADING is never steered into (old behavior).
+                        # False: held only while a horizontal line is in view (its heading is unreliable), otherwise steered into.
+                        # Off: after a corner the exit lane can keep curving (heading -0.79 in run 20261103-201450); holding drove the car straight off the line.
 ALIGN_STEER_MAX = 8     # While aligning, if heading error exceeds TURN_END_HEADING, ignore heading and correct position only within this angle.
 STRAIGHT_CORR = 6       # straight(): when the lane is visible, correct only within ± this many degrees.
 CURVE_ASSIST = 0.5      # curve(): blend of the set angle and lane-follow steering. 0 is a fixed angle, 1 is the lane only.
@@ -177,7 +200,7 @@ def load_vision():
 
 
 def load_motor_min():
-    """Load motor minimums saved in calib.json by calibrate_motor.py. Missing keys keep their defaults."""
+    """Load motor minimums from calib.json (set by hand). Missing keys keep their defaults."""
     global MOTOR_MIN, MOTOR_MIN_TURN
     calib = load_calib()
     MOTOR_MIN = calib.get("motor_min", MOTOR_MIN)
@@ -253,7 +276,7 @@ def percentile_u8(img, q):
 
 
 # --- Detection Overlay (Browser Live View) ---
-# Colors (BGR). Same colors as the legend under the browser page.
+# Colors (BGR) drawn on the debug view.
 C_LANE = (255, 210, 60)     # Pixels detected as the white line (translucent).
 C_LEFT, C_RIGHT = (255, 140, 40), (60, 60, 255)    # Left line / right line.
 C_PATH = (80, 230, 80)      # Lane center the car follows.
@@ -297,6 +320,8 @@ class LaneDetector:
         self.mat_top = 0                # Highest y where the mat starts in front of the car, in screen coordinates.
         self.crosswalk = False          # A crosswalk is visible in front of the car (below JUNCTION_Y) this frame.
         self.crosswalk_any = False      # A crosswalk is visible anywhere in the frame (while passing it).
+        self.stripes = []               # Crosswalk stripes found as short blobs this frame: [(x, y, w, h)].
+        self.blobs, self.band_h = (np.zeros((1, 1), np.int32), np.zeros((1, 5), np.int32)), 1   # Mask blobs this frame, for assign().
         self.junction_y = self.crosswalk_y = None
         self.gap_y = None               # Where the lane ends ahead: y of the last band that still showed a line. None if it does not end.
         self.gap_why = ""               # Why gap_y is None (diagnostics).
@@ -323,29 +348,79 @@ class LaneDetector:
 
     @staticmethod
     def mat_mask(gray):
-        """Black-mat region: the convex hull of the largest dark region connected to the bottom. Excludes the floor and the wooden border."""
+        """Black-mat region: the convex hull of the largest dark region connected to the bottom. None when the whole frame is mat."""
         small = cv2.resize(gray, (gray.shape[1] // 4, gray.shape[0] // 4), interpolation=cv2.INTER_AREA)
         bg = cv2.medianBlur(small, 7)       # Floor brightness with the lines removed, used to test whether the mat and the outside really differ.
         bthr, _ = cv2.threshold(bg, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         lo, hi = bg[bg < bthr], bg[bg >= bthr]
         if not len(lo) or not len(hi) or float(hi.mean()) - float(lo.mean()) < MAT_MIN_CONTRAST:
-            return np.full_like(gray, 255)  # One kind of floor, split only by lighting, so the whole frame is mat.
+            return None     # One kind of floor, split only by lighting, so the whole frame is mat.
         thr, _ = cv2.threshold(small, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         dark = (small < thr).astype(np.uint8)
         dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8))  # Fill in the white lines so the mat is one blob. [narrow FOV 9x9]
         dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((1, 21), np.uint8))  # Also bridge the gaps between crosswalk stripes. [narrow FOV 1x31]
         n, labels = cv2.connectedComponents(dark)
         if n <= 1:
-            return np.full_like(gray, 255)
+            return None
         bottom = labels[-3:].ravel()
         counts = np.bincount(bottom[bottom > 0], minlength=n)
         if counts.max() == 0:
-            return np.full_like(gray, 255)
+            return None
         pts = cv2.findNonZero((labels == counts.argmax()).astype(np.uint8))
         hull = np.zeros_like(small)
         cv2.fillConvexPoly(hull, cv2.convexHull(pts), 255)
         hull = cv2.dilate(hull, np.ones((3, 3), np.uint8))
         return cv2.resize(hull, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+    def find_stripes(self, comps, shape, top):
+        """Crosswalk stripes: short separate white blobs (STRIPE_MAX of the lane width) inside the lane. Lane lines are long blobs.
+
+        Inside the lane: at the stripe's rows there is lane-line (long blob) mask on both its left and its right, in this same frame.
+        comps is connectedComponentsWithStats of the mask. Returns (blob ids to clear, [(center x, center y, w, h)] in frame y),
+        both empty unless STRIPES_MIN or more are found, so a lone short piece of a lane line stays in.
+        Catches a crosswalk of a few staggered stripes that the band test (CROSSWALK_LINES in one band) misses.
+        """
+        n, labels, stats, cents = comps
+        found = []
+        for i in range(1, n):
+            x, y, w, h, area = stats[i]
+            if area < STRIPE_MIN_AREA:
+                continue
+            cy = top + float(cents[i][1])
+            lane_w = LANE_WIDTH_PX * (cy - HORIZON_Y) / (342 - HORIZON_Y)
+            # Cut off by an ROI edge: the end of a lane line (before a gap, at the ROI top, at a side), not a whole stripe.
+            cut = y <= 0 or x <= 0 or x + w >= shape[1] or y + h >= shape[0]
+            if not cut and lane_w > 0 and max(w, h) < STRIPE_MAX * lane_w:
+                found.append((i, int(cents[i][0]), int(cy), int(w), int(h)))
+        if len(found) < STRIPES_MIN:
+            return [], []
+        short = np.zeros(n, bool)
+        short[[f[0] for f in found]] = True
+        inside = []
+        for i, cx, cy, w, h in found:
+            band = labels[max(0, cy - top - h // 2):cy - top + h // 2 + 1]
+            cols = np.flatnonzero(((band > 0) & ~short[band]).any(axis=0))     # Columns with a long blob (lane line) at these rows.
+            if len(cols) and cols[0] < cx < cols[-1]:
+                inside.append((i, cx, cy, w, h))
+        if len(inside) < STRIPES_MIN:
+            return [], []
+        return [f[0] for f in inside], [f[1:] for f in inside]
+
+    def find_specks(self, comps, shape, band_h):
+        """Ids of small blobs near the frame sides (SPECK_SIDE). They are off-track objects, not lane lines."""
+        n, _, stats, cents = comps
+        return [i for i in range(1, n)
+                if stats[i, 3] < 1.5 * band_h and stats[i, 2] < HLINE_RATIO * FRAME_W and stats[i, 1] > 0
+                and stats[i, 1] + stats[i, 3] < shape[0] // 2 and stats[i, 0] > 0 and stats[i, 0] + stats[i, 2] < shape[1]
+                and not SPECK_SIDE * FRAME_W <= cents[i][0] <= (1 - SPECK_SIDE) * FRAME_W]
+
+    def blob_height(self, i, x):
+        """Height in px of the mask blob that band i's line at x belongs to (0 if none). A real lane line spans many bands."""
+        labels, stats = self.blobs
+        y1 = labels.shape[0] - (i + 1) * self.band_h
+        col = labels[max(0, y1):y1 + self.band_h, int(np.clip(x, 0, labels.shape[1] - 1))]
+        ids = col[col > 0]
+        return int(stats[ids.max(), 3]) if len(ids) else 0
 
     def line_mask(self, roi):
         gray = cv2.GaussianBlur(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (5, 5), 0)
@@ -355,8 +430,11 @@ class LaneDetector:
         # Top-hat keeps only what is brighter than the nearby floor and thin, so thick reflections and bright floor drop out.
         half = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
         top = cv2.resize(tophat_ellipse(half, TOPHAT_K), (gray.shape[1], gray.shape[0]))
-        if USE_MAT_MASK:
-            mat = self.mat_mask(gray)
+        mat = self.mat_mask(gray) if USE_MAT_MASK else None
+        if mat is None:     # No separate mat (or the mask is off): nothing is cut, and the mat runs to the ROI top.
+            self.mat_top = int(FRAME_H * ROI_TOP)
+            self.edge_hits, self.edge = 0, False
+        else:
             top = cv2.bitwise_and(top, mat)
             # How far the mat continues in front of the car (center 1/6 of the width, which was 1/4 on the narrow FOV). Ending too near the car means the mat edge.
             cx0 = int(FRAME_W * CAMERA_X)
@@ -379,11 +457,11 @@ class LaneDetector:
         return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
 
     def far_hline(self, frame):
-        """Nearest (lowest) y of a horizontal line above the ROI, from FAR_TOP to ROI_TOP. None if there is none.
+        """Nearest (lowest) y of a horizontal line from FAR_TOP to FAR_BOT. None if there is none.
 
         Used to start slow= braking early. Brightness uses this frame's ROI threshold, self.thr.
         """
-        top, bot = int(FRAME_H * FAR_TOP), int(FRAME_H * ROI_TOP)
+        top, bot = int(FRAME_H * FAR_TOP), int(FRAME_H * FAR_BOT)
         if bot - top < 4:
             return None
         gray = cv2.GaussianBlur(cv2.cvtColor(frame[top:bot], cv2.COLOR_BGR2GRAY), (5, 5), 0)
@@ -450,7 +528,11 @@ class LaneDetector:
         if l is not None and r is not None:
             if not 0.6 * w <= r - l <= 1.5 * w:
                 # If the width is implausible, trust only the line closer to the previous position.
-                if self.nearest(l, pl) <= self.nearest(r, pr):
+                # With no previous position (just after a turn) keep the longer one: the lane line, not a short object off the track.
+                dl, dr = self.nearest(l, pl), self.nearest(r, pr)
+                if dl == dr:
+                    dl, dr = -self.blob_height(i, l), -self.blob_height(i, r)
+                if dl <= dr:
                     r = None
                 else:
                     l = None
@@ -519,6 +601,17 @@ class LaneDetector:
         top = int(FRAME_H * ROI_TOP)
         mask = self.line_mask(frame[top:])
         h = mask.shape[0] // SLICES
+        comps = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)     # Once per frame, shared below.
+        stripe_ids, self.stripes = self.find_stripes(comps, mask.shape, top)
+        gone = stripe_ids + self.find_specks(comps, mask.shape, h)
+        labels, stats = comps[1], comps[2]
+        if gone:        # Clear crosswalk stripes and off-track specks from the mask, and from the blob labels assign() reads.
+            dead = np.zeros(comps[0], bool)
+            dead[gone] = True
+            hit = dead[labels]
+            mask[hit] = 0
+            labels = np.where(hit, 0, labels)
+        self.blobs, self.band_h = (labels, stats), h
 
         dbg = frame.copy() if draw else None
         if draw:
@@ -532,6 +625,14 @@ class LaneDetector:
         junction = False
         self.crosswalk = self.crosswalk_any = False
         self.junction_y = self.crosswalk_y = None   # Lowest (nearest) band y of a horizontal line or crosswalk. Used by course at=.
+        if self.stripes:
+            self.crosswalk_any = True
+            self.crosswalk_y = max(y + sh // 2 for _, y, _, sh in self.stripes)    # Near edge of the nearest stripe.
+            self.crosswalk = self.crosswalk_y >= jy
+            if draw:
+                for sx, sy, sw, sh in self.stripes:
+                    cv2.rectangle(dbg, (sx - sw // 2, sy - sh // 2), (sx + sw // 2, sy + sh // 2), C_XWALK, 2)
+                marks.setdefault("CROSSWALK", (C_XWALK, self.crosswalk_y))
         ys, ls, rs, pending = [], [], [], []
         bands = []      # Per band: (y, line x list, horizontal line or crosswalk). Used for the lane-gap test.
         ref = self.center[0] if self.center[0] is not None else cx0
@@ -617,6 +718,10 @@ class LaneDetector:
                     cv2.circle(dbg, (int(c), cy), 3, C_PATH, -1, cv2.LINE_AA)
                 pts.append((cy, c))
 
+        if len(pts) == 1 and pts[0][0] < (top + FRAME_H) / 2:
+            # One far point alone is not a lane: a dark baseboard or object at the far edge (run 20261103-204527 drove
+            # off the mat on one point at the top-left corner, and even counted it as "aligned").
+            pts = []
         if not pts:
             self.misses += 1
             if self.misses > 5:     # After a long loss (the car was picked up, for example), clear the tracking history.
@@ -803,6 +908,33 @@ class TrafficLight:
             chip(dbg, color.upper(), x - 4, y - 22, bgr, 0.38)
 
 
+class YawMeter:
+    """How far the car has turned, from how far the room above the floor slides sideways between frames. A gyro substitute.
+
+    Phase correlation of the top YAW_TOP of the frame at half size. Returns the total shift in px since reset (right turn is negative).
+    A plain wall gives no match (low response), and such frames add nothing, so the turn then ends on the lane or max_sec as before.
+    """
+
+    def __init__(self):
+        self.prev, self.win, self.total = None, None, 0.0
+
+    def reset(self):
+        self.prev, self.total = None, 0.0
+
+    def __call__(self, frame):
+        h = int(frame.shape[0] * YAW_TOP)
+        g = cv2.resize(cv2.cvtColor(frame[:h], cv2.COLOR_BGR2GRAY), (frame.shape[1] // 2, h // 2),
+                       interpolation=cv2.INTER_AREA).astype(np.float32)
+        if self.win is None or self.win.shape != g.shape:
+            self.win = cv2.createHanningWindow(g.shape[::-1], cv2.CV_32F)
+        if self.prev is not None:
+            (dx, _), response = cv2.phaseCorrelate(self.prev, g, self.win)
+            if response > 0.05:
+                self.total += dx * 2
+        self.prev = g
+        return self.total
+
+
 class Steering:
     """Turn (position error, heading error) into a steering angle in degrees. Variable steering from P, filtered D, and a low-pass."""
 
@@ -846,10 +978,11 @@ class CourseRunner:
     """
 
     EVENT_NAMES = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선",
-                   "gap": "차선 끊김", "green": "초록불", "obstacle": "장애물 감지", "clear": "장애물 없어짐",
+                   "gap": "차선 끊김", "end": "끝 (교차로선 또는 차선 끊김)", "crossed": "횡단보도 지나감", "green": "초록불", "obstacle": "장애물 감지", "clear": "장애물 없어짐",
                    "lost": "차선 놓침", "aligned": "정렬"}
-    STATE_EVENTS = ("lane", "green", "clear", "aligned")   # Judged as the current state: using one does not require it to count again. An obstacle counts again only after it goes away and comes back.
-    AT_EVENTS = ("junction", "crosswalk", "gap")    # Events that can use at= (how far down the frame the line must come).
+    STATE_EVENTS = ("lane", "green", "clear", "aligned", "crossed")   # Judged as the current state: using one does not require it to count again. An obstacle counts again only after it goes away and comes back.
+    AT_EVENTS = ("junction", "crosswalk", "gap", "end")    # Events that can use at= (how far down the frame the line must come).
+    # end: a junction line or a lane gap, whichever comes first (to_end). Its y is the nearer of the two.
 
     def __init__(self, course, start=1):
         from course import _flat
@@ -865,13 +998,15 @@ class CourseRunner:
         self.local_light = None     # wait_green: result of re-reading those spots. Driver fills this every frame.
         # Per event: consecutive detection frames, and whether it is armed. Something visible from the start (the start line) or just consumed must disappear once before it counts again.
         # Green, and obstacle present or clear, must be accepted even if that was already the state, so they stay armed.
-        self.hits = {"junction": 0, "crosswalk": 0, "lane": 0, "gap": 0, "green": 0, "obstacle": 0, "clear": 0,
+        self.hits = {"junction": 0, "crosswalk": 0, "lane": 0, "gap": 0, "end": 0, "crossed": 0, "green": 0, "obstacle": 0, "clear": 0,
                      "lost": 0, "aligned": 0}
-        self.armed = {"junction": False, "crosswalk": False, "lane": True, "gap": False, "green": True,
+        self.armed = {"junction": False, "crosswalk": False, "lane": True, "gap": False, "end": False, "crossed": True, "green": True,
                       "obstacle": True, "clear": True, "lost": True, "aligned": True}
         self.since = {k: None for k in self.hits}   # Per event: time the current state started (used for hold_sec).
         self.miss = {k: 0 for k in self.hits}      # Per event: consecutive frames it was not seen. Used to arm during blind_sec.
         self.turn_clear = 0     # Consecutive frames during a turn with no horizontal line. Used for the exit decision.
+        self.count = 0          # nth=: how many of this action's until events have passed so far.
+        self.turned = None      # Turn with deg=: px the view has swung in the turn direction (YawMeter). Driver fills it every frame.
 
     def step(self):
         step = self.course[self.idx] if self.idx < len(self.course) else None
@@ -886,6 +1021,7 @@ class CourseRunner:
 
     def begin(self, now):
         self.step_start = now
+        self.count = 0          # nth=: how many of this action's until events have passed so far.
         self.hits["lane"] = 0
         self.turn_clear = 0
         self.hold = None
@@ -951,7 +1087,9 @@ class CourseRunner:
         If lamps is omitted, position is not compared.
         obstacle is whether the front infrared sensor sees an object. None if there is no sensor, which always means clear.
         """
-        ys = ys or {}
+        ys = dict(ys or {})
+        ends = [y for y in (ys.get("junction") if junction and det is not None else None, ys.get("gap")) if y is not None]
+        ys["end"] = max(ends) if ends else None     # end: the nearer of a junction line (seen with the lane) and a lane gap.
         self.red_hits = self.red_hits + 1 if light == "red" else 0
         if self.red_hits >= JUNCTION_FRAMES:
             self.red_seen = True
@@ -975,18 +1113,24 @@ class CourseRunner:
                 # New lane: a line is visible just in front of the car and the lane roughly matches. No line just ahead, as when sitting over a gap, counts as gone.
                 # The lane beyond a gap may stay visible higher up, but straight(until="lane") ends only after the line just ahead disappears and comes back.
                 # A junction counts only while the lane is visible with it. A floor edge seen after the lane is lost is not a junction.
-                "lane": (det is not None and abs(det[0]) < TURN_END_OFFSET and abs(det[1]) < heading_limit
-                         and ys.get("near", True)) if turning else
+                # Or the car is already pointed along a lane but sits off to one side (TURN_END_*_WIDE): alignment fixes the offset,
+                # while turning on would swing past the exit (run 20261103-200649: heading 0.1, offset 0.5-0.6 for 0.4 s, turn ran to max).
+                "lane": (det is not None and ys.get("near", True)
+                         and ((abs(det[0]) < TURN_END_OFFSET and abs(det[1]) < heading_limit)
+                              or (abs(det[0]) < TURN_END_OFFSET_WIDE and abs(det[1]) < TURN_END_HEADING_WIDE))) if turning else
                         (not junction and det is not None and abs(det[0]) < 0.6 and abs(det[1]) < 0.5
                          and ys.get("near", True)),
                 "gap": ys.get("gap") is not None,
+                "end": ys["end"] is not None,
+                # crossed: no crosswalk anywhere in view, with the lane found. The crosswalk has gone under the car.
+                "crossed": ys.get("crosswalk") is None and det is not None,
                 # Green: a green light near the red light anywhere in the frame, or the spot that was red has changed to green (cyan included).
                 "green": self.red_seen and ((light == "green" and green_here) or self.local_light == "green"),
                 "obstacle": bool(obstacle), "clear": not obstacle,
                 "lost": det is None,
                 "aligned": det is not None and abs(det[0]) < ALIGN_OFFSET and abs(det[1]) < ALIGN_HEADING}
-        if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] == "gap"):
-            # gap with no at= ends at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
+        if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] in ("gap", "end")):
+            # gap / end with no at= end at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
             y = ys.get(step["until"])
             seen[step["until"]] = y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
         until = step["until"] if step is not None else None
@@ -1031,6 +1175,9 @@ class CourseRunner:
                 reason = "시간" if elapsed >= step["sec"] else None
             elif step["max"] is not None and elapsed >= step["max"]:
                 reason = "최대 시간"
+            elif (step.get("deg") and self.turned is not None and elapsed >= step["min"]
+                  and self.turned >= step["deg"] / 90 * TURN_YAW_PX):
+                reason = f"회전각 {step['deg']}도"
             elif step["max"] is None and step["until"] is not None and step["do"] != "wait" and elapsed >= STEP_MAX_SEC:
                 reason = f"안전 시간 {STEP_MAX_SEC}초 (조건이 안 와서 넘어감, max_sec로 조절)"
             elif (step["until"] is not None and elapsed >= step["min"]
@@ -1038,6 +1185,11 @@ class CourseRunner:
                 reason = self.EVENT_NAMES[step["until"]]
                 if step["until"] not in self.STATE_EVENTS:
                     self.armed[step["until"]] = False   # Do not count the same line again in the next action.
+                self.count += 1
+                if self.count < (step.get("nth") or 1):
+                    # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
+                    print(f"\n[{self.idx + 1}] {reason} {self.count}번째 지나감 ({step['nth']}번째에서 끝)")
+                    reason = None
             else:
                 reason = None
             if reason is None:
@@ -1050,6 +1202,14 @@ class CourseRunner:
         step = self.step()
         return (step or {}).get("side") or "center"
 
+    def final_approach(self):
+        """Heading for the line this action ends on: not still before (or passing) an nth= line it skips."""
+        step = self.step()
+        if step is None or step["until"] is None:
+            return False
+        nth = step.get("nth") or 1
+        return self.count >= nth - 1 and (self.count == 0 or self.armed[step["until"]])
+
     def opt(self, key, default=None):
         """Option on the current action (shift, steer, style, ...). default if the course has ended or the option was not set."""
         step = self.step()
@@ -1061,6 +1221,8 @@ class CourseRunner:
         step = self.step()
         if step is None or step["do"] not in ("left", "right"):
             return False
+        if self.step_start is None:     # First frame, before update() has started the action (driving with --start at a turn).
+            return True
         return now - self.step_start < step["min"] or self.hits["lane"] < TURN_CLEAR_FRAMES
 
     def following(self):
@@ -1137,34 +1299,66 @@ class Stream:
     JPEG encoding runs on the browser request thread, not the main loop, and only while someone is watching.
     """
 
-    LEGEND = [("#3cd2ff", "흰 선으로 인식"), ("#288cff", "왼쪽 선"), ("#ff3c3c", "오른쪽 선"),
-              ("#50e650", "따라갈 차로 중앙 / 화살표 = 지금 조향"), ("#ff00ff", "교차로 가로선 (점선: 멀리서 미리 본 것)"),
-              ("#f0f0f0", "횡단보도"), ("#0080ff", "차선 끊김"), ("#ffe600", "이 동작이 끝나는 지점 (at)"),
-              ("#ff2828", "빨간불"), ("#3cdc3c", "초록불")]
-
     PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>__TITLE__</title>
-<style>body{margin:0;background:#111;color:#ddd;font:14px -apple-system,sans-serif}
-header{display:flex;align-items:center;gap:10px;padding:8px 14px;max-width:1400px;margin:0 auto}
-header b{color:#fff} #st{margin-left:auto;display:flex;align-items:center;gap:6px;color:#aaa;font-size:13px}
-#dot{width:10px;height:10px;border-radius:50%;background:#666}
-.wrap{position:relative;max-width:1400px;margin:0 auto}
-img{display:block;width:100%;background:#000;min-height:120px}
+<style>
+:root{--bg:#111;--panel:#1b1b1b;--line:#2a2a2a;--txt:#ddd;--dim:#8a8a8a;--ok:#3cdc3c;--bad:#ff4040;--warn:#ffb020}
+*{box-sizing:border-box} html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px -apple-system,"Apple SD Gothic Neo",sans-serif;
+ display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header b{color:#fff;font-size:15px} header small{color:var(--dim)}
+#st{display:flex;align-items:center;gap:6px;color:#aaa;font-size:13px;margin-left:auto}
+#dot{width:10px;height:10px;border-radius:50%;background:#666;transition:background .2s}
+.tools{display:flex;gap:6px}
+button{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 10px;
+ font:inherit;font-size:13px;cursor:pointer} button:hover{border-color:#555} button.on{border-color:var(--warn);color:var(--warn)}
+kbd{font:11px ui-monospace,monospace;color:var(--dim);margin-left:4px}
+.wrap{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000}
+img{display:block;width:100%;height:100%;object-fit:contain}
 #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
- background:rgba(0,0,0,.55);color:#fff;font-size:18px;font-weight:600}
-.lg{display:flex;flex-wrap:wrap;gap:6px 16px;padding:10px 14px;max-width:1400px;margin:0 auto}
-.lg span{display:flex;align-items:center;gap:6px} .lg i{width:14px;height:14px;border-radius:3px;display:inline-block}
+ background:rgba(0,0,0,.55);color:#fff;font-size:18px;font-weight:600;text-align:center;padding:16px}
+#paused{position:absolute;top:10px;left:10px;display:none;background:rgba(0,0,0,.7);color:var(--warn);
+ border:1px solid var(--warn);border-radius:6px;padding:4px 10px;font-weight:600}
+#toast{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;
+ border-radius:6px;padding:6px 12px;opacity:0;transition:opacity .3s;pointer-events:none}
+@media (max-width:600px){header small,kbd{display:none} .tools{width:100%} button{flex:1}}
 </style></head><body>
-<header><b>__TITLE__</b><small style="color:#888">실시간 인식 화면</small>
-<span id="st"><i id="dot"></i><span id="stt">연결 중…</span></span></header>
-<div class="wrap"><img id="v" alt=""><div id="msg">연결이 끊겼어요 · 다시 연결하는 중…</div></div>
-<div class="lg">__LEGEND__</div>
+<header><b>__TITLE__</b><small>실시간 인식 화면</small>
+<span id="st"><i id="dot"></i><span id="stt">연결 중…</span></span>
+<span class="tools">
+ <button id="bPause" title="화면 멈추기 / 다시 보기">일시정지<kbd>Space</kbd></button>
+ <button id="bSave" title="지금 화면을 사진으로 저장">사진 저장<kbd>S</kbd></button>
+ <button id="bFull" title="전체 화면 (더블클릭도 됨)">전체 화면<kbd>F</kbd></button>
+</span></header>
+<div class="wrap" id="wrap"><img id="v" alt=""><div id="paused">일시정지</div>
+<div id="msg">연결이 끊겼어요 · 다시 연결하는 중…</div><div id="toast"></div></div>
 <script>
 // 최신 화면을 한 장씩 받아옴. 실패하면 잠깐 쉬고 계속 다시 시도 (프로그램이 다시 켜지면 자동으로 이어짐)
-const img = document.getElementById("v"), msg = document.getElementById("msg"),
-      dot = document.getElementById("dot"), stt = document.getElementById("stt");
-let seq = -1, fails = 0, shown = [], url = null;
-function status(ok, text) { dot.style.background = ok ? "#3cdc3c" : "#ff4040"; stt.textContent = text; }
+const $ = id => document.getElementById(id);
+const img = $("v"), msg = $("msg"), dot = $("dot"), stt = $("stt"), wrap = $("wrap");
+let seq = -1, fails = 0, shown = [], url = null, paused = false, pausedAt = 0, lastBlob = null;
+function status(ok, text) { dot.style.background = ok ? "var(--ok)" : "var(--bad)"; stt.textContent = text; }
+function toast(t) { const e = $("toast"); e.textContent = t; e.style.opacity = 1; clearTimeout(e.t); e.t = setTimeout(() => e.style.opacity = 0, 1500); }
+function setPaused(p) {
+  paused = p; pausedAt = Date.now(); $("paused").style.display = p ? "block" : "none";
+  $("bPause").classList.toggle("on", p); $("bPause").firstChild.textContent = p ? "다시 보기" : "일시정지";
+}
+function save() {
+  if (!lastBlob) return toast("아직 받은 화면이 없어요");
+  const a = document.createElement("a"), d = new Date(), z = n => String(n).padStart(2, "0");
+  a.href = URL.createObjectURL(lastBlob);
+  a.download = `aicar-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.jpg`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast("사진 저장: " + a.download);
+}
+function full() { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen?.(); }
+$("bPause").onclick = () => setPaused(!paused); $("bSave").onclick = save; $("bFull").onclick = full; wrap.ondblclick = full;
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.code === "Space") { e.preventDefault(); setPaused(!paused); }
+  else if (e.key === "s" || e.key === "S") save();
+  else if (e.key === "f" || e.key === "F") full();
+});
 async function loop() {
   for (;;) {
     const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 3000);
@@ -1176,10 +1370,16 @@ async function loop() {
       }
       if (!r.ok) throw new Error(r.status);
       seq = +r.headers.get("X-Seq");
-      const u = URL.createObjectURL(await r.blob());
-      img.src = u; if (url) URL.revokeObjectURL(url); url = u;
+      const blob = await r.blob();
       fails = 0; msg.style.display = "none";
       const now = performance.now(); shown.push(now); shown = shown.filter(x => now - x < 2000);
+      if (paused) {               // 멈춘 동안은 화면만 그대로 두고 연결은 유지
+        status(true, "일시정지 · " + Math.round((Date.now() - pausedAt) / 1000) + "초 전 화면");
+        continue;
+      }
+      lastBlob = blob;
+      const u = URL.createObjectURL(blob);
+      img.src = u; if (url) URL.revokeObjectURL(url); url = u;
       status(true, "연결됨 · " + (shown.length / 2).toFixed(0) + " fps");
     } catch (e) {
       clearTimeout(t); fails++;
@@ -1191,7 +1391,7 @@ async function loop() {
 loop();
 </script></body></html>"""
 
-    def __init__(self, port, title="AICAR", legend=False):
+    def __init__(self, port, title="AICAR"):
         import logging
         from flask import Flask, Response
         logging.getLogger("werkzeug").setLevel(logging.ERROR)   # Turn off the request log printed for every frame.
@@ -1200,9 +1400,7 @@ loop();
         self.lock = threading.Lock()
         self.last_request = -1e9                # Time a browser last fetched a frame (used for watching).
         app = Flask(__name__)
-        # LEGEND colors are the on-screen BGR colors converted to web RGB.
-        items = "".join(f'<span><i style="background:{c}"></i>{t}</span>' for c, t in self.LEGEND) if legend else ""
-        page = self.PAGE.replace("__TITLE__", title).replace("__LEGEND__", items)
+        page = self.PAGE.replace("__TITLE__", title)
 
         @app.route("/")
         def index():
@@ -1306,6 +1504,12 @@ class Driver:
         self.base_speed = base_speed
         self.obs = obstacle
         self.lost_since = None      # Time the lane was lost.
+        self.yaw, self.yaw_idx = YawMeter(), -1     # Turn angle from the camera, reset at each turn action.
+        self.history = []           # Recent forward driving: (seconds, steering angle, speed). Replayed backwards when backing up.
+        self.last_t = None
+        self.back = None            # Back-up in progress: start, plan [(seconds, angle)], entries used, lost episode, action index.
+        self.back_tries = {}        # Action index: back-ups used.
+        self.back_lost = None       # lost_since of the episode that already backed up (one back-up per loss).
         self.stopped_since = 0.0    # Time speed became 0 (used for the start kick).
         self.kick_until = 0.0
         self.cw_since = None
@@ -1313,7 +1517,43 @@ class Driver:
         self.edge = False
         self.done = False
         self.det, self.junction, self.light = None, False, None
+        self.light_tick = 0         # Frames since start, for LIGHT_VIEW_EVERY.
         self.approach = (0.0, -1.0, -1)    # slow=: (slowdown amount 0 to 1, time the line was last seen, action index).
+
+    def back_up(self, now, lost_long, steer):
+        """Lost lane for LOST_HOLD: reverse along the recent path (steering history played backwards) until the lane comes back.
+
+        Returns the steering to send (the retrace angle while backing, otherwise steer unchanged). self.back is set while backing.
+        """
+        course, back = self.course, self.back
+        if back is not None:
+            elapsed = now - back["start"]
+            found = self.lost_since is None
+            if found or elapsed >= back["len"] or course.idx != back["idx"] or course.stopped(now) or self.edge:
+                used = sum(1 for t_end, _ in back["plan"] if t_end <= elapsed) if not found else back["used_at"]
+                del self.history[len(self.history) - used:]   # That stretch is behind the car now.
+                print(f"\n[후진 끝] {'차선 다시 찾음' if found else '못 찾음'} ({elapsed:.1f}초)")
+                self.back = None
+                return steer
+            back["used_at"] = sum(1 for t_end, _ in back["plan"] if t_end <= elapsed)
+            angle = next((a for t_end, a in back["plan"] if t_end > elapsed), back["plan"][-1][1])
+            return self.steering.output(angle, now, 0.0)
+        if (not lost_long or LOST_BACK_SEC <= 0 or course.stopped(now) or self.edge or self.lost_since == self.back_lost
+                or self.back_tries.get(course.idx, 0) >= LOST_BACK_TRIES):
+            return steer
+        plan, t = [], 0.0
+        for dt, angle, speed in reversed(self.history):     # Newest first: undo the last stretch first.
+            t += dt * float(np.clip(speed / LOST_BACK_SPEED, 0.3, 2.0))
+            plan.append((t, angle))
+            if t >= LOST_BACK_SEC:
+                break
+        if not plan:
+            plan = [(LOST_BACK_SEC, self.steering.angle)]
+        self.back = {"start": now, "plan": plan, "len": min(plan[-1][0], LOST_BACK_SEC), "used_at": 0, "idx": course.idx}
+        self.back_lost = self.lost_since
+        self.back_tries[course.idx] = self.back_tries.get(course.idx, 0) + 1
+        print(f"\n[후진] 차선 놓침 → 왔던 길로 {self.back['len']:.1f}초 후진 ({self.back_tries[course.idx]}/{LOST_BACK_TRIES})")
+        return self.steering.output(plan[0][1], now, 0.0)
 
     def approach_speed(self, base, now):
         """slow=: ease from base down to the slow speed as the line approaches.
@@ -1323,14 +1563,15 @@ class Driver:
         course = self.course
         step = course.step()
         slow = course.opt("slow")
-        if slow is None or step["until"] not in CourseRunner.AT_EVENTS:
+        if slow is None or step["until"] not in CourseRunner.AT_EVENTS or not course.final_approach():
             return base
         level, seen_t, idx = self.approach
         if idx != course.idx:       # New action: start over.
             level, seen_t = 0.0, -1.0
+        ends = [v for v in (self.detect.junction_y, self.detect.gap_y) if v is not None]
         y = {"junction": self.detect.junction_y, "crosswalk": self.detect.crosswalk_y,
-             "gap": self.detect.gap_y}[step["until"]]
-        far = step["until"] == "junction"
+             "gap": self.detect.gap_y, "end": max(ends) if ends else None}[step["until"]]
+        far = step["until"] in ("junction", "end")
         if y is None and far:
             y = self.detect.far_y       # Horizontal line seen in the distance, if it has not entered the ROI yet.
         if y is not None:
@@ -1346,7 +1587,7 @@ class Driver:
 
     # --- Detection View (Browser Live View / Replay) ---
     PANEL_W = 240
-    EVENT_EN = {"junction": "JUNCTION", "crosswalk": "CROSSWALK", "lane": "NEW LANE", "gap": "LANE ENDS",
+    EVENT_EN = {"junction": "JUNCTION", "crosswalk": "CROSSWALK", "lane": "NEW LANE", "gap": "LANE ENDS", "end": "END (JUNCTION/GAP)", "crossed": "CROSSWALK PASSED",
                 "green": "GREEN LIGHT", "obstacle": "OBSTACLE", "clear": "CLEAR", "lost": "LANE LOST",
                 "aligned": "ALIGNED"}
     DO_EN = {"follow": "FOLLOW LANE", "straight": "STRAIGHT", "right": "TURN RIGHT", "left": "TURN LEFT",
@@ -1404,6 +1645,8 @@ class Driver:
         elif step["do"] == "wait":
             banner = ({"clear": "WAIT: REMOVE OBSTACLE", "obstacle": "WAIT: OBSTACLE"}.get(step["until"], "WAIT"),
                       (160, 120, 40))
+        elif self.back is not None:
+            banner = (f"BACKING UP - FINDING LANE {now - self.back['start']:.1f}s", (200, 120, 0))
         elif self.speed == 0 and not course.stopped(now) and step is not None:
             banner = ("STOPPED (LANE LOST)" if lost else "STOPPED", (40, 40, 220))
         elif lost and self.lost_since is not None:
@@ -1502,21 +1745,33 @@ class Driver:
         det, junction, dbg = detect(frame, course.lane_side(now), draw=show)     # Skip drawing when the view is not being sent.
         step = course.step()
         detect.far_y = None
-        if step is not None and step.get("slow") is not None and step["until"] == "junction":
+        if step is not None and step.get("slow") is not None and step["until"] in ("junction", "end"):
             detect.far_y = detect.far_hline(frame)      # Compute only when needed (saves fps).
             if detect.far_y is not None and show:
                 dashed_hline(dbg, detect.far_y, C_JUNC, dash=6, gap=6)
                 chip(dbg, "JUNCTION AHEAD", FRAME_W - 130, detect.far_y - 20, C_JUNC, 0.38)
-        light = self.traffic(frame) if course.needs_light() or show else None
+        # Traffic light: every frame while waiting for green. For the view only, every LIGHT_VIEW_EVERY frames (the last result is shown between).
+        need_light = course.needs_light()
+        if need_light or (show and self.light_tick % LIGHT_VIEW_EVERY == 0):
+            self.traffic(frame)
+        self.light_tick += 1
+        light = self.traffic.state if need_light or show else None
         course.local_light = None
         if step is not None and step["do"] == "wait" and step["until"] == "green" and course.red_seen:
             # Whether any spot that was red has changed to green. The lamp spot still changes even if another red object is present.
             colors = [self.traffic.color_at(frame, box) for box in course.red_boxes]
             course.local_light = "green" if "green" in colors else ("red" if "red" in colors else None)
+        if step is not None and step["do"] in ("left", "right") and step.get("deg"):
+            if self.yaw_idx != course.idx:
+                self.yaw.reset()
+                self.yaw_idx = course.idx
+            course.turned = self.yaw(frame) * (-1 if step["do"] == "right" else 1)
+        else:
+            course.turned, self.yaw_idx = None, -1
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
                        "near": detect.near_line},
-                      light, self.traffic.lamps, self.obs.near if self.obs else None)
+                      light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
         if course.done:
             self.done = True
@@ -1531,7 +1786,7 @@ class Driver:
             # Add shift so that state reads as zero.
             det = (det[0] + course.opt("shift", 0.0) * LANE_PX_PER_CM / (FRAME_W / 2), det[1])
         # Crosswalk just in front of the car: the stripes shake lane detection, so hold the current steering briefly and drive through.
-        self.cw_since = (self.cw_since or now) if detect.crosswalk else None
+        self.cw_since = (self.cw_since or now) if detect.crosswalk and not detect.stripes else None
         if self.cw_since is not None and now - self.cw_since < CROSSWALK_HOLD_MAX:
             lane = steering.angle
         elif det is not None:
@@ -1539,7 +1794,9 @@ class Driver:
             raw_h = det[1]
             h = float(np.clip(raw_h, -HEADING_STEER_MAX, HEADING_STEER_MAX))
             # While aligning, a large heading error such as a corner or hairpin is not steered into further. Only position is corrected a little.
-            hold_heading = (course.step() or {}).get("until") == "aligned" and abs(raw_h) > TURN_END_HEADING
+            # A horizontal line in view makes the heading jump to +-1 (run 20261103-203911 steered to -26), so hold heading then.
+            hold_heading = ((course.step() or {}).get("until") == "aligned" and abs(raw_h) > TURN_END_HEADING
+                            and (ALIGN_HOLD_HEADING or detect.junction_y is not None))
             if hold_heading:
                 h = 0.0
             lane = steering.lane(det[0], h, now, kp, kh)
@@ -1547,12 +1804,14 @@ class Driver:
                 lane = float(np.clip(lane, -ALIGN_STEER_MAX, ALIGN_STEER_MAX))
             # When a junction line is visible ahead, do not snap the steering toward a large position error.
             now_step = course.step()
-            if (now_step and now_step["do"] == "follow" and now_step.get("until") == "junction"
+            if (now_step and now_step["do"] == "follow" and now_step.get("until") == "junction" and course.final_approach()
                     and (detect.junction_y is not None or detect.far_y is not None)):
                 lane = float(np.clip(lane, -APPROACH_STEER_MAX, APPROACH_STEER_MAX))
         else:
             lane = None
         target = course.target(lane, now, steering.angle)
+        if target is not None and course.stopped(now):
+            target = steering.angle     # Standing still: keep the wheels where they are, so the car does not set off at a full-lock angle.
         steer = None
         if target is None:      # Lane lost during follow: hold the previous steering, up to LOST_HOLD seconds.
             self.lost_since = self.lost_since if self.lost_since is not None else now
@@ -1560,10 +1819,17 @@ class Driver:
             self.lost_since = None
             limit = course.opt("steer", AUTO_STEER_MAX)
             steer = steering.output(float(np.clip(target, -limit, limit)), now, smooth)
-        lost_long = self.lost_since is not None and now - self.lost_since > LOST_HOLD
+        lost_for = now - self.lost_since if self.lost_since is not None else 0.0
+        lost_long = self.lost_since is not None and lost_for > LOST_HOLD
         # Mat-edge stop is skipped while the lane is visible or during a turn, so a false hit does not stop the car.
         self.edge = detect.edge and det is None and not course.turning(now)
-        if course.stopped(now) or lost_long or self.edge:
+        steer = self.back_up(now, lost_long, steer)
+        backing = self.back is not None
+        if course.stopped(now) or self.edge:
+            speed = 0.0
+        elif backing:
+            speed = -LOST_BACK_SPEED
+        elif lost_long:
             speed = 0.0
         elif self.lost_since is not None:
             speed = min(base, MIN_SPEED)     # Creep while the lane is lost.
@@ -1579,6 +1845,11 @@ class Driver:
         elif self.speed == 0 and now - self.stopped_since >= KICK_AFTER_STOP:
             self.kick_until = now + KICK_TIME   # Kick only when actually starting after standing still.
         self.speed = speed
+        if speed > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
+            self.history.append((now - self.last_t, steering.angle, speed))
+            while sum(h[0] for h in self.history) > LOST_BACK_MEMORY:
+                self.history.pop(0)
+        self.last_t = now
         cmd = KICK_SPEED if speed > 0 and now < self.kick_until else speed
         if cmd > 0:
             # On the floor a motor command that is too low leaves the car stopped, especially at a large steer or on a weak battery, so raise it to the minimum.
@@ -1655,7 +1926,7 @@ def main():
         car.load_bias()     # Continue with the center trim learned on a previous run.
     cam = open_camera()
     driver = Driver(COURSE, args.start, args.speed, obs)
-    stream = None if args.no_stream else Stream(args.port, "AICAR 주행", legend=True)
+    stream = None if args.no_stream else Stream(args.port, "AICAR 주행")
     rec = Recorder() if args.record else None
     print("모터", "ON" if args.drive else "OFF (조향만)",
           f"| 코스 {len(COURSE)}단계, {args.start}번부터 | Ctrl+C로 정지")

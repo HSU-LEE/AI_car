@@ -6,7 +6,7 @@ cd ~/aicar || exit 1
 find_pids() {
     # Real python processes only. `pgrep -f` also matches the shell that launched this script.
     ps -eo pid=,comm=,args= |
-        awk '$2 ~ /^python/ && /(lane_follow|drive_keys|tune_center|tune_white|tune_light|camera_view|calibrate|calibrate_motor|gap_probe|car)\.py/ {print $1}'
+        awk '$2 ~ /^python/ && /(lane_follow|drive_keys|tune_center|tune_white|tune_light|camera_view|calibrate|gap_probe|car)\.py/ {print $1}'
 }
 
 pids=$(find_pids)

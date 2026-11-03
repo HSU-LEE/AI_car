@@ -210,14 +210,6 @@ cmd_calibrate() {
         echo "결과 화면: $SNAPS/$name"
 }
 
-cmd_calibrate_motor() {
-    # Motor floor: raise the command until the camera sees the car move, then save calib.json.
-    run "$DRIVING" && die "자율주행 중입니다. 먼저 aicar stop"
-    cmd_push || exit 1
-    run "bash ~/$REMOTE/stop_all.sh" >/dev/null
-    run_tty "$(in_dir "$PY calibrate_motor.py $*")" || die "모터 측정 실패"
-}
-
 # --- Driving ---
 cmd_stop() {
     run "bash ~/$REMOTE/stop_all.sh"
@@ -343,8 +335,6 @@ AICAR 명령어  (맥 터미널에서: aicar <명령>)
                          차로 폭/소실점, 카메라 중앙을 재서 저장. --dry는 측정만
   gap-probe [초]         차선 끊김 진단 (모터 없음): 차를 손으로 끊긴 구간 쪽으로 밀며 프레임별 감지 위치/안 된 이유 기록
   focus [--dry]          초점만 다시 맞춤 (차를 트랙 위에): 차선 영역이 가장 선명한 렌즈 위치로
-  calibrate-motor [--dry] 모터 최소값 측정 (차를 트랙에 놓고, 앞에 30cm 공간): 바닥에서 실제로 움직이는
-                         최소 모터값을 직진/꺾음으로 재서 저장 → 너무 느린 명령에 차가 서는 것 방지
   track [white|black]    트랙 색: white = 검은 바닥 위 흰 선, black = 흰 바닥 위 검은 선 (안 주면 물어봄)
   tune-center            키보드로 서보 중앙 맞추기 (s 저장)
   trim <도>              서보 중앙을 그만큼 옮겨 저장 (예: aicar trim -0.5)
@@ -400,7 +390,6 @@ case "$cmd" in
     tune-white)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_white.py")" ;;
     tune-light)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_light.py")" ;;
     calibrate)   cmd_calibrate "$@" ;;
-    calibrate-motor) cmd_calibrate_motor "$@" ;;
     gap-probe)   run "$DRIVING" && die "자율주행 중입니다. 먼저 aicar stop"
                  cmd_push && run "bash ~/$REMOTE/stop_all.sh" >/dev/null &&
                  run "$(in_dir "$PY -u gap_probe.py ${1:-20}")" 2>&1 | grep -vE 'INFO|WARN|^\[[0-9]+:' &&
