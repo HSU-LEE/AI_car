@@ -282,6 +282,8 @@ def describe(step):
 # --- 코스 ---
 
 COURSE = _flat([
+    start_gate(15),
+
     cross_gap(0.85, speed=0.2),    
     to_junction(),
     straight(0.5),
@@ -290,6 +292,7 @@ COURSE = _flat([
     straight(1),
     tl(),
     follow(3),
+    
     finish(),
 
  
