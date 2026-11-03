@@ -256,6 +256,13 @@ def test_course_logic():
     with quiet():
         feed(c, 3, t, gap=int(H * 0.85) + 1)
     check("until=gap at=0.85: 0.85 지점에 오면 끝", c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([follow(until="gap", max_sec=30), finish()])
+        t = feed(c, 10, 0.0, gap=int(H * 0.35))
+    check("until=gap at 없음: 멀리 보이는 끊김으로는 안 끝남", c.idx == 0)
+    with quiet():
+        feed(c, 3, t, gap=int(H * lf.JUNCTION_Y) + 1)
+    check("until=gap at 없음: JUNCTION_Y 지점에 오면 끝", c.idx == 1)
 
     with quiet():
         c = lf.CourseRunner([straight(until="lane", angle="hold", max_sec=30), finish()])
@@ -379,6 +386,56 @@ def test_turn_align_stop():
     check("차가 차로와 크게 어긋나 있으면 끊김으로 안 봄", d9.gap_y is None and "aligned" in d9.gap_why, d9.gap_why)
 
 
+def feed_junc(course, frames, t, on, det=(0.0, 0.0)):
+    """A junction line at 0.6 of the frame height (on=True), or no line."""
+    for _ in range(frames):
+        course.update(on, t, det, False, {"junction": int(H * 0.6) if on else None, "near": True})
+        t += 0.05
+    return t
+
+
+def test_blind_and_bundles():
+    print("[blind_sec / 묶음 동작]")
+    import course as cs
+    with quiet():   # Quick turn: the old lane goes away and the new lane comes back, all inside the 1 second blind period.
+        c = lf.CourseRunner([cs.tr(0), finish()])
+        t = feed(c, 6, 0.0, det=(0.05, 0.05))
+        t = feed(c, 10, t, det=None)
+        t = feed(c, 30, t, det=(0.05, 0.05))
+    check("회전: blind 안에 새 차선이 잡혀도 blind 끝나면 회전 끝 (3초 안 채움)", c.idx >= 1 and c.course[c.idx]["until"] == "aligned"
+          or c.idx >= 2, f"동작 {c.idx + 1}")
+    with quiet():   # A near junction comes into view at 0.8 s and is still in view when the 1.5 second blind period ends.
+        c = lf.CourseRunner([cs.to_junction(), finish()])
+        t = feed_junc(c, 16, 0.0, False)
+        t = feed_junc(c, 20, t, True)
+    check("to_junction: blind 중에 들어온 가까운 교차로에서 끝 (안 지나침)", c.idx == 1, f"{t:.2f}초, 동작 {c.idx + 1}")
+    with quiet():   # A line that flickers off for only one or two frames during blind still must not end the action.
+        c = lf.CourseRunner([cs.to_junction(), finish()])
+        t = feed_junc(c, 10, 0.0, True)
+        t = feed_junc(c, 2, t, False)
+        t = feed_junc(c, 30, t, True)
+    check("to_junction: blind 중 1~2프레임 깜빡임으로는 안 끝남", c.idx == 0)
+
+    s = cs.follow(3)
+    check("follow(3): 시간 동작에는 until이 안 남음", s["until"] is None)
+    try:
+        cs.follow(3, slow=0.2)
+        ok = False
+    except ValueError:
+        ok = True
+    check("follow(3, slow=): sec과 같이 쓰면 에러", ok)
+    steps = cs._flat(cs.corner("left", wide=2))
+    check("corner: 교차로 → 직진 → 회전 → 정렬 → 정지",
+          [x["do"] for x in steps] == ["follow", "straight", "left", "follow", "stop"]
+          and steps[0]["shift"] == 2 and steps[2]["blind"] == 1.0, str([x["do"] for x in steps]))
+    steps = cs._flat(cs.uturn("right"))
+    check("uturn: 최대 조향, blind 1.5초, 정렬까지",
+          [x["do"] for x in steps] == ["follow", "right", "follow", "stop"]
+          and steps[1]["angle"] is None and steps[1]["blind"] == 1.5 and steps[1]["max"] == 5)
+    check("cross(): 교차로선(junction)으로 건넘", cs._flat(cs.cross())[0]["until"] == "junction")
+    check('cross(line="crosswalk"): 횡단보도로 건넘', cs._flat(cs.cross(line="crosswalk"))[0]["until"] == "crosswalk")
+
+
 def test_driver_smoke():
     print("[Driver 전체 한 바퀴]")
     frames = [lane_frame(), lane_frame(shift=30), lane_frame(y_end=250), lane_frame(crosswalk=True),
@@ -401,7 +458,8 @@ def test_driver_smoke():
 
 def main():
     for t in (test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
-              test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_driver_smoke):
+              test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles,
+              test_driver_smoke):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")

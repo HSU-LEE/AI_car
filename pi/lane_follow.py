@@ -110,6 +110,7 @@ EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this fra
 
 JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a junction (a fork).
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
+BLIND_REARM_FRAMES = 5  # blind_sec: a line gone for this many frames in a row during the blind period arms its event, so it can end the action once blind is over.
 GAP_MAX_HEADING = 0.5   # Skip the gap test when heading error is larger than this, because the car is badly misaligned with the lane.
 GAP_BANDS = 2           # Lane gap: one empty band is enough if the line resumes above it.
                         # If it does not resume, the empty run must be at least this many bands, because one empty top band may just be a missed far line.
@@ -869,6 +870,7 @@ class CourseRunner:
         self.armed = {"junction": False, "crosswalk": False, "lane": True, "gap": False, "green": True,
                       "obstacle": True, "clear": True, "lost": True, "aligned": True}
         self.since = {k: None for k in self.hits}   # Per event: time the current state started (used for hold_sec).
+        self.miss = {k: 0 for k in self.hits}      # Per event: consecutive frames it was not seen. Used to arm during blind_sec.
         self.turn_clear = 0     # Consecutive frames during a turn with no horizontal line. Used for the exit decision.
 
     def step(self):
@@ -903,6 +905,7 @@ class CourseRunner:
             # This action's end event starts counting fresh inside this action, so detections piled up during the previous action do not end it at once.
             self.hits[step["until"]] = 0
             self.since[step["until"]] = None
+            self.miss[step["until"]] = 0
         if step["sec"] is not None:
             how = f"{step['sec']}초"
         else:
@@ -982,18 +985,24 @@ class CourseRunner:
                 "obstacle": bool(obstacle), "clear": not obstacle,
                 "lost": det is None,
                 "aligned": det is not None and abs(det[0]) < ALIGN_OFFSET and abs(det[1]) < ALIGN_HEADING}
-        if step is not None and step.get("at") is not None and step["until"] in self.AT_EVENTS:
+        if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] == "gap"):
+            # gap with no at= ends at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
             y = ys.get(step["until"])
-            seen[step["until"]] = y is not None and y >= step["at"] * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+            seen[step["until"]] = y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
         until = step["until"] if step is not None else None
         # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
         # A line that flickers during that time does not end the action the moment the blind period finishes.
         blind = (until is not None and self.step_start is not None
                  and now - self.step_start < (step.get("blind") or 0))
         for k, v in seen.items():
+            self.miss[k] = 0 if v else self.miss[k] + 1
             if blind and k == until:
                 self.hits[k] = 0
                 self.since[k] = None
+                # Gone for BLIND_REARM_FRAMES in a row during blind still counts as "disappeared once". A one- or two-frame flicker does not.
+                # Otherwise a line that left and came back inside the blind period (the old lane during a quick turn) never arms.
+                if self.miss[k] >= BLIND_REARM_FRAMES:
+                    self.armed[k] = True
                 continue
             self.hits[k] = self.hits[k] + 1 if v else 0
             self.since[k] = (self.since[k] if self.since[k] is not None else now) if v else None
