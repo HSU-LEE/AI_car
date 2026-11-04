@@ -133,6 +133,7 @@ class PersonDetector:
         self.fg = None                  # Last color mask at half size. Shown while tuning.
         self.last_box = None            # What the last view cut out, in full-frame px. Shown while tuning.
         self.box = GUIDE                # Guide box the next view looks in. Not saved.
+        self.added = []                 # Background each view of this session added, so taking the view back takes that back too. Not saved.
 
     # --- Registration ---
     def add_background(self, frames):
@@ -165,7 +166,9 @@ class PersonDetector:
         q = color_index(cv2.cvtColor(small, cv2.COLOR_BGR2HSV))
         hist = np.bincount(q[labels == best], minlength=N_BINS)
         around = cv2.dilate((labels == best).astype(np.uint8), np.ones((5, 5), np.uint8)) == 0     # Everything else in the frame counts against the figure.
-        self.background += np.bincount(q[around], minlength=N_BINS)
+        added = np.bincount(q[around], minlength=N_BINS)
+        self.background += added
+        self.added.append(added)
         view = {"hist": normalized(hist.astype(np.float64)).tolist(), "w": w * 2, "h": h * 2, "feet": (y + h) * 2, "below": 0.0,
                 "outline": self._outline(labels[y:y + h, x:x + w] == best).tolist(),
                 "lab": mean_lab(small[y:y + h, x:x + w], labels[y:y + h, x:x + w] == best).tolist(),
@@ -185,13 +188,12 @@ class PersonDetector:
             view.update(w=gw * 2, h=gh * 2, below=max(y + h - (gy + gh), 0) / gh, outline=self._outline(part).tolist(),
                         bands=band_hists(q[gy:gy + gh, gx:gx + gw], part).tolist(),
                         lab=mean_lab(small[gy:gy + gh, gx:gx + gw], part & self.table[q[gy:gy + gh, gx:gx + gw]]).tolist())
+            self.fit()      # Those are what detection compares with, here as after saving.
         if view["feet"] <= self.horizon:
-            self.views.pop()
-            self.fit()
+            self.undo()
             return False, "발이 수평선보다 위에 있습니다. 사람을 바닥에 세우세요"
         if not self.table.any():
-            self.views.pop()
-            self.fit()
+            self.undo()
             return False, "사람 색이 주변과 같아 구분할 수 없습니다. 색이 다른 곳에 세워 보세요"
         message = f"등록 {len(self.views)}번 ({view['w']}x{view['h']}px, 발 위치 {view['feet'] / frame.shape[0]:.2f})"
         if self.table[HUE_BINS:].any():
@@ -201,10 +203,12 @@ class PersonDetector:
     def undo(self):
         if self.views:
             self.views.pop()
+            if self.added:
+                self.background -= self.added.pop()
             self.fit()
 
     def clear(self):
-        self.views, self.background = [], np.zeros(N_BINS)
+        self.views, self.background, self.added = [], np.zeros(N_BINS), []
         self.fit()
 
     def stop_at(self, frame_h):

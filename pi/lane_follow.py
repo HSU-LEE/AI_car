@@ -92,7 +92,7 @@ AUTO_TRIM_TAU = 15.0    # Auto center-trim time constant, in seconds. Learns onl
 AUTO_STEER_MAX = 26     # Maximum steering angle while driving, in degrees. Does not exceed car.py STEER_LIMIT (26).
 STEER_RATE = 150        # Maximum change in steering angle per second, in deg/s. A smaller value turns less abruptly.
 
-BASE_SPEED = 0.22       # Speed going straight.
+BASE_SPEED = 0.3        # Speed going straight, when an action sets none.
 MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of slow=, and while the lane is lost.
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
@@ -127,15 +127,20 @@ JUNCTION_Y = 0.5        # The junction action starts once the horizontal line dr
 CAMERA_F = 492          # Focal length in px of the full-sensor view (about 66 degrees wide). Turns screen height into floor distance for cm=.
 LANE_CM = 20.0          # Real lane width.
 END_BASE_CM = 38.0      # cm=0 is where the line sits this far ahead of the camera, about where to_junction() ends without cm=.
-END_SPEED_SEC = 0.4     # cm=: the car's speed is measured from how the line moved over the last this many seconds.
+END_SPEED_SEC = 0.25    # cm=: the car's speed is measured from how the line moved over the last this many seconds. Short, because the car is still slowing down.
 END_LEAD_SEC = 0.05     # cm=: end this much early (at the measured speed). The reading is about 2 frames old by the time it is acted on.
+END_MIN_SPEED = 3.0     # cm=: a measured speed below this (cm/s), on a car that is being driven, is a bad reading. END_DEFAULT_SPEED is used instead.
+END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measured. About what the lowest motor command gives.
+END_SWITCH_FRAMES = 3   # cm=: before the end line is reached, this many readings in a row that agree with each other replace a reading they jump away from.
+END_FRESH_SEC = 0.15    # cm=: a reading older than this when the line is reached does not count as that line's position.
+END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is bounded because lost-lane back-up is off during it.
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
 JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a junction (a fork).
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
 BLIND_REARM_FRAMES = 5  # blind_sec: a line gone for this many frames in a row during the blind period arms its event, so it can end the action once blind is over.
 GAP_MAX_HEADING = 0.5   # Skip the gap test when heading error is larger than this, because the car is badly misaligned with the lane.
-GAP_TIP_MEMORY = 1.0    # Once a gap is confirmed, the tip of the lane line decides when it arrives, for this many seconds after the band test last saw it.
+GAP_TIP_LOST = 5        # A confirmed gap is followed by its line tips until they are gone for this many frames in a row.
                         # The band test needs both sides, so when one line ends well before the other it may hold only 1-2 frames near the car (runs 20261104-230925, 231241).
 GAP_BANDS = 2           # Lane gap: one empty band is enough if the line resumes above it.
                         # If it does not resume, the empty run must be at least this many bands, because one empty top band may just be a missed far line.
@@ -158,10 +163,11 @@ ALIGN_OFFSET = 0.2      # until="aligned": position error is within this (the la
 ALIGN_HEADING = 0.2     # Heading error is within this (pointed along the lane). 0.12 almost never happens on the real track.
 ALIGN_FRAMES = 5        # Held for this many frames, the car counts as aligned. Used when tr() or tl() aligns and then stops after a turn.
 ALIGN_HOLD_HEADING = False  # True: while aligning, a heading error above TURN_END_HEADING is never steered into (old behavior).
-                        # False: held only while a horizontal line is in view (its heading is unreliable), otherwise steered into.
+                        # False: held only for a real horizontal line (ALIGN_HLINE_HEADING), whose heading is unreliable. Otherwise steered into.
                         # Off: after a corner the exit lane can keep curving (heading -0.79 in run 20261103-201450); holding drove the car straight off the line.
-ALIGN_HLINE_HEADING = 0.8   # While aligning, a horizontal line in view really is one only if it drives heading to about +-1 (0.86-1.0 in every recording).
+ALIGN_HLINE_HEADING = 0.8   # While aligning, a horizontal line in view really is one only if it drives heading to about +-1.
                             # A lane line curving across the view also trips the band test, at 0.5-0.62, and must be steered along (run 20261104-230540).
+ALIGN_HLINE_HOLD = 0.3      # A real line's heading dips below that for 1-3 frames (runs 200649, 201450), so the hold lasts this many seconds after it was last above.
 ALIGN_STEER_MAX = 8     # While aligning, if heading error exceeds TURN_END_HEADING, ignore heading and correct position only within this angle.
 STRAIGHT_CORR = 6       # straight(): when the lane is visible, correct only within ± this many degrees.
 CURVE_ASSIST = 0.5      # curve(): blend of the set angle and lane-follow steering. 0 is a fixed angle, 1 is the lane only.
@@ -187,8 +193,8 @@ VISION_FILE = Path(__file__).with_name("vision.json")
 # ---
 
 
-def load_vision():
-    """Load saved values from vision.json. Missing keys keep their defaults.
+def load_vision(path=None):
+    """Load saved values from vision.json (or a copy saved with a recording). Missing keys keep their defaults.
 
     Track color (line_color), the white-line threshold (tune_white.py), traffic-light
     thresholds (tune_light.py), the camera center measured by calibrate.py (camera_x),
@@ -197,7 +203,7 @@ def load_vision():
     global LINE_COLOR, WHITE_THR, CAMERA_X, LIGHT_S_MIN, LIGHT_V_MIN, LIGHT_AREA_MIN
     global LANE_WIDTH_PX, HORIZON_Y, LENS_POSITION, CAMERA_LOCK
     try:
-        data = json.loads(VISION_FILE.read_text())
+        data = json.loads((path or VISION_FILE).read_text())
     except (OSError, ValueError):
         return
     LINE_COLOR = data.get("line_color", LINE_COLOR)
@@ -345,6 +351,13 @@ class LaneDetector:
         self.gap_why = ""               # Why gap_y is None (diagnostics).
         self.near_line = False          # Whether a line is visible just in front of the car (the bottom band). False while over a gap.
         self.far_y = None               # y of a horizontal line seen above the ROI (far). For slow= braking. Driver fills it only when needed.
+        self.mask = np.zeros((1, 1), np.uint8)  # Line mask this frame.
+        self.hrun = None                # Nearest horizontal line this frame, in the mask: (first column, last column, center row).
+        self.tip_y = None               # Where the lane lines that end ahead end (lane_tip).
+        self.tip_diff = None            # How far apart the two line tips are, while both are in view.
+        self.gap_hits = 0               # Frames the band test saw a gap, while its line tips stayed in view.
+        self.tip_lost = 0               # Frames in a row the line tips were not seen.
+        self.gap_held = False           # A gap was confirmed and its line tips are being followed.
         top = int(FRAME_H * ROI_TOP)
         h = (FRAME_H - top) // SLICES
         self.band_y = [FRAME_H - (i + 0.5) * h for i in range(SLICES)]
@@ -615,30 +628,76 @@ class LaneDetector:
         """Exact y of the near edge of the nearest horizontal line, in front of the car. None if there is none or it reached the frame bottom.
 
         Unlike junction_y (a band center, 36 px steps), this resolves about one pixel, for cm=.
+        It reads the columns ahead of the car, or those of the band test's line when that line does not cross them (a corner off to one side).
         """
         cx0 = int(FRAME_W * CAMERA_X)
         strip = self.mask[:, max(cx0 - 60, 0):cx0 + 60] > 0
         rows = np.flatnonzero(strip.mean(axis=1) > 0.6)
-        if not len(rows):
+        if len(rows):
+            row = rows[-1]
+        elif self.hrun is not None:
+            strip, row = self.mask[:, self.hrun[0]:self.hrun[1]] > 0, self.hrun[2]
+        else:
             return None
-        r0, r1 = max(rows[-1] - 20, 0), min(rows[-1] + 20, strip.shape[0])
+        r0, r1 = max(row - 20, 0), min(row + 20, strip.shape[0])
         near = strip[r0:r1]
         cols = near.any(axis=0)
-        low = near.shape[0] - 1 - np.argmax(near[::-1], axis=0)     # Lowest line pixel per column. The median reads a slanted line at the car's center.
+        if not cols.any():
+            return None
+        low = near.shape[0] - 1 - np.argmax(near[::-1], axis=0)     # Lowest line pixel per column. The median reads a slanted line at its middle.
         y = r0 + float(np.median(low[cols]))
         return None if y >= strip.shape[0] - 2 else int(FRAME_H * ROI_TOP) + y + 1
 
     def lane_tip(self):
-        """y of the nearer tip of the lane lines that end ahead (a lane gap), for cm=. None if no line ends in view."""
+        """y where the lane ends ahead: halfway between the tips of the left and right lines. None if the lane does not end in view.
+
+        Halfway does not depend on which line ends first, which a slightly turned car changes. A line must sit about where a lane line does at
+        that height, so other tape near the frame side does not count. Once one tip has left the frame, the other one stands in, by the distance they had.
+        """
         labels, stats = self.blobs
-        tips = []
+        cx0 = FRAME_W * CAMERA_X
+        top_row = int(FRAME_H * ROI_TOP)
+        tips = {}
         for i, (x, y, w, h, area) in enumerate(stats[1:], 1):
-            ends_in_view = 0 < y and y + h >= self.mask.shape[0] - 2     # Rises from the frame bottom and stops below the ROI top.
-            if ends_in_view and h >= 6 and area >= MIN_PIXELS and 0.05 * FRAME_W <= x + w / 2 <= 0.95 * FRAME_W:
-                top = np.flatnonzero(labels[y] == i)
-                if len(top) and 0.08 * FRAME_W <= top.mean() <= 0.92 * FRAME_W:     # A line leaving by the frame side (a curve) does not end.
-                    tips.append(y)
-        return int(FRAME_H * ROI_TOP) + float(max(tips)) if tips else None
+            # Comes from the near half of the view or the frame side (a near line can be cut off there), and stops below the ROI top.
+            # A piece that lies wholly in the far half is the lane resuming beyond a gap, not the end of this one.
+            ends_in_view = 0 < y and (y + h >= self.mask.shape[0] / 2 or x <= 0 or x + w >= FRAME_W)
+            if not (ends_in_view and h >= 6 and area >= MIN_PIXELS):
+                continue
+            top = np.flatnonzero(labels[y] == i)
+            if not len(top):
+                continue
+            tip_x = float(top.mean())
+            lane_w = LANE_WIDTH_PX * (top_row + y - HORIZON_Y) / (342 - HORIZON_Y)
+            # At the frame side, it is a line leaving by the side (a curve), not one that ends.
+            if 0.08 * FRAME_W <= tip_x <= 0.92 * FRAME_W and 0.2 * lane_w <= abs(tip_x - cx0) <= 0.85 * lane_w:
+                side = tip_x < cx0
+                tips[side] = max(tips.get(side, 0), int(y))
+        if len(tips) == 2:
+            self.tip_diff = abs(tips[True] - tips[False])
+            return top_row + (tips[True] + tips[False]) / 2
+        if not tips:
+            self.tip_diff = None
+        if len(tips) == 1 and self.tip_diff is not None:
+            return top_row + next(iter(tips.values())) + self.tip_diff / 2
+        return None
+
+    def follow_gap(self, bands):
+        """Keep a confirmed gap in gap_y while the band test cannot see it but its line tips are still in view."""
+        self.tip_y = self.lane_tip()
+        if self.gap_y is not None and self.tip_y is None:
+            # A lane that really ends shows where its lines end. A curved line after a turn can look like a gap to the bands (run 20261104-230540, frames 979-984).
+            self.gap_y, self.gap_why = None, "no line tips"
+        self.tip_lost = 0 if self.tip_y is not None else self.tip_lost + 1
+        if self.edge or any(special for _, _, special in bands) or self.tip_lost >= GAP_TIP_LOST:
+            self.gap_hits, self.gap_held = 0, False
+        elif self.gap_y is not None:
+            # Counted over the whole time the tips are followed, not in a row: uneven tips let the band test see the gap only in short spells.
+            self.gap_hits += 1
+            self.gap_held = self.gap_hits >= JUNCTION_FRAMES
+        if self.gap_y is None and self.gap_held and self.tip_y is not None:
+            self.gap_y = int(self.tip_y)
+            self.gap_why = "held by line tips"
 
     def __call__(self, frame, side="center", draw=True):
         """Return ((position error, heading error) or None, junction detected, debug image).
@@ -684,6 +743,7 @@ class LaneDetector:
         ys, ls, rs, pending = [], [], [], []
         bands = []      # Per band: (y, line x list, horizontal line or crosswalk). Used for the lane-gap test.
         ref = self.center[0] if self.center[0] is not None else cx0
+        self.hrun = None
         for i in range(SLICES):     # Band 0 is the nearest. Tracking walks from the bottom upward.
             y1 = mask.shape[0] - (i + 1) * h
             cy = top + y1 + h // 2
@@ -694,6 +754,8 @@ class LaneDetector:
                 junction = True
             if hline:
                 self.junction_y = max(self.junction_y or 0, cy)
+                if self.hrun is None:
+                    self.hrun = (int(hrun[0]), int(hrun[1]), y1 + h // 2)
             if crosswalk:
                 self.crosswalk_any = True
                 self.crosswalk_y = max(self.crosswalk_y or 0, cy)
@@ -737,6 +799,7 @@ class LaneDetector:
         self.left, self.right = list(ls), list(rs)
 
         self.gap_y = self.find_gap(bands, ls, rs)
+        self.follow_gap(bands)
         if self.gap_y is not None and draw:
             dashed_hline(dbg, self.gap_y, C_GAP, thick=2)
             chip(dbg, "LANE ENDS", FRAME_W // 2 - 40, self.gap_y - 22, C_GAP)
@@ -991,30 +1054,47 @@ def floor_cm(y):
 class EndRuler:
     """cm=: where the line this action ends on is, using the line itself as a ruler. It needs no floor texture and adds up no error.
 
-    Once the line has left the frame (or stops being seen), its distance is carried on from the speed measured while it was visible.
+    Before that line is reached, whatever is read may be some other line, or a misread. Readings that jump away are refused,
+    but END_SWITCH_FRAMES of them in a row take over. Once it is reached (locked), nothing can replace it: the next line ahead is not it.
+    When the line leaves the frame or stops being seen, its distance is carried on from the speed measured while it was visible.
     """
 
     def __init__(self):
-        self.kind, self.z, self.speed, self.t, self.guess = None, None, None, None, False
-        self.raw, self.track = [], []
+        self.speed = None
+        self.reset(None)
 
-    def feed(self, kind, y, now):
-        if kind != self.kind:       # A different line from now on: nothing measured so far applies to it.
-            self.__init__()
-            self.kind = kind
+    def reset(self, kind):
+        """A different line. The car's speed still holds."""
+        self.kind, self.z, self.t, self.read_t, self.guess = kind, None, None, None, False
+        self.raw, self.track, self.jump = [], [], []
+
+    def feed(self, kind, y, now, locked=False, moving=True):
+        if kind != self.kind:
+            self.reset(kind)
         dt = 0.0 if self.t is None else min(now - self.t, 0.1)      # Capped: a stop for the LEGO figure is not driving.
         self.t = now
         z = None if y is None else floor_cm(y)
         if z is not None and self.z is not None and not -6 < z - self.z < 3:
-            z = None                # Jumped: another line, or a misread.
+            self.jump = (self.jump + [z])[-END_SWITCH_FRAMES:]
+            if locked or len(self.jump) < END_SWITCH_FRAMES or max(self.jump) - min(self.jump) >= 3:
+                z = None    # Jumped: another line, or a misread.
+            else:
+                self.reset(kind)
+                self.t = now
+        elif z is not None:
+            self.jump = []
         if z is None:
-            if self.z is not None and self.speed is not None:
-                self.z -= self.speed * dt
+            if self.z is not None and moving:
+                speed = self.speed if self.speed is not None and self.speed >= END_MIN_SPEED else END_DEFAULT_SPEED
+                self.z -= speed * dt
                 self.guess = True
             return
+        if self.guess:              # Back from carrying on: the old readings would pull the position backwards.
+            self.raw, self.track = [], []
         self.raw = (self.raw + [z])[-3:]
         self.z = float(np.median(self.raw))     # A median of 3, so one misread frame cannot end the action.
         self.guess = False
+        self.read_t = now
         self.track = [p for p in self.track if now - p[0] <= END_SPEED_SEC] + [(now, self.z)]
         if len(self.track) >= 5 and self.track[-1][0] - self.track[0][0] >= END_SPEED_SEC / 2:
             ts, zs = zip(*self.track)
@@ -1096,7 +1176,8 @@ class CourseRunner:
         self.paused = False     # Standing still for the LEGO figure. Driver fills it every frame.
         self.ruler = EndRuler()     # cm=: where the end line is.
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
-        self.gap_hits, self.gap_t = 0, None     # Lane gap: frames in a row the band test saw it, and when it was last confirmed.
+        self.run_start = None       # cm=: when the end line was reached.
+        self.moving = True          # cm=: whether the motor is driving the car forward. Driver fills it every frame.
 
     def step(self):
         step = self.course[self.idx] if self.idx < len(self.course) else None
@@ -1117,8 +1198,7 @@ class CourseRunner:
         self.hold = None
         self.red_hits, self.red_seen, self.red_box = 0, False, None
         self.red_boxes, self.local_light = [], None
-        self.ruler, self.run_out = EndRuler(), False
-        self.gap_hits, self.gap_t = 0, None
+        self.ruler, self.run_out, self.run_start = EndRuler(), False, None
         step = self.step()
         if step is None:
             print(f"\n[코스 끝] 이제부터 차선만 따라감")
@@ -1164,6 +1244,8 @@ class CourseRunner:
         if self.step_start is not None:
             self.step_start += dt
         self.since = {k: None if v is None else v + dt for k, v in self.since.items()}
+        if self.run_start is not None:
+            self.run_start += dt
 
     def near_red(self, box):
         """Whether the green lamp is near where the red lamp was, on the same traffic light. Distance scales with lamp size."""
@@ -1232,18 +1314,8 @@ class CourseRunner:
         if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] in ("gap", "end")):
             # gap / end with no at= end at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
             y = ys.get(step["until"])
-            end_y = (step.get("at") or JUNCTION_Y) * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
-            seen[step["until"]] = y is not None and y >= end_y
-            if step["until"] in ("gap", "end"):
-                # A confirmed gap counts once a line's tip reaches the end height, even if the band test has dropped it by then.
-                self.gap_hits = self.gap_hits + 1 if ys.get("gap") is not None else 0
-                if self.gap_hits >= JUNCTION_FRAMES:
-                    self.gap_t = now
-                if ys.get("junction") is not None:      # A horizontal line, not a gap: the lane lines stop at it.
-                    self.gap_t = None
-                tip = ys.get("tip_y")
-                if self.gap_t is not None and now - self.gap_t <= GAP_TIP_MEMORY and tip is not None and tip >= end_y:
-                    seen[step["until"]] = True
+            seen[step["until"]] = (y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1     # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+                                   and (step["until"] != "junction" or det is not None))    # As above: a junction counts only with the lane in view.
         until = step["until"] if step is not None else None
         # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
         # A line that flickers during that time does not end the action the moment the blind period finishes.
@@ -1271,17 +1343,33 @@ class CourseRunner:
             return
         hline, tip = ys.get("hline_y"), ys.get("tip_y")
         if self.run_out:
-            self.ruler.feed(self.ruler.kind, hline if self.ruler.kind == "line" else tip, now)
+            self.ruler.feed(self.ruler.kind, hline if self.ruler.kind == "line" else tip, now, locked=True, moving=self.moving)
         elif hline is not None:
             self.ruler.feed("line", hline, now)
         elif step["until"] == "end" and ys.get("gap") is not None and tip is not None:
             self.ruler.feed("tip", tip, now)
 
+    def start_run_out(self, step, ys, now):
+        """cm=: the end line was reached. Make sure the ruler is on that line, not on what it was reading before."""
+        self.run_out, self.run_start = True, now
+        ruler = self.ruler
+        kind = "line" if step["until"] == "junction" or ys.get("junction") is not None else "tip"
+        y = ys.get("hline_y") if kind == "line" else ys.get("tip_y")
+        if kind != ruler.kind or ruler.jump or ruler.read_t is None or now - ruler.read_t > END_FRESH_SEC:
+            ruler.reset(kind)
+            if y is not None:
+                ruler.feed(kind, y, now, locked=True)
+            else:       # Only the band test sees it. Its band center is coarse, but much better than no distance at all.
+                band = ys.get("junction") if kind == "line" else ys.get("gap")
+                if band is not None:
+                    ruler.z, ruler.t, ruler.guess = floor_cm(band), now, True
+
     def end_reached(self, step):
         """cm=: the end line has come to its place. A line never measured ends at once, since nothing can be said about it."""
         if self.ruler.z is None:
             return True
-        return self.ruler.z - (self.ruler.speed or 0.0) * END_LEAD_SEC <= END_BASE_CM - step["cm"]
+        speed = self.ruler.speed if self.moving and self.ruler.speed else 0.0
+        return self.ruler.z - speed * END_LEAD_SEC <= END_BASE_CM - step["cm"]
 
     def happened(self, event, now=0.0, hold=0.0):
         step = self.step()
@@ -1312,7 +1400,12 @@ class CourseRunner:
             elif step["max"] is None and step["until"] is not None and step["do"] != "wait" and elapsed >= STEP_MAX_SEC:
                 reason = f"안전 시간 {STEP_MAX_SEC}초 (조건이 안 와서 넘어감, max_sec로 조절)"
             elif self.run_out:
-                reason = self.end_reason(step) if self.end_reached(step) else None
+                if self.end_reached(step):
+                    reason = self.end_reason(step)
+                elif now - self.run_start >= END_MAX_SEC:
+                    reason = f"{self.EVENT_NAMES[step['until']]} +{step['cm']:g}cm 못 재고 {END_MAX_SEC:g}초 지남"
+                else:
+                    reason = None
             elif (step["until"] is not None and elapsed >= step["min"]
                   and self.happened(step["until"], now, step.get("hold", 0.0))):
                 reason = self.EVENT_NAMES[step["until"]]
@@ -1322,12 +1415,10 @@ class CourseRunner:
                 if self.count < (step.get("nth") or 1):
                     # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
                     print(f"\n[{self.idx + 1}] {reason} {self.count}번째 지나감 ({step['nth']}번째에서 끝)")
-                    self.ruler = EndRuler()     # The next line is a new one.
+                    self.ruler.reset(None)      # The next line is a new one.
                     reason = None
                 elif step.get("cm") is not None:
-                    self.run_out = True
-                    if self.ruler.kind is None:     # Seen by the bands but not yet by the ruler.
-                        self.ruler.kind = "line" if step["until"] == "junction" or (ys or {}).get("junction") is not None else "tip"
+                    self.start_run_out(step, ys or {}, now)
                     reason = self.end_reason(step) if self.end_reached(step) else None
             else:
                 reason = None
@@ -1623,8 +1714,11 @@ class Recorder:
         self.dir.mkdir(parents=True)
         if PERSON_ON and PERSON_FILE.exists():      # Replaying this run later needs the figure registered on the day.
             shutil.copy(PERSON_FILE, self.dir / PERSON_FILE.name)
+        if VISION_FILE.exists():                    # And the calibration of the day: the Mac has none of its own.
+            shutil.copy(VISION_FILE, self.dir / VISION_FILE.name)
+        shutil.copy(Path(__file__).with_name("course.py"), self.dir / "course.py")      # And the course as it was.
         self.log = open(self.dir / "log.csv", "w")
-        self.log.write("frame,t,offset,heading,junction,steer,speed,step,status\n")
+        self.log.write("frame,t,offset,heading,junction,steer,speed,step,status,cmd\n")
         self.n = 0
         self.queue = queue.Queue(maxsize=300)   # If saving falls behind (about 5 seconds), the loop waits briefly. Frames are not dropped.
         self.writer = threading.Thread(target=self._save_frames, daemon=True)
@@ -1636,11 +1730,11 @@ class Recorder:
             path, frame = item
             cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
-    def write(self, frame, t, det, junction, steer, speed, course, now):
+    def write(self, frame, t, det, junction, steer, speed, course, now, cmd=0.0):
         self.queue.put((str(self.dir / f"{self.n:05d}.jpg"), frame))
         off, head = det if det else ("", "")
         self.log.write(f"{self.n},{t:.3f},{off},{head},{int(junction)},{steer:.2f},{speed:.2f},"
-                       f"{course.idx},{course.status(now)}\n")
+                       f"{course.idx},{course.status(now)},{cmd:.2f}\n")
         self.n += 1
 
     def close(self):
@@ -1675,6 +1769,7 @@ class Driver:
         self.det, self.junction, self.light = None, False, None
         self.light_tick = 0         # Frames since start, for LIGHT_VIEW_EVERY.
         self.approach = (0.0, -1.0, -1)    # slow=: (slowdown amount 0 to 1, time the line was last seen, action index).
+        self.hline_t = None         # While aligning: last time heading said the horizontal line in view is a real one.
 
     def back_up(self, now, lost_long, steer):
         """Lost lane for LOST_HOLD: reverse along the recent path (steering history played backwards) until the lane comes back.
@@ -1738,8 +1833,9 @@ class Driver:
         slow = course.opt("slow")
         if slow is None or step["until"] not in CourseRunner.AT_EVENTS or not course.final_approach():
             return base
+        slow = min(max(slow, MIN_SPEED), base)      # Do not go below the speed that keeps the motor turning, nor speed up to get there.
         if course.run_out:      # cm=: stay slow for the last distance, even once the line has gone from view.
-            return max(min(slow, base), MIN_SPEED)
+            return slow
         level, seen_t, idx = self.approach
         if idx != course.idx:       # New action: start over.
             level, seen_t = 0.0, -1.0
@@ -1757,7 +1853,6 @@ class Driver:
         elif now - seen_t > APPROACH_HOLD:
             level = 0.0
         self.approach = (level, seen_t, course.idx)
-        slow = max(min(slow, base), MIN_SPEED)      # Do not go below the minimum speed that keeps the motor turning.
         return base - (base - slow) * level
 
     # --- Detection View (Browser Live View / Replay) ---
@@ -1960,11 +2055,11 @@ class Driver:
             course.turned = self.yaw(frame) * (-1 if step["do"] == "right" else 1)
         else:
             course.turned, self.yaw_idx = None, -1
+        course.moving = self.speed > 0
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
                        "near": detect.near_line,
-                       **({"hline_y": detect.hline_edge()} if step is not None and step.get("cm") is not None else {}),
-                       **({"tip_y": detect.lane_tip()} if step is not None and (step.get("cm") is not None or step["until"] in ("gap", "end")) else {})},
+                       **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y} if step is not None and step.get("cm") is not None else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
         if course.done:
@@ -1991,8 +2086,11 @@ class Driver:
             h = float(np.clip(raw_h, -HEADING_STEER_MAX, HEADING_STEER_MAX))
             # While aligning, a large heading error such as a corner or hairpin is not steered into further. Only position is corrected a little.
             # A horizontal line in view makes the heading jump to +-1 (run 20261103-203911 steered to -26), so hold heading then.
+            if detect.junction_y is not None and abs(raw_h) >= ALIGN_HLINE_HEADING:
+                self.hline_t = now
+            real_hline = detect.junction_y is not None and self.hline_t is not None and now - self.hline_t <= ALIGN_HLINE_HOLD
             hold_heading = ((course.step() or {}).get("until") == "aligned" and abs(raw_h) > TURN_END_HEADING
-                            and (ALIGN_HOLD_HEADING or (detect.junction_y is not None and abs(raw_h) >= ALIGN_HLINE_HEADING)))
+                            and (ALIGN_HOLD_HEADING or real_hline))
             if hold_heading:
                 h = 0.0
             lane = steering.lane(det[0], h, now, kp, kh)
@@ -2000,7 +2098,7 @@ class Driver:
                 lane = float(np.clip(lane, -ALIGN_STEER_MAX, ALIGN_STEER_MAX))
             # When a junction line is visible ahead, do not snap the steering toward a large position error.
             now_step = course.step()
-            if (now_step and now_step["do"] == "follow" and now_step.get("until") == "junction" and course.final_approach()
+            if (now_step and now_step["do"] == "follow" and now_step.get("until") in ("junction", "end") and course.final_approach()
                     and (detect.junction_y is not None or detect.far_y is not None)):
                 lane = float(np.clip(lane, -APPROACH_STEER_MAX, APPROACH_STEER_MAX))
         else:
@@ -2043,7 +2141,8 @@ class Driver:
             self.kick_until = now + KICK_TIME   # Kick only when actually starting after standing still.
         self.speed = speed
         if speed > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
-            self.history.append((now - self.last_t, steering.angle, speed))
+            # The speed the motor really gets, so a retrace covers the distance really driven.
+            self.history.append((now - self.last_t, steering.angle, max(speed, motor_floor(steering.angle))))
             while sum(h[0] for h in self.history) > LOST_BACK_MEMORY:
                 self.history.pop(0)
         self.last_t = now
@@ -2168,7 +2267,7 @@ def main():
             prev_now = now
 
             if rec:
-                rec.write(frame, now - t_start, det, junction, steering.angle, speed, course, now)
+                rec.write(frame, now - t_start, det, junction, steering.angle, speed, course, now, cmd)
             frames += 1
             if show:
                 stream.update(driver.view(dbg, now, fps))

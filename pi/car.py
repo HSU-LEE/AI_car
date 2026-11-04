@@ -112,6 +112,7 @@ class Car:
         from gpiozero import Motor   # Imported late so replay.py can load this file on a Mac.
         self.servo = make_servo()
         self.bias = 0.0     # Learned center offset. Used only when lane_follow.AUTO_TRIM is on.
+        self.trim = STEER_TRIM      # Servo center. A newly saved one takes effect here at once, also for the centering in close().
         self.motor = Motor(forward=MOTOR_IN1, backward=MOTOR_IN2,
                            enable=MOTOR_PWM, pwm=True)
 
@@ -133,7 +134,7 @@ class Car:
 
     def steer(self, angle):
         angle = max(-STEER_LIMIT, min(STEER_LIMIT, (angle + self.bias) * STEER_SCALE))
-        self.servo.angle = (-angle if STEER_INVERT else angle) + STEER_TRIM
+        self.servo.angle = (-angle if STEER_INVERT else angle) + self.trim
 
     def center(self):
         self.steer(0)
@@ -187,7 +188,8 @@ def main():
             data["steer_trim"] = round(old + float(sys.argv[2]), 1)
             CALIB_FILE.write_text(json.dumps(data))
             print(f"중앙 보정 {old:+.1f} → {data['steer_trim']:+.1f}도 저장")
-            car.servo.angle = data["steer_trim"]    # Move to the new center so it can be checked.
+            car.trim = data["steer_trim"]
+            car.center()    # Move to the new center so it can be checked.
             sleep(1)
         elif cmd == "test":
             for a in (0, -STEER_LIMIT, STEER_LIMIT, 0):
