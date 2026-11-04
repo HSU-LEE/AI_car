@@ -9,6 +9,7 @@ Writes <run>/replay.mp4 and prints a short summary.
 import argparse
 import ast
 import csv
+import importlib.util
 from pathlib import Path
 
 import cv2
@@ -25,6 +26,21 @@ def main():
     ap.add_argument("--out", help="출력 영상 경로 (기본: <run>/replay.mp4)")
     args = ap.parse_args()
 
+    run = Path(args.run)
+    # The calibration and course of that run, saved with it. --set below still overrides. A Mac has no vision.json of its own.
+    if (run / lf.VISION_FILE.name).exists():
+        lf.load_vision(run / lf.VISION_FILE.name)
+    else:
+        print(f"[주의] 이 녹화에 {lf.VISION_FILE.name}이 없어 현재 설정으로 분석합니다 (선 색 {lf.LINE_COLOR}). 다르면 --set LINE_COLOR=black 등으로 지정")
+    course_list = lf.COURSE
+    if (run / "course.py").exists():
+        spec = importlib.util.spec_from_file_location("run_course", run / "course.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        course_list = module.COURSE
+    else:
+        print("[주의] 이 녹화에 course.py가 없어 현재 코스로 판단합니다")
+
     for kv in args.set:
         key, val = kv.split("=", 1)
         old = getattr(lf, key)
@@ -35,7 +51,6 @@ def main():
         setattr(lf, key, new)
         print(f"{key}: {old} -> {new}")
 
-    run = Path(args.run)
     if (run / "log.csv").exists():
         rows = list(csv.DictReader(open(run / "log.csv")))
     else:   # Frames only: assume 20 fps.
@@ -47,7 +62,7 @@ def main():
         rows = rows[a:b + 1]
 
     # Same decisions as a real run, including course options and the LEGO figure saved with the recording.
-    driver = lf.Driver(lf.COURSE, person=lf.PersonDetector.load(lf.HORIZON_Y, run / lf.PERSON_FILE.name) if lf.PERSON_ON else None)
+    driver = lf.Driver(course_list, person=lf.PersonDetector.load(lf.HORIZON_Y, run / lf.PERSON_FILE.name) if lf.PERSON_ON else None)
     detect, steering, traffic, course = driver.detect, driver.steering, driver.traffic, driver.course
     out = Path(args.out) if args.out else run / "replay.mp4"
     writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), 20,

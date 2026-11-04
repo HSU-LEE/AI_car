@@ -49,7 +49,7 @@ find_host() {
 HOST=""
 host() {
     [ -n "$HOST" ] && return
-    HOST=$(find_host) || die "파이를 찾을 수 없습니다. 파이 전원과 맥 Wi-Fi(집 와이파이 또는 AICAR)를 확인하세요."
+    HOST=$(find_host) || die "파이를 찾을 수 없습니다. 파이 전원과 맥 Wi-Fi(집 와이파이 또는 차 핫스팟)를 확인하세요."
 }
 run() { host; ssh "${SSH_OPTS[@]}" "pi@$HOST" "$@"; }            # Command that only needs output.
 run_tty() { host; ssh "${SSH_OPTS[@]}" -t "pi@$HOST" "$@"; }     # Command that needs a keyboard or Ctrl+C.
@@ -87,6 +87,7 @@ cmd_push() {
         "$CODE/" "pi@$HOST:$REMOTE/" | awk '$1 ~ /^\*del/ {print "  삭제: " $2; n++}
                                          $1 ~ /^<f/ {print "  업데이트: " $2; n++}
                                          END {if (!n) print "  변경 없음"}'
+    [ "${PIPESTATUS[0]}" = 0 ] || { red "파이 코드 업데이트 실패 (연결 확인). 주행은 시작하지 않습니다." >&2; exit 1; }
     remote_sums > "$STATE/last_push"
     green "파이 코드 업데이트 완료 ($HOST)"
 }
@@ -95,6 +96,7 @@ cmd_pull_code() {
     host
     rsync -a --itemize-changes "${SYNC_EXCLUDES[@]}" -e "ssh ${SSH_OPTS[*]}" \
         "pi@$HOST:$REMOTE/" "$CODE/" | awk '$1 ~ /^>f/ {print "  가져옴: " $2; n++} END {if (!n) print "  변경 없음"}'
+    [ "${PIPESTATUS[0]}" = 0 ] || die "코드 가져오기 실패 (연결 확인)"
     remote_sums > "$STATE/last_push"
     green "파이 코드를 맥 pi/ 폴더로 가져왔습니다"
 }
@@ -135,7 +137,7 @@ cmd_track() {
 }
 
 cmd_config() {
-    run "cd ~/$REMOTE && echo '[calib.json] 서보 보정'; cat calib.json 2>/dev/null || echo '  (없음)'; echo
+    run "cd ~/$REMOTE && echo '[calib.json] 서보 보정 (motor_min 값은 쓰지 않음. 최소 속도는 lane_follow.py의 MOTOR_MIN)'; cat calib.json 2>/dev/null || echo '  (없음)'; echo
          echo '[vision.json] 흰 선/카메라'; cat vision.json 2>/dev/null || echo '  (없음 - 자동)'; echo"
     bold "[lane_follow.py 주요 설정] (맥 pi/lane_follow.py에서 수정 후 aicar push)"
     grep -E '^(BASE_SPEED|MIN_SPEED|KICK_SPEED|KP|KH|KD|SMOOTH|AUTO_STEER_MAX|STEER_RATE|ROI_TOP|LINE_MODE|LENS_POSITION|JUNCTION_Y|EDGE_STOP_Y|AUTO_TRIM) ' \
@@ -172,7 +174,11 @@ ensure_mac_venv() {
 
 cmd_replay() {
     local name="${1:-latest}"; shift || true
-    [ "$name" = latest ] && name=$(latest_run)
+    if [ "$name" = latest ]; then
+        # The Pi's newest, or with no Pi around, the newest copy on this Mac.
+        name=$(latest_run 2>/dev/null) || name=$(ls -1d "$RUNS"/2*/ 2>/dev/null | tail -1 | xargs -n 1 basename 2>/dev/null)
+        [ -n "$name" ] || die "녹화가 없습니다"
+    fi
     [ -d "$RUNS/$name" ] || cmd_fetch "$name"
     ensure_mac_venv
     (cd "$CODE" && "$ROOT/.venv/bin/python" replay.py "$RUNS/$name" "$@") && open "$RUNS/$name/replay.mp4"
@@ -316,7 +322,7 @@ cmd_wifi_add() {
 cmd_wifi_del() {
     local ssid="${1:-}"
     [ -n "$ssid" ] || read -r -p "삭제할 와이파이 이름: " ssid
-    [ "$ssid" != "AICAR-AP" ] || die "AICAR 핫스팟은 삭제할 수 없습니다"
+    [ "$ssid" != "AICAR-AP" ] || die "차 핫스팟은 삭제할 수 없습니다"
     run "sudo nmcli connection delete id $(printf '%q' "$ssid")" && green "삭제: $ssid"
 }
 
@@ -383,7 +389,7 @@ EOF
 # --- Dispatch ---
 cmd="${1:-help}"; shift || true
 case "$cmd" in
-    help|-h|--help|course|set|test-vision|person) ;;   # These run without a Pi connection, or ask something first and connect after.
+    help|-h|--help|course|set|test-vision|person|replay) ;;   # These run without a Pi connection, or ask something first and connect after.
     *) host ;;      # Look up the Pi once. Later commands reuse that address.
 esac
 case "$cmd" in

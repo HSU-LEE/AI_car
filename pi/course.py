@@ -2,12 +2,13 @@
 
 
 # --- 주행 ---
+# 전진 최소 속도는 0.3 (lane_follow.MOTOR_MIN). 그보다 낮은 값은 0.3으로 달린다.
 SPEED = 0.5                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 
 # --- 레고 사람 (등록: Tune Person.command) ---
 PERSON_ON = True            # 사람을 보고 멈출지
 PERSON_AT = None            # 정지 위치: 화면 높이 0.4~0.95, 클수록 가까이. None = 등록한 위치
-PERSON_SLOW = 0.25          # 사람이 보일 때 줄일 속도. None = 안 줄임
+PERSON_SLOW = 0.3           # 사람이 보일 때 줄일 속도. None = 안 줄임
 PERSON_STOP_DELAY = 0.0     # 정지 위치에 닿고 더 가는 시간 (초)
 PERSON_RESUME_DELAY = 1.5   # 사람이 없어지고 출발까지 기다리는 시간 (초)
 PERSON_MIN_STOP = 2.0       # 최소 정지 시간 (초)
@@ -158,12 +159,12 @@ def finish():
     return _step("finish", 0.0, 0, None)
 
 
-def to_junction(at=None, slow=0.2, blind_sec=0.5, speed=None, nth=1, cm=None):
+def to_junction(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
     """다음 교차로 선 앞까지 가서 끝낸다. nth=2면 첫 번째 선(교차로처럼 보이는 굽은 길 등)은 지나치고 두 번째에서 끝낸다. cm=면 선을 자로 재서 기준 위치에서 그만큼 더 간 뒤 끝낸다."""
     return _auto(follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm), speed, SPEED)
 
 
-def to_crosswalk(at=0.67, slow=0.2, speed=None):
+def to_crosswalk(at=0.67, slow=0.3, speed=None):
     """횡단보도 앞까지 가서 끝낸다."""
     return _auto(follow(until="crosswalk", speed=speed, at=at, slow=slow), speed, SPEED)
 
@@ -172,14 +173,14 @@ def pass_crosswalk():
     """횡단보도 앞에 선 상태에서 바로 차선 따라 건너고, 지나가면 끝낸다."""
     return cross(line="crosswalk", approach=False)
 
-def to_gap(at=0.85, slow=0.2, speed=None):
+def to_gap(at=0.85, slow=0.3, speed=None):
     """차선이 끊기는 곳 앞까지 가서 끝낸다."""
     return _auto(follow(until="gap", speed=speed, at=at, slow=slow), speed, SPEED)
 
 
-def to_end(at=0.5, slow=0.18, blind_sec=0.0, speed=None, shift=None, cm=None):
+def to_end(at=0.5, slow=0.3, blind_sec=0.0, speed=None, shift=None, cm=None):
     """바로 앞 끝(교차로선이든 차선 끊김이든 먼저 오는 쪽)에서 끝낸다. shift=치우쳐 달릴 cm(+는 오른쪽). cm=면 선을 자로 재서 기준 위치에서 그만큼 더 간 뒤 끝낸다."""
-    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift, cm=cm), speed, 0.26)
+    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift, cm=cm), speed, 0.3)
 
 
 def _turn_fn(direction):
@@ -219,7 +220,7 @@ def corner(direction, at=None, go_sec=0.5, wide=0, stop_sec=0.20, speed=None):
     """교차로 선까지 가서 go_sec초 더 간 뒤 꺾어 정렬하고 stop_sec초 천천히 간다 (wide=바깥으로 치우칠 cm)."""
     turn_fn = _turn_fn(direction)
     shift = wide if direction == "left" else -wide  # 좌회전의 바깥은 오른쪽.
-    steps = [_auto(follow(until="junction", at=at, slow=0.2, blind_sec=1.5, speed=speed, shift=shift or None), speed, SPEED)]
+    steps = [_auto(follow(until="junction", at=at, slow=0.3, blind_sec=1.5, speed=speed, shift=shift or None), speed, SPEED)]
     if go_sec > 0:
         steps.append(straight(go_sec))
     return steps + _turn_align_stop(turn_fn, stop_sec)
@@ -246,7 +247,7 @@ TURN_SPEED = 0.35
 TR_ANGLE = 21           
 TL_ANGLE = 26          
 ALIGN_SPEED = 0.4
-SETTLE_SPEED = 0.2     
+SETTLE_SPEED = 0.3     
 TURN_BLIND = 1.0        
 TURN_BLIND_SPEED = 0.35  
 
@@ -341,8 +342,8 @@ def describe(step):
 # cross(at, line, approach) 교차로선까지 가서 정면으로 건넘 / line="crosswalk": 차선 따라 횡단보도 건넘 (approach=False: 이미 앞에 서 있을 때)
 # corner(direction, wide)   교차로 선까지 가서 go_sec초 더 간 뒤 꺾고 정렬·천천히 주행 (to_junction + straight + tr/tl)
 # uturn(direction)          교차로 선 앞에서 최대 조향으로 돌아 정렬·천천히 주행 (blind_sec 동안 새 차선 안 봄)
-# tr(min_sec, sec, deg)     우회전 → 차로에 맞춰 정렬 → sec초 천천히(0.2) 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
-# tl(min_sec, sec, deg)     좌회전 → 차로에 맞춰 정렬 → sec초 천천히(0.2) 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
+# tr(min_sec, sec, deg)     우회전 → 차로에 맞춰 정렬 → sec초 천천히(0.3) 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
+# tl(min_sec, sec, deg)     좌회전 → 차로에 맞춰 정렬 → sec초 천천히(0.3) 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
 #
 # [공통 옵션]
 # at=        감지 위치 (0.4~1.0, 클수록 가까이)     slow=      선에 가까워질수록 이 속도까지 감속
@@ -352,6 +353,29 @@ def describe(step):
 # style=     조향 성향 ("soft"/"normal"/"sharp")    steer=     최대 조향각
 # hold_sec=  조건이 이 시간 동안 유지돼야 끝
 # until=     "junction" "crosswalk" "lane" "gap" "end" "crossed" "green" "obstacle" "clear" "lost" "aligned"
+# --- 예시 코스 ---
+
+    # set_speed(0.4),        
+    # cross_gap(),
+    # set_speed(0.6),        
+    # to_crosswalk(0.8),
+    # stop(3),
+    # pass_crosswalk(),
+    # to_junction(),
+    # tr(),
+    # to_junction(),
+    # straight(3),
+    # tl(),
+    # follow(7),
+#------------------------------------------------
+
+    # to_end(0.6),
+    # straight(0.5),
+    # tr(2.5),
+    # to_junction(),
+    # straight(1.5),
+    # tl(),
+    # follow(3),
 
 
 
@@ -384,27 +408,3 @@ if __name__ == "__main__":
 
 
 
-# --- 예시 코스 ---
-#
-
-    # set_speed(0.4),         # 여기부터 천천히
-    # cross_gap(),
-    # set_speed(0.6),         # 여기부터 빠르게 (tr, tl, straight는 그대로)
-    # to_crosswalk(0.8),
-    # stop(3),
-    # pass_crosswalk(),
-    # to_junction(),
-    # tr(),
-    # to_junction(),
-    # straight(3),
-    # tl(),
-    # follow(7),
-#------------------------------------------------
-
-    # to_end(0.6),
-    # straight(0.5),
-    # tr(2.5),
-    # to_junction(),
-    # straight(1.5),
-    # tl(),
-    # follow(3),
