@@ -23,6 +23,7 @@ import argparse
 import ast
 import json
 import queue
+import shutil
 import signal
 import threading
 import time
@@ -32,7 +33,9 @@ import cv2
 import numpy as np
 
 from car import STEER_LIMIT, load_calib
-from course import COURSE
+from course import (COURSE, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_SLOW,
+                    PERSON_STOP_DELAY, PERSON_X)
+from person import PERSON_FILE, PersonDetector, PersonWatch
 
 # --- Settings ---
 FRAME_W, FRAME_H = 640, 360
@@ -103,6 +106,7 @@ LOST_BACK_TRIES = 2     # Back-ups allowed per action. Each needs a fresh loss o
 LOST_BACK_MEMORY = 4.0  # Seconds of forward steering kept for the retrace.
 STEP_MAX_SEC = 20       # If an until action sets no max_sec, warn and advance after this many seconds so a step cannot run forever.
 LIGHT_VIEW_EVERY = 3    # Not waiting for green: the traffic light is detected for the view only once every this many frames.
+PERSON_EVERY = 2        # The LEGO figure is looked for once every this many frames. Its stop position and delays are in course.py.
 FAR_TOP = 0.3           # slow= far detection also looks for a horizontal line between this frame height and FAR_BOT. [narrow FOV 0.2]
 FAR_BOT = 0.6           # A far line that is still thin can sit below ROI_TOP before the near (band) test can see it, so the far search reaches down to here.
 FAR_HLINE = 0.8         # A far horizontal line counts only if connected white pixels on one row cover at least this times the lane width at that height.
@@ -284,6 +288,7 @@ C_JUNC = (255, 0, 255)      # Junction (horizontal line).
 C_XWALK = (240, 240, 240)   # Crosswalk.
 C_GAP = (255, 128, 0)       # Lane gap.
 C_AT = (0, 230, 255)        # at= point, the line where this action ends.
+C_PERSON = (60, 220, 60)    # LEGO figure.
 C_DIM = (110, 110, 110)
 
 
@@ -304,6 +309,19 @@ def dashed_hline(img, y, color, x0=0, x1=None, dash=10, gap=6, thick=1):
     x1 = img.shape[1] if x1 is None else x1
     for x in range(x0, x1, dash + gap):
         cv2.line(img, (x, y), (min(x + dash, x1), y), color, thick, cv2.LINE_AA)
+
+
+def draw_person(dbg, detector, at):
+    """LEGO figure on the view: where its feet stop the car, blobs of the right size with the wrong colors, and the match."""
+    if at is not None:
+        dashed_hline(dbg, int(at * FRAME_H), C_PERSON, dash=4, gap=8)
+    for x, y, w, h, color, shape in detector.near:
+        cv2.rectangle(dbg, (x, y), (x + w, y + h), C_DIM, 1)
+        chip(dbg, f"c{color:.2f} s{shape:.2f}", x, y - 18, C_DIM, 0.35)
+    if detector.found:
+        f = detector.found
+        cv2.rectangle(dbg, (f["x"], f["y"]), (f["x"] + f["w"], f["y"] + f["h"]), C_PERSON, 2, cv2.LINE_AA)
+        chip(dbg, f"PERSON c{f['score']:.2f} s{f['shape']:.2f}", f["x"], f["y"] - 22, C_PERSON, 0.38)
 
 
 class LaneDetector:
@@ -1007,6 +1025,7 @@ class CourseRunner:
         self.turn_clear = 0     # Consecutive frames during a turn with no horizontal line. Used for the exit decision.
         self.count = 0          # nth=: how many of this action's until events have passed so far.
         self.turned = None      # Turn with deg=: px the view has swung in the turn direction (YawMeter). Driver fills it every frame.
+        self.paused = False     # Standing still for the LEGO figure. Driver fills it every frame.
 
     def step(self):
         step = self.course[self.idx] if self.idx < len(self.course) else None
@@ -1064,6 +1083,12 @@ class CourseRunner:
             angle = ""
         speed = f" 속도 {step['speed']}" if step["speed"] is not None else ""
         print(f"\n[{self.idx + 1}/{len(self.course)}] {step['do']}{angle} {how}{speed}")
+
+    def shift_clock(self, dt):
+        """Standing for the LEGO figure does not use up this action's time, or the time a condition must hold."""
+        if self.step_start is not None:
+            self.step_start += dt
+        self.since = {k: None if v is None else v + dt for k, v in self.since.items()}
 
     def near_red(self, box):
         """Whether the green lamp is near where the red lamp was, on the same traffic light. Distance scales with lamp size."""
@@ -1271,6 +1296,8 @@ class CourseRunner:
 
     def status(self, now):
         step = self.step()
+        if self.paused:
+            return "PERSON STOP"
         if step is None:
             return "END"
         if step["do"] in ("left", "right", "curve"):
@@ -1393,8 +1420,10 @@ loop();
 
     def __init__(self, port, title="AICAR"):
         import logging
+        import flask.cli
         from flask import Flask, Response
         logging.getLogger("werkzeug").setLevel(logging.ERROR)   # Turn off the request log printed for every frame.
+        flask.cli.show_server_banner = lambda *_: None          # And the startup lines.
         self.img, self.seq = None, 0            # Latest frame and its number, written by the main loop.
         self.jpg, self.jpg_seq = None, -1       # Last encoded JPEG and the frame number it came from.
         self.lock = threading.Lock()
@@ -1469,6 +1498,8 @@ class Recorder:
     def __init__(self):
         self.dir = Path(__file__).with_name("runs") / time.strftime("%Y%m%d-%H%M%S")
         self.dir.mkdir(parents=True)
+        if PERSON_ON and PERSON_FILE.exists():      # Replaying this run later needs the figure registered on the day.
+            shutil.copy(PERSON_FILE, self.dir / PERSON_FILE.name)
         self.log = open(self.dir / "log.csv", "w")
         self.log.write("frame,t,offset,heading,junction,steer,speed,step,status\n")
         self.n = 0
@@ -1498,11 +1529,13 @@ class Recorder:
 class Driver:
     """One camera frame to (steering angle, speed). Real driving (main) and the simulator both use this."""
 
-    def __init__(self, course, start=1, base_speed=BASE_SPEED, obstacle=None):
+    def __init__(self, course, start=1, base_speed=BASE_SPEED, obstacle=None, person=None):
         self.detect, self.traffic, self.steering = LaneDetector(), TrafficLight(), Steering()
         self.course = CourseRunner(course, start)
         self.base_speed = base_speed
         self.obs = obstacle
+        self.person = None if person is None else PersonWatch(   # person is a PersonDetector. None drives without looking for the figure.
+            person, FRAME_H, PERSON_AT, PERSON_X, PERSON_STOP_DELAY, PERSON_RESUME_DELAY, PERSON_MIN_STOP, PERSON_MAX_WAIT, PERSON_EVERY)
         self.lost_since = None      # Time the lane was lost.
         self.yaw, self.yaw_idx = YawMeter(), -1     # Turn angle from the camera, reset at each turn action.
         self.history = []           # Recent forward driving: (seconds, steering angle, speed). Replayed backwards when backing up.
@@ -1555,6 +1588,23 @@ class Driver:
         print(f"\n[후진] 차선 놓침 → 왔던 길로 {self.back['len']:.1f}초 후진 ({self.back_tries[course.idx]}/{LOST_BACK_TRIES})")
         return self.steering.output(plan[0][1], now, 0.0)
 
+    def stand_for_person(self, now):
+        """Stand still for the LEGO figure. The action in progress waits as it is, so it carries on where it left off."""
+        dt = now - self.last_t if self.last_t is not None else 0.0
+        self.last_t = now
+        self.course.shift_clock(dt)
+        steering = self.steering
+        if steering.out_t is not None:
+            steering.out_t += dt
+        if steering.prev_t is not None:
+            steering.prev_t += dt
+        level, seen_t, idx = self.approach
+        self.approach = (level, seen_t + dt, idx)
+        self.back, self.lost_since, self.cw_since = None, None, None
+        if self.speed > 0:
+            self.stopped_since = now
+        self.speed = 0.0
+
     def approach_speed(self, base, now):
         """slow=: ease from base down to the slow speed as the line approaches.
 
@@ -1599,7 +1649,8 @@ class Driver:
             return "COURSE END", ["follow lane"]
         title = self.DO_EN[step["do"]]
         if step["do"] in ("left", "right", "curve"):
-            title += f" {abs(step['angle']):.0f}"
+            # right()/left() with no angle= keep None until they run (then AUTO_STEER_MAX), so the "next" line shows MAX.
+            title += " MAX" if step["angle"] is None else f" {abs(step['angle']):.0f}"
         if step["sec"]:
             cond = f"for {step['sec']:g}s"
         elif step["until"]:
@@ -1618,6 +1669,8 @@ class Driver:
         course, detect, steering = self.course, self.detect, self.steering
         step = course.step()
         self.traffic.draw(dbg, regions=course.needs_light())
+        if self.person is not None:
+            draw_person(dbg, self.person.detector, self.person.at)
 
         # at= height: this action ends when the junction or crosswalk line comes down to this dashed line.
         if step is not None and step["until"] in CourseRunner.AT_EVENTS and step["sec"] is None:
@@ -1638,6 +1691,10 @@ class Driver:
         banner = None
         if step is None or step["do"] == "finish" or self.done:
             banner = ("FINISH", (60, 160, 60)) if step is not None else None
+        elif self.person is not None and self.person.hold:
+            gone = self.person.gone_since
+            banner = ("PERSON - STOP" if gone is None else f"PERSON GONE - GO IN {max(self.person.resume_delay - (now - gone), 0):.1f}s",
+                      (40, 40, 220))
         elif self.edge:
             banner = ("MAT EDGE - STOP", (40, 40, 220))
         elif step["do"] == "wait" and step["until"] == "green":
@@ -1718,9 +1775,10 @@ class Driver:
                  ("LANE ENDS", detect.gap_y is not None, C_GAP, None),
                  ("LIGHT", on_light is not None,
                   (40, 40, 255) if on_light == "red" else (60, 220, 60), (on_light or "").upper() or None),
-                 ("OBSTACLE", bool(self.obs and self.obs.near), (0, 140, 255), None)]
+                 ("OBSTACLE", bool(self.obs and self.obs.near), (0, 140, 255), None),
+                 ("PERSON", bool(self.person and self.person.seen), C_PERSON, None)]
         for k, (name, on, color, val) in enumerate(items):
-            x, yy = 12 + (k % 2) * ((W - 24) // 2 + 2), 246 + (k // 2) * 26
+            x, yy = 12 + (k % 2) * ((W - 24) // 2 + 2), 242 + (k // 2) * 24
             w = (W - 24) // 2 - 2
             cv2.rectangle(p, (x, yy), (x + w, yy + 20), color if on else (55, 55, 55), -1)
             label = name if val is None else f"{name} {val}"
@@ -1761,6 +1819,13 @@ class Driver:
             # Whether any spot that was red has changed to green. The lamp spot still changes even if another red object is present.
             colors = [self.traffic.color_at(frame, box) for box in course.red_boxes]
             course.local_light = "green" if "green" in colors else ("red" if "red" in colors else None)
+        # LEGO figure, in every action. A stop or wait action keeps its own clock (the light can still change), and the car is standing anyway.
+        hold = self.person is not None and self.person.update(frame, now)
+        course.paused = hold and not course.stopped(now) and (step is None or step["do"] != "finish")
+        if course.paused:
+            self.stand_for_person(now)
+            self.det, self.junction, self.light = det, junction, light
+            return None, 0.0, dbg
         if step is not None and step["do"] in ("left", "right") and step.get("deg"):
             if self.yaw_idx != course.idx:
                 self.yaw.reset()
@@ -1779,6 +1844,8 @@ class Driver:
 
         base = course.speed if course.speed is not None else self.base_speed
         base = self.approach_speed(base, now)
+        if PERSON_SLOW is not None and self.person is not None and self.person.ahead:
+            base = min(base, PERSON_SLOW)       # Figure in view: slow down, so the car stops where it should.
         kp, kh, smooth = STYLES[course.opt("style", "normal")]
         if det is not None:
             # shift=+3: follow a line 3 cm to the right of the lane center.
@@ -1825,7 +1892,7 @@ class Driver:
         self.edge = detect.edge and det is None and not course.turning(now)
         steer = self.back_up(now, lost_long, steer)
         backing = self.back is not None
-        if course.stopped(now) or self.edge:
+        if course.stopped(now) or self.edge or hold:    # hold here: a stop action just ended with the figure still there.
             speed = 0.0
         elif backing:
             speed = -LOST_BACK_SPEED
@@ -1882,6 +1949,17 @@ def open_camera(locked=True):
     return cam
 
 
+def load_person():
+    """The LEGO figure registered on the day (aicar person). None turns the check off, with a warning if that was not asked for."""
+    if not PERSON_ON:
+        print("레고 사람 인식 꺼짐 (course.py PERSON_ON)")
+        return None
+    detector = PersonDetector.load(HORIZON_Y)
+    print(f"레고 사람 인식 켜짐 (시점 {len(detector.views)}개)" if detector
+          else "[경고] 등록된 레고 사람이 없어 사람을 보고 멈추지 않습니다. 등록: aicar person")
+    return detector
+
+
 def stop_on_signal(*_):
     raise KeyboardInterrupt
 
@@ -1925,7 +2003,7 @@ def main():
     if AUTO_TRIM:
         car.load_bias()     # Continue with the center trim learned on a previous run.
     cam = open_camera()
-    driver = Driver(COURSE, args.start, args.speed, obs)
+    driver = Driver(COURSE, args.start, args.speed, obs, load_person())
     stream = None if args.no_stream else Stream(args.port, "AICAR 주행")
     rec = Recorder() if args.record else None
     print("모터", "ON" if args.drive else "OFF (조향만)",

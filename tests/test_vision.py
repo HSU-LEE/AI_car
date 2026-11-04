@@ -8,7 +8,10 @@ so the test still applies after the field of view or the track changes. Any fail
 """
 import contextlib
 import io
+import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -17,6 +20,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pi"))
 import lane_follow as lf  # noqa: E402
 from course import COURSE, finish, follow, stop, straight, wait_green  # noqa: E402
+from person import AutoViews, PersonDetector  # noqa: E402
+import tune_person  # noqa: E402
 
 W, H = lf.FRAME_W, lf.FRAME_H
 RED, GREEN = (0, 0, 255), (0, 255, 0)
@@ -666,6 +671,17 @@ def test_driver_smoke():
     check("화면 그리기: 다음/현재 동작이 횡단보도 건너기여도 오류 없음", ok)
     try:
         with quiet():
+            d = lf.Driver([stop(0.1), cs.right(), cs.uturn("left"), finish()])
+            for i in range(12):     # Next action is a turn with the default (None) angle.
+                _, _, dbg = d.tick(lane_frame(), i / 30, show=True)
+                d.view(dbg, i / 30, 30)
+        ok = True
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        print(repr(e))
+    check("화면 그리기: 다음 동작이 기본 각도 회전(right(), uturn)이어도 오류 없음", ok)
+    try:
+        with quiet():
             import course as cs
             d = lf.Driver([cs.tr(), finish()], start=1)
             for i in range(5):
@@ -677,10 +693,349 @@ def test_driver_smoke():
     check("회전 동작부터 시작(--start)해도 첫 프레임에서 오류 없음", ok)
 
 
+def minifig(img, x, feet, torso=(40, 40, 200), legs=(150, 70, 30), head=(60, 210, 240)):
+    """Draw a LEGO figure standing on the floor. Height follows the floor perspective, as for a real object.
+
+    Head narrower than the shoulders, hands out to the sides, legs narrower than the arms: it fills about 60% of its box, as the real figure does.
+    """
+    h = int(0.42 * (feet - lf.HORIZON_Y))
+    w, top = int(h * 0.62), feet - h
+    out = img.copy()
+    cv2.rectangle(out, (x - w // 5, top), (x + w // 5, top + int(h * 0.25)), head, -1)
+    cv2.rectangle(out, (x - w // 3, top + int(h * 0.27)), (x + w // 3, top + int(h * 0.62)), torso, -1)
+    cv2.rectangle(out, (x - w // 2, top + int(h * 0.42)), (x + w // 2, top + int(h * 0.54)), torso, -1)
+    cv2.rectangle(out, (x - w // 3, top + int(h * 0.64)), (x - 2, feet), legs, -1)
+    cv2.rectangle(out, (x + 2, top + int(h * 0.64)), (x + w // 3, feet), legs, -1)
+    return out
+
+
+def registered_figure(feet=240, back=None, **colors):
+    back = lane_frame() if back is None else back
+    det = PersonDetector(lf.HORIZON_Y)
+    return det, det.add_view(minifig(back, 320, feet, **colors))
+
+
+def test_person_detect():
+    print("\n[레고 사람 인식]")
+    det, (ok, msg) = registered_figure()
+    check("등록: 배경과 사람 사진으로 등록됨", ok and len(det.views) == 1, msg)
+    empty = lane_frame()
+    check("등록: 사람이 없으면 등록 거부", not registered_figure()[0].add_view(empty)[0])
+    check("인식: 사람 없는 차로에서 없음", det(empty) is None)
+    found = det(minifig(empty, 320, 240))
+    check("인식: 등록 위치에서 찾음", found is not None and abs(found["feet"] - 240) <= 4, found)
+    check("인식: 여러 거리, 위치에서 찾음", all(det(minifig(empty, x, f)) for x in (220, 320, 420) for f in (190, 240, 300)))
+    far = det(minifig(empty, 320, 240), (0.7, 0.9))
+    check("인식: 정한 가로 범위 밖은 무시", far is None)
+    boxes = empty.copy()
+    cv2.rectangle(boxes, (300, 180), (340, 240), (40, 40, 200), -1)
+    check("오탐: 같은 색 상자 하나는 사람 아님", det(boxes) is None)
+    big = minifig(empty, 320, 240)
+    cv2.rectangle(big, (100, 60), (520, 300), (150, 70, 30), -1)
+    check("오탐: 크기가 맞지 않는 큰 물체는 사람 아님", det(big) is None)
+    lamp = empty.copy()
+    cv2.circle(lamp, (80, 60), 8, (0, 0, 255), -1)
+    check("오탐: 횡단보도/빨간 신호등 화면에서 없음", det(lane_frame(crosswalk=True)) is None and det(lamp) is None)
+
+    black = {"torso": (20, 20, 20), "legs": (20, 20, 20)}
+    bright = lane_frame(line=20, bg=200)
+    dark = registered_figure(back=bright, **black)[0]
+    found = dark(minifig(bright, 320, 240, **black))
+    check("검은 옷, 흰 바닥: 머리로 찾고 등록한 곳과 같은 기준", found is not None and abs(found["feet"] / lf.FRAME_H - dark.stop_at(lf.FRAME_H)) < 0.03, found)
+    check("검은 옷, 흰 바닥: 검은 차선을 사람으로 안 봄", dark(bright) is None)
+    dark = registered_figure(**black)[0]
+    found = dark(minifig(empty, 320, 240, **black))
+    check("검은 옷, 검은 바닥: 등록한 곳과 같은 기준으로 찾음", found is not None and abs(found["feet"] / lf.FRAME_H - dark.stop_at(lf.FRAME_H)) < 0.03, found)
+    white, (_, msg) = registered_figure(back=lane_frame(line=20, bg=120), torso=(235, 235, 235), legs=(235, 235, 235), head=(235, 235, 235))
+    check("거의 흰/검정 사람: 등록 때 경고", "주의" in msg, msg)
+
+    print("  -- 배경 사진 없는 등록")
+    tall = int(0.42 * (240 - lf.HORIZON_Y))     # Height minifig() draws at feet=240.
+    behind = lane_frame()       # Run on the Pi: a same-colored patch behind the figure was joined to it, and the registered height was 108 px instead of 67.
+    cv2.rectangle(behind, (305, 240 - tall - 35), (335, 240 - tall - 3), (150, 70, 30), -1)
+    joined = registered_figure(back=behind)[0]
+    check("등록: 뒤에 같은 색이 있어도 사람 크기만 잼", joined.views[0]["h"] <= tall + 6, (joined.views[0]["h"], tall))
+    arm = empty.copy()      # Run on the Pi: with a background shot, an arm that moved was the largest change, and all 8 views registered the arm.
+    cv2.rectangle(arm, (0, 150), (260, 230), (120, 160, 210), -1)
+    armed = PersonDetector(lf.HORIZON_Y)
+    added, msg = armed.add_view(minifig(arm, 400, 240))
+    check("등록: 팔이 보여도 팔이 아니라 사람을 등록", added and armed.last_box[0] > 340, msg)
+    check("등록: 등록 뒤 팔은 인식 안 하고 사람은 인식", armed(arm) is None and armed(minifig(empty, 400, 240)) is not None)
+    check("등록: 사람 없이 팔만 있으면 거부", not PersonDetector(lf.HORIZON_Y).add_view(arm)[0])
+    shifted = np.roll(minifig(empty, 320, 240), 6, axis=1)
+    moved = PersonDetector(lf.HORIZON_Y)
+    check("등록: 차가 살짝 밀려도 등록됨 (배경과 비교 안 함)", moved.add_view(shifted)[0])
+    outside = PersonDetector(lf.HORIZON_Y)
+    check("등록: 네모 밖의 사람은 거부", not outside.add_view(minifig(empty, 80, 240))[0])
+    cut = PersonDetector(lf.HORIZON_Y)
+    check("등록: 네모 테두리에 걸린 사람은 거부", not cut.add_view(minifig(empty, 196, 250))[0])
+    flat = empty.copy()     # Run on the Pi: 4 views of a wide dull area in the room were accepted, and nothing could ever be found with them.
+    cv2.rectangle(flat, (210, 170), (340, 200), (70, 80, 90), -1)
+    wide_det = PersonDetector(lf.HORIZON_Y)
+    check("등록: 가로로 넓은 물체는 사람으로 안 받음", not wide_det.add_view(flat)[0] and not wide_det.views)
+    added, msg = wide_det.add_view(minifig(flat, 400, 300))
+    check("등록: 넓은 물체와 사람이 같이 있으면 사람을 고름", added and wide_det.last_box[0] > 340, (msg, wide_det.last_box))
+    painted = empty.copy()
+    cv2.rectangle(painted, (0, 0), (639, 215), (40, 40, 200), -1)
+    tone = PersonDetector(lf.HORIZON_Y)     # The figure's color fills the room too.
+    solid_red = {"torso": (40, 40, 200), "legs": (40, 40, 200), "head": (40, 40, 200)}
+    check("등록: 사람 색이 주변과 같으면 거부", not tone.add_view(minifig(painted, 320, 330, **solid_red))[0] and not tone.views)
+
+    print("  -- 자동 촬영")
+    side = {"torso": (40, 40, 200), "legs": (40, 40, 200), "head": (60, 210, 240)}
+    auto_det = PersonDetector(lf.HORIZON_Y)
+    auto = AutoViews(auto_det)
+
+    def still(img, t0, sec=1.0):
+        notes = [auto.update(img, t0 + i / 30) for i in range(int(sec * 30))]
+        return t0 + sec, [n for n in notes if n]
+
+    tt, notes = still(minifig(empty, 320, 240), 0.0)
+    check("자동: 멈춰 있으면 한 장 찍음", len(auto_det.views) == 1 and len(notes) == 1, notes)
+    tt, notes = still(minifig(empty, 320, 240), tt, 3.0)
+    check("자동: 계속 멈춰 있으면 더 안 찍음", len(auto_det.views) == 1 and not notes, notes)
+    hand = minifig(empty, 320, 240, **side)
+    cv2.rectangle(hand, (100, 150), (260, 230), (120, 160, 210), -1)
+    tt, notes = still(hand, tt)
+    check("자동: 손이 보이면 안 찍고 알려 줌", len(auto_det.views) == 1 and "손" in notes[0], notes)
+    tt, notes = still(minifig(empty, 320, 240, **side), tt)
+    check("자동: 손을 빼고 새 면이면 찍음", len(auto_det.views) == 2, notes)
+    tt, notes = still(hand, tt, 0.2)
+    tt, notes = still(minifig(empty, 320, 240, **side), tt)
+    check("자동: 이미 찍은 면은 건너뜀", len(auto_det.views) == 2 and "이미" in notes[0], notes)
+    wiggle = []
+    for i in range(30):
+        wiggle.append(auto.update(minifig(empty, 300 + i * 2, 240, torso=(60, 150, 50)), tt + i / 30))
+    check("자동: 사람을 돌리는 중에는 안 찍음", len(auto_det.views) == 2 and not any(wiggle), wiggle)
+
+    far_det = PersonDetector(lf.HORIZON_Y)
+    far_auto = AutoViews(far_det)
+    busy = []
+    for i in range(45):     # Someone moving far behind, outside the box.
+        scene = minifig(empty, 320, 240)
+        cv2.rectangle(scene, (10 + 3 * i, 10), (120 + 3 * i, 120), (200, 200, 200), -1)
+        busy.append(far_auto.update(scene, i / 30))
+    check("자동: 네모 밖에서 움직이는 게 있어도 찍음", len(far_det.views) == 1, [n for n in busy if n])
+
+    print("  -- 등록 조작")
+    start = (0.3, 0.42, 0.7, 0.97)
+    moved_box = tune_person.move_box(start, 1, 0)
+    check("네모: d로 오른쪽, 크기는 그대로", moved_box[0] > start[0] and abs((moved_box[2] - moved_box[0]) - 0.4) < 1e-9, moved_box)
+    check("네모: 화면 밖으로 안 나감", tune_person.move_box((0.0, 0.0, 0.4, 0.5), -1, -1) == (0.0, 0.0, 0.4, 0.5)
+          and tune_person.move_box((0.6, 0.5, 1.0, 1.0), 1, 1) == (0.6, 0.5, 1.0, 1.0))
+    bigger = tune_person.resize_box(start, 1)
+    check("네모: x로 크게, z로 작게", bigger[2] - bigger[0] > 0.4 and tune_person.resize_box(start, -1)[2] - tune_person.resize_box(start, -1)[0] < 0.4)
+    check("네모: 너무 작게는 안 줄어듦", tune_person.resize_box((0.4, 0.4, 0.55, 0.55), -1) == (0.4, 0.4, 0.55, 0.55))
+    read_end, write_end = os.pipe()
+    os.write(write_end, "wㅈA\n".encode())
+    check("키: 한글 입력 상태와 대문자도 같은 키", tune_person.read_keys(read_end) == "wwa\n")
+    check("키: 눌린 키가 없으면 안 기다림", tune_person.read_keys(read_end) == "")
+    os.close(read_end)
+    os.close(write_end)
+    box_det = PersonDetector(lf.HORIZON_Y)
+    box_det.box = tune_person.move_box(tune_person.move_box(start, -1, 0), -1, 0)
+    for _ in range(3):
+        box_det.box = tune_person.move_box(box_det.box, -1, 0)
+    check("네모: 옮긴 네모 안의 사람을 등록", box_det.add_view(minifig(empty, 200, 280))[0], box_det.box)
+    box_auto = AutoViews(box_det)
+    box_auto.ready, box_auto.around = False, np.zeros(1)
+    box_auto.touch()
+    check("네모: 옮기면 멈춘 뒤 다시 찍을 준비", box_auto.ready and box_auto.around is None)
+
+    print("  -- 가짜 객체")
+    solid = {"torso": (150, 70, 30), "legs": (150, 70, 30), "head": (150, 70, 30)}
+    only, _ = registered_figure(**solid)    # A figure of one color: color alone cannot tell it from a box.
+    check("가짜: 진짜(한 색 사람)는 여러 거리에서 찾음", all(only(minifig(empty, 320, f, **solid)) for f in (200, 240, 280)))
+    width = int(tall * 0.62)
+    box = empty.copy()
+    cv2.rectangle(box, (320 - width // 2, 240 - tall), (320 + width // 2, 240), solid["torso"], -1)
+    check("가짜: 같은 색, 같은 크기의 네모 상자", only(box) is None)
+    oval = empty.copy()
+    cv2.ellipse(oval, (320, 240 - tall // 2), (width // 2, tall // 2), 0, 0, 360, solid["torso"], -1)
+    check("가짜: 같은 색, 같은 크기의 타원", only(oval) is None)
+    check("가짜: 같은 모양, 다른 색 사람", only(minifig(empty, 320, 240, torso=(60, 150, 50), legs=(60, 150, 50), head=(60, 150, 50))) is None)
+    pale = (220, 180, 150)
+    check("가짜: 같은 모양, 같은 색상의 옅은 복제품", only(minifig(empty, 320, 240, torso=pale, legs=pale, head=pale)) is None)
+    check("가짜: 옷 색만 다른 사람", det(minifig(empty, 320, 240, torso=(60, 150, 50))) is None)
+    check("가짜: 위아래 옷 색이 바뀐 사람", det(minifig(empty, 320, 240, torso=(150, 70, 30), legs=(40, 40, 200))) is None)
+    shrunk = minifig(empty, 320, 240)[lf.HORIZON_Y:]    # Same outline at half size, standing at the same place on the floor.
+    tiny = empty.copy()
+    part = cv2.resize(shrunk, None, fx=0.5, fy=0.5, interpolation=cv2.INTER_AREA)[(240 - lf.HORIZON_Y - tall) // 2 - 2:(240 - lf.HORIZON_Y) // 2 + 1, 140:180]
+    tiny[240 - part.shape[0]:240, 300:340] = part
+    check("가짜: 같은 위치의 절반 크기 복제품", det(tiny) is None)
+    check("미등록: 등록 전에는 아무것도 인식 안 함", PersonDetector(lf.HORIZON_Y)(minifig(empty, 320, 240)) is None)
+    old = Path(tempfile.mkdtemp()) / "old.json"
+    old.write_text(json.dumps({"views": [{"hist": [0.0] * 22, "w": 1, "h": 1, "feet": 1}], "background": [0.0] * 22}))
+    check("옛날 형식 저장 파일은 다시 등록하게 함", PersonDetector.load(lf.HORIZON_Y, old) is None)
+
+    path = Path(tempfile.mkdtemp()) / "person.json"
+    det.match = 0.6
+    det.save(path)
+    again = PersonDetector.load(lf.HORIZON_Y, path)
+    check("저장/불러오기: 그대로 인식", again.match == 0.6 and again(minifig(empty, 320, 240))["feet"] == found_feet(det))
+    check("저장/불러오기: 파일이 없으면 None", PersonDetector.load(lf.HORIZON_Y, path.with_name("none.json")) is None)
+    det.undo()
+    check("되돌리기: 시점을 지우면 인식 안 함", not det.views and det(minifig(empty, 320, 240)) is None)
+
+
+def found_feet(det):
+    return det(minifig(lane_frame(), 320, 240))["feet"]
+
+
+def person_driver(course, feet=240, **config):
+    defaults = {"PERSON_AT": None, "PERSON_STOP_DELAY": 0.0, "PERSON_RESUME_DELAY": 0.5,
+                "PERSON_MIN_STOP": 0.0, "PERSON_MAX_WAIT": None, "PERSON_X": (0.1, 0.9)}
+    old = {k: getattr(lf, k) for k in defaults}
+    for k, v in {**defaults, **config}.items():
+        setattr(lf, k, v)
+    det = registered_figure(feet)[0]
+    driver = lf.Driver(course, person=det)
+    for k, v in old.items():
+        setattr(lf, k, v)
+    return driver
+
+
+def run_frames(d, frame, t0, sec):
+    """Tick for sec seconds of frames at 30 fps. Returns (time after, motor commands)."""
+    cmds = []
+    t = t0
+    for _ in range(int(sec * 30)):
+        with quiet():
+            _, cmd, dbg = d.tick(frame, t, show=True)
+            d.view(dbg, t, 30)
+        cmds.append(cmd)
+        t += 1 / 30
+    return t, cmds
+
+
+def test_person_stop():
+    print("\n[레고 사람: 정지 / 출발]")
+    empty, person = lane_frame(), minifig(lane_frame(), 320, 240)
+    far = minifig(lane_frame(), 320, 190)
+
+    d = person_driver([follow(2.0), finish()])
+    t, cmds = run_frames(d, empty, 0.0, 0.5)
+    check("사람 없으면 그대로 달림", all(c > 0 for c in cmds))
+    t, cmds = run_frames(d, far, t, 0.5)
+    check("멀리 있으면(정지 위치 전) 계속 달림", cmds[-1] > 0 and d.person.seen)
+    t, cmds = run_frames(d, person, t, 1.0)
+    check("정지 위치에 오면 멈춤", cmds[-1] == 0 and d.person.hold and d.course.paused)
+    check("상태 표시: PERSON STOP", d.course.status(t) == "PERSON STOP")
+    t, cmds = run_frames(d, person, t, 5.0)
+    check("서 있는 동안 동작 시간이 줄지 않음 (follow 2초가 안 끝남)", d.course.idx == 0 and all(c == 0 for c in cmds))
+    t, cmds = run_frames(d, empty, t, 0.3)
+    check("사람이 없어져도 딜레이 동안은 서 있음", all(c == 0 for c in cmds))
+    t, cmds = run_frames(d, empty, t, 0.5)
+    check("딜레이가 지나면 다시 출발 (출발 킥 포함)", cmds[-1] > 0 and not d.person.hold and max(cmds) >= lf.KICK_SPEED)
+    used = t - d.course.step_start
+    check("멈춘 시간을 뺀 만큼만 동작 시간이 지남", 0.5 < used < 2.0, f"{used:.2f}초")
+    t, _ = run_frames(d, empty, t, 2.0 - used + 0.2)
+    check("남은 시간을 채우고 다음 동작으로", d.done)
+
+    d = person_driver([follow(9), finish()], PERSON_AT=0.8)
+    t, cmds = run_frames(d, person, 0.0, 1.0)
+    check("PERSON_AT: 정한 위치 전에는 안 멈춤", cmds[-1] > 0 and not d.person.hold)
+    t, cmds = run_frames(d, minifig(empty, 320, 300), t, 0.5)
+    check("PERSON_AT: 정한 위치에 오면 멈춤", cmds[-1] == 0)
+
+    d = person_driver([follow(9, speed=0.5), finish()], PERSON_AT=0.8)
+    run_frames(d, empty, 0.0, 0.5)
+    fast = d.speed
+    run_frames(d, person, 0.5, 0.5)
+    check("PERSON_SLOW: 사람이 보이면 줄여서 감", fast > 0.4 and abs(d.speed - lf.PERSON_SLOW) < 0.05, f"{fast:.2f} -> {d.speed:.2f}")
+
+    d = person_driver([follow(9), finish()], PERSON_STOP_DELAY=0.5)
+    t, cmds = run_frames(d, person, 0.0, 0.3)
+    check("PERSON_STOP_DELAY: 닿고 바로는 안 멈춤", cmds[-1] > 0)
+    t, cmds = run_frames(d, person, t, 0.6)
+    check("PERSON_STOP_DELAY: 지나면 멈춤", cmds[-1] == 0)
+
+    d = person_driver([follow(9), finish()], PERSON_MIN_STOP=1.5, PERSON_RESUME_DELAY=0.0)
+    t, _ = run_frames(d, person, 0.0, 0.3)
+    t, cmds = run_frames(d, empty, t, 1.0)
+    check("PERSON_MIN_STOP: 금방 없어져도 최소 시간은 섬", cmds[-1] == 0)
+    t, cmds = run_frames(d, empty, t, 1.0)
+    check("PERSON_MIN_STOP: 지나면 출발", cmds[-1] > 0)
+
+    d = person_driver([follow(30), finish()], PERSON_MAX_WAIT=1.0)
+    t, cmds = run_frames(d, person, 0.0, 0.9)
+    check("PERSON_MAX_WAIT: 그 전에는 서 있음", cmds[-1] == 0)
+    t, cmds = run_frames(d, person, t, 1.0)
+    check("PERSON_MAX_WAIT: 지나면 사람이 있어도 출발, 바로 다시 안 멈춤", cmds[-1] > 0 and not d.person.hold)
+    t, _ = run_frames(d, empty, t, 0.5)
+    t, cmds = run_frames(d, person, t, 0.5)
+    check("PERSON_MAX_WAIT: 없어졌다 다시 나타나면 또 멈춤", cmds[-1] == 0)
+
+    d = person_driver([stop(0.5), follow(9), finish()])
+    t, cmds = run_frames(d, person, 0.0, 1.0)
+    check("stop 동작: 시간은 그대로 흐르고, 끝나도 사람이 있으면 출발 안 함", d.course.idx == 1 and all(c == 0 for c in cmds))
+    d = person_driver([straight(2.0), finish()])
+    t, cmds = run_frames(d, person, 0.0, 3.0)
+    check("straight 동작에서도 멈추고 시간이 안 줌", d.course.idx == 0 and cmds[-1] == 0)
+    d = person_driver([cs_tr(), finish()])
+    run_frames(d, empty, 0.0, 0.1)
+    t, cmds = run_frames(d, person, 0.1, 1.5)
+    check("회전 동작에서도 멈춤", cmds[-1] == 0 and d.course.paused)
+    d = person_driver([stop(0.2), finish()])
+    run_frames(d, person, 0.0, 1.0)
+    check("코스 마지막 finish는 사람이 있어도 끝남", d.done)
+
+    d = lf.Driver([follow(0.5), finish()])
+    t, cmds = run_frames(d, person, 0.0, 0.7)
+    check("등록 안 했으면 사람을 안 보고 달림", d.person is None and d.done)
+    d = person_driver([follow(9), finish()])
+    d.lost_since, d.back = 0.0, {"start": 0.0, "plan": [(1.0, 0.0)], "len": 1.0, "used_at": 0, "idx": 0}
+    run_frames(d, person, 0.0, 0.5)
+    check("후진 중에 사람이 나타나면 후진을 멈춤", d.back is None and d.speed == 0)
+
+
+def cs_tr():
+    import course as cs
+    return cs.tr()
+
+
+def test_set_speed():
+    print("\n[코스 속도 set_speed]")
+    import course as cs
+    flat = cs._flat([cs.to_junction(), cs.set_speed(0.33), cs.to_junction(), cs.follow(2), cs.to_end(), cs.to_crosswalk(),
+                     cs.to_gap(), cs.follow(2, speed=0.7), cs.straight(2), cs.straight(2, speed=0.6), cs.right(), cs.curve(10, 1),
+                     cs.tr(), cs.stop(1), cs.set_speed(), cs.to_junction(), cs.follow(2), finish()])
+    spd = [s["speed"] for s in flat]
+    check("set_speed 전: 원래 속도", spd[0] == cs.SPEED)
+    check("set_speed 뒤: 주행 동작이 모두 바뀜", spd[1:5 + 1] == [0.33] * 5, spd[1:6])
+    check("직접 준 speed=는 그대로", spd[6] == 0.7)
+    check("straight는 그대로", spd[7] is None and spd[8] == 0.6)
+    check("right, curve는 그대로", spd[9] is None and spd[10] is None)
+    tr_steps = cs._flat(cs.tr())
+    check("tr(회전/정렬/천천히)은 그대로", spd[11:11 + len(tr_steps)] == [s["speed"] for s in tr_steps])
+    check("set_speed(): 기본값으로 되돌림", spd[-3] == cs.SPEED and spd[-2] == 0.425)
+    check("코스에 set_speed 동작이 남지 않음", all(s["do"] != "set_speed" for s in flat) and cs._flat(flat) == flat)
+    bundles = cs._flat([cs.set_speed(0.33), cs.cross_gap(), cs.cross(), cs.traffic(), cs.corner("left"), cs.uturn("right"),
+                        cs.cross(line="crosswalk"), cs.pass_crosswalk()])
+    follows = [s["speed"] for s in bundles if s["do"] == "follow" and s["until"] not in ("aligned", None)]
+    straights = [s["speed"] for s in bundles if s["do"] == "straight" and s["until"] == "lane"]
+    check("묶음 동작: 안의 차선 주행은 바뀌고", set(follows) == {0.33}, follows)
+    check("묶음 동작: 안의 straight는 그대로", set(straights) == {cs.SPEED}, straights)
+    defaults = cs._flat([cs.to_end(), cs.uturn("left"), cs.follow(1)])
+    check("set_speed 없으면 기존 기본값 그대로", (defaults[0]["speed"], defaults[1]["speed"], defaults[-1]["speed"]) == (0.26, 0.4, 0.425))
+    d = lf.Driver([cs.set_speed(0.33), follow(9), finish()])
+    with quiet():
+        d.tick(lane_frame(), 0.0)
+    check("Driver: set_speed가 적용되고 --start 번호에 안 잡힘", d.course.speed == 0.33 and len(d.course.course) == 2)
+    d = lf.CourseRunner([follow(1), cs.set_speed(0.33), follow(1), follow(1)], start=3)
+    check("--start로 중간부터 시작해도 앞의 set_speed 적용", d.speed == 0.33)
+    try:
+        cs.set_speed(1.5)
+        ok = False
+    except ValueError:
+        ok = True
+    check("set_speed: 범위 밖이면 오류", ok)
+
+
 def main():
     for t in (test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke):
+              test_driver_smoke, test_person_detect, test_person_stop, test_set_speed):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")

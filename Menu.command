@@ -117,6 +117,7 @@ menu_settings() {
         '4|트랙 색 (검은 바닥/흰 선 ↔ 흰 바닥/검은 선)|$A track' \
         '5|선 인식 맞추기 (브라우저 보며)|$A tune-white' \
         '6|신호등 인식 맞추기 (브라우저 보며)|$A tune-light' \
+        'p|레고 사람 등록 / 인식 확인 (브라우저 보며)|$A person' \
         '-' \
         '7|주행 설정 편집 (lane_follow.py)|$A set'
 }

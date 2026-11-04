@@ -46,7 +46,8 @@ def main():
         a, b = map(int, args.frames.split("-"))
         rows = rows[a:b + 1]
 
-    driver = lf.Driver(lf.COURSE)       # Same decisions as a real run, including course options.
+    # Same decisions as a real run, including course options and the LEGO figure saved with the recording.
+    driver = lf.Driver(lf.COURSE, person=lf.PersonDetector.load(lf.HORIZON_Y, run / lf.PERSON_FILE.name) if lf.PERSON_ON else None)
     detect, steering, traffic, course = driver.detect, driver.steering, driver.traffic, driver.course
     out = Path(args.out) if args.out else run / "replay.mp4"
     writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), 20,

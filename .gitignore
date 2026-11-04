@@ -15,6 +15,7 @@ pi/runs/
 # 파이에만 있는 보정값 (aicar push도 덮어쓰지 않음)
 pi/calib.json
 pi/vision.json
+pi/person.json
 pi/drive.log
 pi/drive.pid
 

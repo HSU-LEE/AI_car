@@ -3,7 +3,7 @@
   python camera_view.py             Open http://<pi-ip>:8000
   python camera_view.py --port 8001
 
-Left: raw frame. Right: what lane_follow.py sees, and the steer it would command.
+Left: raw frame. Right: what lane_follow.py sees, the steer it would command, and the registered LEGO figure.
 Ctrl+C to stop.
 """
 import argparse
@@ -23,6 +23,7 @@ def main():
     cam = lf.open_camera()
     stream = lf.Stream(args.port)
     detect, steering, traffic = lf.LaneDetector(), lf.Steering(), lf.TrafficLight()
+    person = lf.load_person()
     print(f"브라우저: http://<파이 IP>:{args.port}  | Ctrl+C로 종료")
 
     frames, t0, fps = 0, time.monotonic(), 0.0
@@ -33,6 +34,9 @@ def main():
             det, junction, dbg = detect(frame)
             light = traffic(frame)
             traffic.draw(dbg)
+            found = person(frame, lf.PERSON_X) if person else None
+            if person:
+                lf.draw_person(dbg, person, lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H))
             raw = frame.copy()
             cv2.putText(raw, f"CAMERA  {fps:4.1f} fps", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             if det is None:
@@ -48,6 +52,8 @@ def main():
                 state += f"  GAP {detect.gap_y / lf.FRAME_H:.2f}"
             if light:
                 state += f"  LIGHT {light.upper()}"
+            if found:
+                state += f"  PERSON {found['feet'] / lf.FRAME_H:.2f}"
             cv2.putText(dbg, f"DETECT  {state}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
             stream.update(np.hstack([raw, dbg]))
 
