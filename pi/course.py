@@ -1,23 +1,24 @@
 
 
 
-SPEED = 0.5             # to_junction 등의 기본 주행 속도. 코스 중간에 바꾸려면 코스에 set_speed(0.4)를 넣는다.
+# --- 주행 ---
+SPEED = 0.5                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 
-# 레고 사람: 모든 동작에서 사람이 보이면 멈추고, 없어지면 하던 동작을 이어서 간다. 사람 등록은 aicar person (또는 Tune Person.command).
-PERSON_ON = True            # False면 사람을 보지 않는다.
-PERSON_AT = None            # 정지 위치: 사람 발이 화면 이 높이까지 내려오면 멈춘다 (0.4~0.95, 클수록 가까이). None이면 등록할 때 세워 둔 위치.
-PERSON_SLOW = 0.25          # 사람이 보이면 정지 위치까지 이 속도로 줄여 간다. None이면 줄이지 않는다.
-PERSON_STOP_DELAY = 0.0     # 정지 위치에 닿고 이 초만큼 더 간 뒤 멈춘다.
-PERSON_RESUME_DELAY = 1.0   # 사람이 없어지고 이 초만큼 더 기다렸다 출발한다.
-PERSON_MIN_STOP = 0.0       # 사람이 금방 없어져도 최소 이 초는 서 있는다.
-PERSON_MAX_WAIT = None      # 이 초가 지나면 사람이 있어도 출발한다 (그 사람이 없어질 때까지 다시 멈추지 않음). None이면 없어질 때까지 기다린다.
-PERSON_X = (0.1, 0.9)       # 이 가로 범위(화면 왼쪽 0 ~ 오른쪽 1)에 있는 사람만 본다. 차로 옆 사람을 무시하려면 좁힌다.
+# --- 레고 사람 (등록: Tune Person.command) ---
+PERSON_ON = True            # 사람을 보고 멈출지
+PERSON_AT = None            # 정지 위치: 화면 높이 0.4~0.95, 클수록 가까이. None = 등록한 위치
+PERSON_SLOW = 0.25          # 사람이 보일 때 줄일 속도. None = 안 줄임
+PERSON_STOP_DELAY = 0.0     # 정지 위치에 닿고 더 가는 시간 (초)
+PERSON_RESUME_DELAY = 1.5   # 사람이 없어지고 출발까지 기다리는 시간 (초)
+PERSON_MIN_STOP = 2.0       # 최소 정지 시간 (초)
+PERSON_MAX_WAIT = None      # 사람이 있어도 출발하는 시간 (초). None = 없어질 때까지 대기
+PERSON_X = (0.1, 0.9)       # 사람을 찾을 가로 범위: 왼쪽 0 ~ 오른쪽 1
 
 
 EVENTS = ("junction", "crosswalk", "lane", "gap", "end", "crossed", "green", "obstacle", "clear", "lost", "aligned", None)
 SIDES = ("left", "right", "center", None)
 STYLES = ("soft", "normal", "sharp", None)
-OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow", "blind_sec", "deg", "nth")
+OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow", "blind_sec", "deg", "nth", "cm")
 
 
 def _hint(word, choices):
@@ -45,7 +46,7 @@ def _step(do, angle, sec, until, **opt):
         if k not in OPTIONS:
             raise ValueError(f"{do}(): 옵션 {k}= 는 없음{_hint(k, OPTIONS)} (쓸 수 있는 옵션: {', '.join(OPTIONS)})")
     if sec is not None and until is not None and do != "wait":
-        for k in ("at", "slow"):
+        for k in ("at", "slow", "cm"):
             if opt.get(k) is not None:
                 raise ValueError(f"{do}(): {k}=는 until과 함께 쓰는 옵션이라 sec과 같이 못 씀")
         until = None
@@ -65,6 +66,11 @@ def _step(do, angle, sec, until, **opt):
     nth = opt.get("nth")
     if nth is not None and (not isinstance(nth, int) or nth < 1):
         raise ValueError(f"{do}(): nth는 1 이상의 정수 (몇 번째 선에서 끝낼지)")
+    cm = opt.get("cm")
+    if cm is not None and until not in ("junction", "end"):
+        raise ValueError(f'{do}(): cm=는 until="junction" / "end"일 때만 씀')
+    if cm is not None and not 0 <= cm <= 30:
+        raise ValueError(f"{do}(): cm는 0 ~ 30 (약 17cm까지는 선으로 재고, 그 뒤는 속도로 추정)")
     shift = opt.get("shift")
     if shift is not None and abs(shift) > 8:
         raise ValueError(f"{do}(): shift는 -8 ~ 8 (cm, +는 오른쪽). 차로 폭이 20cm라 그 이상은 선을 밟음")
@@ -74,7 +80,7 @@ def _step(do, angle, sec, until, **opt):
             "min": opt.get("min_sec", 0.0), "max": opt.get("max_sec"), "speed": opt.get("speed"),
             "at": at, "hold": opt.get("hold_sec", 0.0), "side": opt.get("side"), "shift": shift,
             "steer": opt.get("steer"), "style": opt.get("style"), "slow": opt.get("slow"),
-            "blind": opt.get("blind_sec") or 0.0, "deg": opt.get("deg"), "nth": opt.get("nth")}
+            "blind": opt.get("blind_sec") or 0.0, "deg": opt.get("deg"), "nth": opt.get("nth"), "cm": cm}
 
 
 def _auto(step, speed, default):
@@ -152,9 +158,9 @@ def finish():
     return _step("finish", 0.0, 0, None)
 
 
-def to_junction(at=None, slow=0.2, blind_sec=0.5, speed=None, nth=1):
-    """다음 교차로 선 앞까지 가서 끝낸다. nth=2면 첫 번째 선(교차로처럼 보이는 굽은 길 등)은 지나치고 두 번째에서 끝낸다."""
-    return _auto(follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None), speed, SPEED)
+def to_junction(at=None, slow=0.2, blind_sec=0.5, speed=None, nth=1, cm=None):
+    """다음 교차로 선 앞까지 가서 끝낸다. nth=2면 첫 번째 선(교차로처럼 보이는 굽은 길 등)은 지나치고 두 번째에서 끝낸다. cm=면 선을 자로 재서 기준 위치에서 그만큼 더 간 뒤 끝낸다."""
+    return _auto(follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm), speed, SPEED)
 
 
 def to_crosswalk(at=0.67, slow=0.2, speed=None):
@@ -171,9 +177,9 @@ def to_gap(at=0.85, slow=0.2, speed=None):
     return _auto(follow(until="gap", speed=speed, at=at, slow=slow), speed, SPEED)
 
 
-def to_end(at=0.5, slow=0.18, blind_sec=0.0, speed=None, shift=None):
-    """바로 앞 끝(교차로선이든 차선 끊김이든 먼저 오는 쪽)에서 끝낸다. shift=치우쳐 달릴 cm(+는 오른쪽)."""
-    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift), speed, 0.26)
+def to_end(at=0.5, slow=0.18, blind_sec=0.0, speed=None, shift=None, cm=None):
+    """바로 앞 끝(교차로선이든 차선 끊김이든 먼저 오는 쪽)에서 끝낸다. shift=치우쳐 달릴 cm(+는 오른쪽). cm=면 선을 자로 재서 기준 위치에서 그만큼 더 간 뒤 끝낸다."""
+    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift, cm=cm), speed, 0.26)
 
 
 def _turn_fn(direction):
@@ -287,7 +293,7 @@ def describe(step):
         parts.append(f"{names[step['until']]}까지" + (f"(화면 {step['at']})" if step["at"] else ""))
     for key, fmt in (("side", "{}쪽 선 기준"), ("shift", "{:+}cm 치우쳐"), ("steer", "최대 {}도"),
                      ("style", "{}"), ("speed", "속도 {}"), ("slow", "→ {}까지 감속"),
-                     ("blind", "시작 {}초 감지 안 함"), ("min", "최소 {}초"), ("deg", "{}도 돌면 끝"), ("nth", "{}번째 선에서")):
+                     ("blind", "시작 {}초 감지 안 함"), ("min", "최소 {}초"), ("deg", "{}도 돌면 끝"), ("nth", "{}번째 선에서"), ("cm", "+{}cm")):
         if step.get(key) is not None and not (key == "speed" and step["do"] in ("stop", "wait")) \
                 and not (key in ("blind", "min") and not step[key]):
             parts.append(fmt.format({"left": "왼", "right": "오른"}.get(step[key], step[key])))
@@ -326,6 +332,8 @@ def describe(step):
 # to_crosswalk(at)          횡단보도 앞까지 감속하며 가서 끝
 # to_gap(at)                차선이 끊기는 곳 앞까지 감속하며 가서 끝
 # to_end(at)                바로 앞 끝에서 끝: 교차로선(가로선)이든 차선 끊김이든 먼저 오는 쪽
+#                           to_junction, to_end의 cm=10: 선을 자로 재서 기준 위치에서 10cm 더 간 뒤 끝 (시간과 달리 배터리·속도 영향이 적음)
+#                           cm=0은 선이 카메라 앞 38cm일 때. 약 17cm까지는 선으로 재고, 선이 화면을 벗어나면 잰 속도로 추정 (최대 30)
 #
 # [묶음 동작 (여러 단계)]
 # cross_gap(at, angle)      끊긴 곳까지 간 뒤 새 차선이 잡힐 때까지 직진
@@ -351,9 +359,15 @@ def describe(step):
 
 COURSE = _flat([
     start_gate(2),
-
-
-
+    
+    set_speed(0.4),    
+    cross_gap(),
+    set_speed(0.6),        
+    to_junction(cm=7),
+    tr(),
+    to_junction(cm=7),
+    tl(),
+    to_end(),
 
 
 

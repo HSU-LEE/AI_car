@@ -32,7 +32,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from car import STEER_LIMIT, load_calib
+from car import STEER_LIMIT
 from course import (COURSE, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_SLOW,
                     PERSON_STOP_DELAY, PERSON_X)
 from person import PERSON_FILE, PersonDetector, PersonWatch
@@ -93,7 +93,7 @@ AUTO_STEER_MAX = 26     # Maximum steering angle while driving, in degrees. Does
 STEER_RATE = 150        # Maximum change in steering angle per second, in deg/s. A smaller value turns less abruptly.
 
 BASE_SPEED = 0.22       # Speed going straight.
-MIN_SPEED = 0.18        # Speed at full steering. Stays at or above the lowest command that keeps the motor turning.
+MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of slow=, and while the lane is lost.
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
 KICK_SPEED = 0.6        # Brief speed when starting from a stop, because the motor will not turn at a low speed.
@@ -114,9 +114,9 @@ FAR_HLINE = 0.8         # A far horizontal line counts only if connected white p
                         # Used only to slow down, not for the junction decision (until), so a curve mistaken for a line only slows the car briefly.
 APPROACH_HOLD = 0.5     # slow=: keep slowing for this many seconds after the line disappears, so one or two false frames do not react.
 KICK_AFTER_STOP = 0.3   # Use the start kick only after standing still at least this long, in seconds. A brief hesitation gets no kick.
-MOTOR_MIN = 0.27        # Lowest motor command that actually rolls straight on the floor. Lower commands are raised to this.
-MOTOR_MIN_TURN = 0.27   # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
-                        # Fixed values, set by hand. motor_min / motor_min_turn in calib.json on the Pi override them if present.
+MOTOR_MIN = 0.3         # Lowest forward motor command. Every lower command is raised to this, whatever speed= or slow= asks for.
+MOTOR_MIN_TURN = 0.3    # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
+                        # Fixed here. motor_min / motor_min_turn in calib.json on the Pi are no longer read.
 LANE_PX_PER_CM = REF_LANE_PX / 20.0     # How many position-error px equal 1 cm, for a 20 cm lane width. Used by shift=.
                                         # Position error is in REF_LANE_PX units, so this uses the same reference.
 # style= steering character: (KP scale, KH scale, SMOOTH).
@@ -124,12 +124,19 @@ STYLES = {"soft": (0.8, 0.7, 0.35), "normal": (1.0, 1.0, None), "sharp": (1.3, 1
 
 HLINE_RATIO = 0.27      # A run covering at least this fraction of the band width is a horizontal line (a junction). [narrow FOV 0.4]
 JUNCTION_Y = 0.5        # The junction action starts once the horizontal line drops below this frame height. A smaller value starts earlier.
+CAMERA_F = 492          # Focal length in px of the full-sensor view (about 66 degrees wide). Turns screen height into floor distance for cm=.
+LANE_CM = 20.0          # Real lane width.
+END_BASE_CM = 38.0      # cm=0 is where the line sits this far ahead of the camera, about where to_junction() ends without cm=.
+END_SPEED_SEC = 0.4     # cm=: the car's speed is measured from how the line moved over the last this many seconds.
+END_LEAD_SEC = 0.05     # cm=: end this much early (at the measured speed). The reading is about 2 frames old by the time it is acted on.
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
 JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a junction (a fork).
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
 BLIND_REARM_FRAMES = 5  # blind_sec: a line gone for this many frames in a row during the blind period arms its event, so it can end the action once blind is over.
 GAP_MAX_HEADING = 0.5   # Skip the gap test when heading error is larger than this, because the car is badly misaligned with the lane.
+GAP_TIP_MEMORY = 1.0    # Once a gap is confirmed, the tip of the lane line decides when it arrives, for this many seconds after the band test last saw it.
+                        # The band test needs both sides, so when one line ends well before the other it may hold only 1-2 frames near the car (runs 20261104-230925, 231241).
 GAP_BANDS = 2           # Lane gap: one empty band is enough if the line resumes above it.
                         # If it does not resume, the empty run must be at least this many bands, because one empty top band may just be a missed far line.
 CROSSWALK_HOLD_MAX = 1.5    # Maximum seconds to hold steering on a crosswalk right in front of the car. After that, follow the lane again.
@@ -153,6 +160,8 @@ ALIGN_FRAMES = 5        # Held for this many frames, the car counts as aligned. 
 ALIGN_HOLD_HEADING = False  # True: while aligning, a heading error above TURN_END_HEADING is never steered into (old behavior).
                         # False: held only while a horizontal line is in view (its heading is unreliable), otherwise steered into.
                         # Off: after a corner the exit lane can keep curving (heading -0.79 in run 20261103-201450); holding drove the car straight off the line.
+ALIGN_HLINE_HEADING = 0.8   # While aligning, a horizontal line in view really is one only if it drives heading to about +-1 (0.86-1.0 in every recording).
+                            # A lane line curving across the view also trips the band test, at 0.5-0.62, and must be steered along (run 20261104-230540).
 ALIGN_STEER_MAX = 8     # While aligning, if heading error exceeds TURN_END_HEADING, ignore heading and correct position only within this angle.
 STRAIGHT_CORR = 6       # straight(): when the lane is visible, correct only within ± this many degrees.
 CURVE_ASSIST = 0.5      # curve(): blend of the set angle and lane-follow steering. 0 is a fixed angle, 1 is the lane only.
@@ -203,14 +212,6 @@ def load_vision():
     CAMERA_LOCK = data.get("camera_lock", CAMERA_LOCK)
 
 
-def load_motor_min():
-    """Load motor minimums from calib.json (set by hand). Missing keys keep their defaults."""
-    global MOTOR_MIN, MOTOR_MIN_TURN
-    calib = load_calib()
-    MOTOR_MIN = calib.get("motor_min", MOTOR_MIN)
-    MOTOR_MIN_TURN = max(MOTOR_MIN, calib.get("motor_min_turn", MOTOR_MIN_TURN))
-
-
 def motor_floor(angle):
     """Minimum motor command that actually rolls the car at this steering angle."""
     r = min(abs(angle) / STEER_LIMIT, 1.0)
@@ -228,7 +229,6 @@ def save_vision(**values):
 
 
 load_vision()
-load_motor_min()
 
 
 _ELLIPSE_RECTS = {}
@@ -611,6 +611,35 @@ class LaneDetector:
             return None     # An empty area outside the mat is the mat ending, not a lane gap.
         return int(bands[k][0])
 
+    def hline_edge(self):
+        """Exact y of the near edge of the nearest horizontal line, in front of the car. None if there is none or it reached the frame bottom.
+
+        Unlike junction_y (a band center, 36 px steps), this resolves about one pixel, for cm=.
+        """
+        cx0 = int(FRAME_W * CAMERA_X)
+        strip = self.mask[:, max(cx0 - 60, 0):cx0 + 60] > 0
+        rows = np.flatnonzero(strip.mean(axis=1) > 0.6)
+        if not len(rows):
+            return None
+        r0, r1 = max(rows[-1] - 20, 0), min(rows[-1] + 20, strip.shape[0])
+        near = strip[r0:r1]
+        cols = near.any(axis=0)
+        low = near.shape[0] - 1 - np.argmax(near[::-1], axis=0)     # Lowest line pixel per column. The median reads a slanted line at the car's center.
+        y = r0 + float(np.median(low[cols]))
+        return None if y >= strip.shape[0] - 2 else int(FRAME_H * ROI_TOP) + y + 1
+
+    def lane_tip(self):
+        """y of the nearer tip of the lane lines that end ahead (a lane gap), for cm=. None if no line ends in view."""
+        labels, stats = self.blobs
+        tips = []
+        for i, (x, y, w, h, area) in enumerate(stats[1:], 1):
+            ends_in_view = 0 < y and y + h >= self.mask.shape[0] - 2     # Rises from the frame bottom and stops below the ROI top.
+            if ends_in_view and h >= 6 and area >= MIN_PIXELS and 0.05 * FRAME_W <= x + w / 2 <= 0.95 * FRAME_W:
+                top = np.flatnonzero(labels[y] == i)
+                if len(top) and 0.08 * FRAME_W <= top.mean() <= 0.92 * FRAME_W:     # A line leaving by the frame side (a curve) does not end.
+                    tips.append(y)
+        return int(FRAME_H * ROI_TOP) + float(max(tips)) if tips else None
+
     def __call__(self, frame, side="center", draw=True):
         """Return ((position error, heading error) or None, junction detected, debug image).
 
@@ -630,6 +659,7 @@ class LaneDetector:
             mask[hit] = 0
             labels = np.where(hit, 0, labels)
         self.blobs, self.band_h = (labels, stats), h
+        self.mask = mask
 
         dbg = frame.copy() if draw else None
         if draw:
@@ -953,6 +983,44 @@ class YawMeter:
         return self.total
 
 
+def floor_cm(y):
+    """Floor distance ahead of the camera for a point at height y on screen: the lane is LANE_CM wide, and narrows to nothing at the horizon."""
+    return CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(y - HORIZON_Y, 1.0)
+
+
+class EndRuler:
+    """cm=: where the line this action ends on is, using the line itself as a ruler. It needs no floor texture and adds up no error.
+
+    Once the line has left the frame (or stops being seen), its distance is carried on from the speed measured while it was visible.
+    """
+
+    def __init__(self):
+        self.kind, self.z, self.speed, self.t, self.guess = None, None, None, None, False
+        self.raw, self.track = [], []
+
+    def feed(self, kind, y, now):
+        if kind != self.kind:       # A different line from now on: nothing measured so far applies to it.
+            self.__init__()
+            self.kind = kind
+        dt = 0.0 if self.t is None else min(now - self.t, 0.1)      # Capped: a stop for the LEGO figure is not driving.
+        self.t = now
+        z = None if y is None else floor_cm(y)
+        if z is not None and self.z is not None and not -6 < z - self.z < 3:
+            z = None                # Jumped: another line, or a misread.
+        if z is None:
+            if self.z is not None and self.speed is not None:
+                self.z -= self.speed * dt
+                self.guess = True
+            return
+        self.raw = (self.raw + [z])[-3:]
+        self.z = float(np.median(self.raw))     # A median of 3, so one misread frame cannot end the action.
+        self.guess = False
+        self.track = [p for p in self.track if now - p[0] <= END_SPEED_SEC] + [(now, self.z)]
+        if len(self.track) >= 5 and self.track[-1][0] - self.track[0][0] >= END_SPEED_SEC / 2:
+            ts, zs = zip(*self.track)
+            self.speed = max(0.0, -float(np.polyfit(np.array(ts) - ts[0], zs, 1)[0]))
+
+
 class Steering:
     """Turn (position error, heading error) into a steering angle in degrees. Variable steering from P, filtered D, and a low-pass."""
 
@@ -1026,6 +1094,9 @@ class CourseRunner:
         self.count = 0          # nth=: how many of this action's until events have passed so far.
         self.turned = None      # Turn with deg=: px the view has swung in the turn direction (YawMeter). Driver fills it every frame.
         self.paused = False     # Standing still for the LEGO figure. Driver fills it every frame.
+        self.ruler = EndRuler()     # cm=: where the end line is.
+        self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
+        self.gap_hits, self.gap_t = 0, None     # Lane gap: frames in a row the band test saw it, and when it was last confirmed.
 
     def step(self):
         step = self.course[self.idx] if self.idx < len(self.course) else None
@@ -1046,6 +1117,8 @@ class CourseRunner:
         self.hold = None
         self.red_hits, self.red_seen, self.red_box = 0, False, None
         self.red_boxes, self.local_light = [], None
+        self.ruler, self.run_out = EndRuler(), False
+        self.gap_hits, self.gap_t = 0, None
         step = self.step()
         if step is None:
             print(f"\n[코스 끝] 이제부터 차선만 따라감")
@@ -1067,6 +1140,8 @@ class CourseRunner:
             how = f"{self.EVENT_NAMES[step['until']]}까지" if step["until"] else ""
             if step.get("at") is not None:
                 how += f" (화면 {step['at']} 지점)"
+            if step.get("cm") is not None:
+                how += f" +{step['cm']:g}cm"
             if step.get("hold"):
                 how += f" {step['hold']}초 유지"
             if step["min"]:
@@ -1157,7 +1232,18 @@ class CourseRunner:
         if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] in ("gap", "end")):
             # gap / end with no at= end at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
             y = ys.get(step["until"])
-            seen[step["until"]] = y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+            end_y = (step.get("at") or JUNCTION_Y) * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+            seen[step["until"]] = y is not None and y >= end_y
+            if step["until"] in ("gap", "end"):
+                # A confirmed gap counts once a line's tip reaches the end height, even if the band test has dropped it by then.
+                self.gap_hits = self.gap_hits + 1 if ys.get("gap") is not None else 0
+                if self.gap_hits >= JUNCTION_FRAMES:
+                    self.gap_t = now
+                if ys.get("junction") is not None:      # A horizontal line, not a gap: the lane lines stop at it.
+                    self.gap_t = None
+                tip = ys.get("tip_y")
+                if self.gap_t is not None and now - self.gap_t <= GAP_TIP_MEMORY and tip is not None and tip >= end_y:
+                    seen[step["until"]] = True
         until = step["until"] if step is not None else None
         # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
         # A line that flickers during that time does not end the action the moment the blind period finishes.
@@ -1178,6 +1264,25 @@ class CourseRunner:
             if not v:
                 self.armed[k] = True
 
+    def track_end(self, ys, now):
+        """cm=: measure the end line every frame, before it is reached too, so the speed is known by the time it leaves the frame."""
+        step = self.step()
+        if step is None or step.get("cm") is None:
+            return
+        hline, tip = ys.get("hline_y"), ys.get("tip_y")
+        if self.run_out:
+            self.ruler.feed(self.ruler.kind, hline if self.ruler.kind == "line" else tip, now)
+        elif hline is not None:
+            self.ruler.feed("line", hline, now)
+        elif step["until"] == "end" and ys.get("gap") is not None and tip is not None:
+            self.ruler.feed("tip", tip, now)
+
+    def end_reached(self, step):
+        """cm=: the end line has come to its place. A line never measured ends at once, since nothing can be said about it."""
+        if self.ruler.z is None:
+            return True
+        return self.ruler.z - (self.ruler.speed or 0.0) * END_LEAD_SEC <= END_BASE_CM - step["cm"]
+
     def happened(self, event, now=0.0, hold=0.0):
         step = self.step()
         if event == "lane" and step is not None and step["do"] in ("left", "right"):
@@ -1191,6 +1296,7 @@ class CourseRunner:
         if self.step_start is None:
             self.begin(now)
         self.watch(junction, crosswalk, det, ys, light, lamps, obstacle, now)
+        self.track_end(ys or {}, now)
         while (step := self.step()) is not None:
             if step["do"] == "finish":
                 self.done = True
@@ -1205,6 +1311,8 @@ class CourseRunner:
                 reason = f"회전각 {step['deg']}도"
             elif step["max"] is None and step["until"] is not None and step["do"] != "wait" and elapsed >= STEP_MAX_SEC:
                 reason = f"안전 시간 {STEP_MAX_SEC}초 (조건이 안 와서 넘어감, max_sec로 조절)"
+            elif self.run_out:
+                reason = self.end_reason(step) if self.end_reached(step) else None
             elif (step["until"] is not None and elapsed >= step["min"]
                   and self.happened(step["until"], now, step.get("hold", 0.0))):
                 reason = self.EVENT_NAMES[step["until"]]
@@ -1214,7 +1322,13 @@ class CourseRunner:
                 if self.count < (step.get("nth") or 1):
                     # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
                     print(f"\n[{self.idx + 1}] {reason} {self.count}번째 지나감 ({step['nth']}번째에서 끝)")
+                    self.ruler = EndRuler()     # The next line is a new one.
                     reason = None
+                elif step.get("cm") is not None:
+                    self.run_out = True
+                    if self.ruler.kind is None:     # Seen by the bands but not yet by the ruler.
+                        self.ruler.kind = "line" if step["until"] == "junction" or (ys or {}).get("junction") is not None else "tip"
+                    reason = self.end_reason(step) if self.end_reached(step) else None
             else:
                 reason = None
             if reason is None:
@@ -1222,6 +1336,13 @@ class CourseRunner:
             print(f"\n[{self.idx + 1} 끝] {reason} ({elapsed:.1f}초)")
             self.idx += 1
             self.begin(now)
+
+    def end_reason(self, step):
+        z = self.ruler.z
+        if z is None:
+            return f"{self.EVENT_NAMES[step['until']]} (선 위치를 못 재서 +{step['cm']:g}cm 없이 끝)"
+        how = "속도로 추정" if self.ruler.guess else "선으로 측정"
+        return f"{self.EVENT_NAMES[step['until']]} +{END_BASE_CM - z:.1f}cm ({how}, 목표 {step['cm']:g}cm)"
 
     def lane_side(self, now):
         step = self.step()
@@ -1232,6 +1353,8 @@ class CourseRunner:
         step = self.step()
         if step is None or step["until"] is None:
             return False
+        if self.run_out:
+            return True
         nth = step.get("nth") or 1
         return self.count >= nth - 1 and (self.count == 0 or self.armed[step["until"]])
 
@@ -1615,6 +1738,8 @@ class Driver:
         slow = course.opt("slow")
         if slow is None or step["until"] not in CourseRunner.AT_EVENTS or not course.final_approach():
             return base
+        if course.run_out:      # cm=: stay slow for the last distance, even once the line has gone from view.
+            return max(min(slow, base), MIN_SPEED)
         level, seen_t, idx = self.approach
         if idx != course.idx:       # New action: start over.
             level, seen_t = 0.0, -1.0
@@ -1655,6 +1780,8 @@ class Driver:
             cond = f"for {step['sec']:g}s"
         elif step["until"]:
             cond = "until " + self.EVENT_EN[step["until"]] + (f" @{step['at']:g}" if step.get("at") else "")
+            if step.get("cm") is not None:
+                cond += f" +{step['cm']:g}cm"
         else:
             cond = ""
         tags = []
@@ -1835,7 +1962,9 @@ class Driver:
             course.turned, self.yaw_idx = None, -1
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
-                       "near": detect.near_line},
+                       "near": detect.near_line,
+                       **({"hline_y": detect.hline_edge()} if step is not None and step.get("cm") is not None else {}),
+                       **({"tip_y": detect.lane_tip()} if step is not None and (step.get("cm") is not None or step["until"] in ("gap", "end")) else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
         if course.done:
@@ -1863,7 +1992,7 @@ class Driver:
             # While aligning, a large heading error such as a corner or hairpin is not steered into further. Only position is corrected a little.
             # A horizontal line in view makes the heading jump to +-1 (run 20261103-203911 steered to -26), so hold heading then.
             hold_heading = ((course.step() or {}).get("until") == "aligned" and abs(raw_h) > TURN_END_HEADING
-                            and (ALIGN_HOLD_HEADING or detect.junction_y is not None))
+                            and (ALIGN_HOLD_HEADING or (detect.junction_y is not None and abs(raw_h) >= ALIGN_HLINE_HEADING)))
             if hold_heading:
                 h = 0.0
             lane = steering.lane(det[0], h, now, kp, kh)
@@ -1887,7 +2016,8 @@ class Driver:
             limit = course.opt("steer", AUTO_STEER_MAX)
             steer = steering.output(float(np.clip(target, -limit, limit)), now, smooth)
         lost_for = now - self.lost_since if self.lost_since is not None else 0.0
-        lost_long = self.lost_since is not None and lost_for > LOST_HOLD
+        # cm=: over the end line the lane lines may run out. That is expected, so the car holds its steering and does not back up.
+        lost_long = self.lost_since is not None and lost_for > LOST_HOLD and not course.run_out
         # Mat-edge stop is skipped while the lane is visible or during a turn, so a false hit does not stop the car.
         self.edge = detect.edge and det is None and not course.turning(now)
         steer = self.back_up(now, lost_long, steer)
