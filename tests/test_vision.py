@@ -1032,8 +1032,202 @@ def test_set_speed():
     check("set_speed: 범위 밖이면 오류", ok)
 
 
+def y_at(cm):
+    """Screen height of a floor point this far ahead of the camera. The inverse of floor_cm."""
+    return lf.HORIZON_Y + lf.floor_cm(lf.HORIZON_Y + 100) * 100 / cm
+
+
+def drive_line(c, z, t, stop_z, v=10.0, fps=40, junction=True, tip=False, visible_to=21.0):
+    """A line comes closer at v cm/s, read every frame, until the action ends. Returns the line's real distance then."""
+    t = feed(c, 5, t)       # An event counts only after it has been absent once.
+    while z > stop_z:
+        y = y_at(z) if z > visible_to else None
+        near = int(H * 0.6)
+        ys = {"tip_y": y, "gap": near, "near": True} if tip else {"junction": near, "hline_y": y, "near": True}
+        c.update(junction and not tip, t, (0.0, 0.0), False, ys)
+        if c.idx != 0:
+            break
+        z -= v / fps
+        t += 1 / fps
+    return z
+
+
+def test_end_cm():
+    print("[to_junction / to_end cm=]")
+    import course as cs
+    check("floor_cm: 가까울수록 작고, 차선 폭 20cm와 맞음", lf.floor_cm(300) < lf.floor_cm(200)
+          and abs(lf.LANE_WIDTH_PX / lf.CAMERA_F * lf.floor_cm(342) - lf.LANE_CM) < 0.01)
+
+    for y in (230, 290, 330):
+        img = lane_frame()
+        cv2.rectangle(img, (0, y - 10), (W, y), (235,) * 3, -1)
+        d, _ = run_detector(img)
+        got = d.hline_edge()
+        check(f"hline_edge: 가로선 아래 끝 y={y}을 잼 (band 36px 단위 아님)", got is not None and abs(got - y) <= 3, got)
+    d, _ = run_detector(lane_frame())
+    check("hline_edge: 가로선이 없으면 None", d.hline_edge() is None)
+    d, _ = run_detector(lane_frame(y_end=280))
+    tip = d.lane_tip()
+    check("lane_tip: 차선이 끝나는 높이를 잼", tip is not None and abs(tip - 280) <= 3, tip)
+    d, _ = run_detector(lane_frame())
+    check("lane_tip: 차선이 안 끝나면 None", d.lane_tip() is None)
+
+    with quiet():
+        c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), finish()])
+        z = drive_line(c, 45.0, 0.0, 10.0)
+    target = lf.END_BASE_CM - 10
+    check("to_junction(cm=10): 선 위치로 정확히 끝", c.idx == 1 and abs(z - target) < 0.5, f"선 {z:.2f}cm, 목표 {target}cm")
+    ends = []
+    for v in (6.0, 12.0, 20.0):
+        with quiet():
+            c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), finish()])
+            ends.append(drive_line(c, 45.0, 0.0, 10.0, v=v))
+    check("cm=: 속도가 달라도 같은 곳에서 끝", max(ends) - min(ends) < 1.0, [round(e, 2) for e in ends])
+    with quiet():
+        c = lf.CourseRunner([cs.to_junction(cm=25, blind_sec=0), finish()])
+        z = drive_line(c, 45.0, 0.0, 5.0)
+    check("cm=: 선이 화면을 벗어나면 잰 속도로 이어서 추정해 목표 근처에서 끝", c.idx == 1 and abs(z - 13) < 1.0, f"선 {z:.2f}cm, 목표 13cm")
+    with quiet():
+        c = lf.CourseRunner([cs.to_end(cm=5), finish()])
+        z = drive_line(c, 45.0, 0.0, 10.0, tip=True)
+    check("to_end(cm=5): 차선 끝 위치로 끝", c.idx == 1 and abs(z - (lf.END_BASE_CM - 5)) < 0.5, f"선 {z:.2f}cm")
+    with quiet():
+        c = lf.CourseRunner([cs.to_end(cm=5), finish()])
+        z = drive_line(c, 45.0, 0.0, 10.0)
+    check("to_end(cm=5): 교차로선 위치로도 끝", c.idx == 1 and abs(z - (lf.END_BASE_CM - 5)) < 0.5, f"선 {z:.2f}cm")
+    with quiet():
+        c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), finish()])
+        t = feed(c, 5, 0.0)
+        for _ in range(5):
+            c.update(True, t, (0.0, 0.0), False, {"junction": int(H * 0.6), "near": True})
+            t += 0.05
+    check("cm=: 선 위치를 못 재면 멈춰 있지 않고 끝", c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), follow(9), finish()])
+        drive_line(c, 45.0, 0.0, 10.0)
+    check("cm=: 다음 동작은 자 상태가 지워진 채 시작", c.idx == 1 and not c.run_out and c.ruler.z is None)
+    with quiet():
+        c = lf.CourseRunner([cs.to_junction(cm=10, nth=2, blind_sec=0), finish()])
+        t = feed_junc(c, 5, 0.0, False)
+        t = feed_junc(c, 5, t, True)
+        first = (c.idx, c.run_out)
+    check("cm= + nth=2: 첫 선에서는 더 가기 시작 안 함", first == (0, False))
+
+    d = lf.Driver([cs.to_junction(cm=25, blind_sec=0), finish()])
+    img = lane_frame()
+    cv2.rectangle(img, (0, 225), (W, 235), (235,) * 3, -1)
+    blank = lane_frame(left=False, right=False)
+    with quiet():
+        t = 0.0
+        for _ in range(5):
+            d.tick(lane_frame(), t)
+            t += 0.05
+        for _ in range(8):
+            d.tick(img, t)
+            t += 0.05
+        started = d.course.run_out
+        d.course.ruler.z, d.course.ruler.speed = 37.0, 0.1      # Line out of view and barely moving, so the end is far off.
+        speeds = []
+        for _ in range(60):
+            d.tick(blank, t)
+            speeds.append(d.speed)
+            t += 0.05
+    check("cm=: 더 가는 동안 차선이 없어져도 후진하지 않음", started and d.back is None and min(speeds) > 0, f"최저 속도 {min(speeds)}")
+
+    for bad, name in ((lambda: cs.to_junction(cm=-1), "음수"), (lambda: cs.to_junction(cm=31), "30 초과"),
+                      (lambda: cs.follow(3, cm=5), "시간 동작"), (lambda: cs.follow(until="lane", cm=5), "다른 until")):
+        try:
+            bad()
+            ok = False
+        except ValueError:
+            ok = True
+        check(f"cm=: {name}이면 오류", ok)
+    check("cm 없으면 기존과 같음", cs.to_junction()["cm"] is None and cs.to_end()["cm"] is None)
+    check("describe: cm 표시", "+10cm" in cs.describe(cs.to_junction(cm=10)))
+
+
+def test_gap_tip():
+    print("[to_gap: 차선 끝 측정]")
+    import course as cs
+
+    def gap_frames(c, frames, t, gap=None, tip=None, junction=None):
+        for _ in range(frames):
+            c.update(False, t, (0.0, 0.0), False, {"gap": gap, "tip_y": tip, "junction": junction, "near": True})
+            t += 0.05
+        return t
+
+    with quiet():   # Runs 230925, 231241: the band test sees the gap far off, then drops it (one side only) before the end height.
+        c = lf.CourseRunner([cs.to_gap(0.85), finish()])
+        t = gap_frames(c, 5, 0.0)
+        t = gap_frames(c, 5, t, gap=270, tip=280)
+        t = gap_frames(c, 3, t, tip=300)
+        before = c.idx
+        t = gap_frames(c, 3, t, tip=320)
+    check("to_gap: 칸 판정이 끊겨도 차선 끝이 닿으면 끝", before == 0 and c.idx == 1, f"{before} → {c.idx}")
+    with quiet():
+        c = lf.CourseRunner([cs.to_gap(0.85), finish()])
+        t = gap_frames(c, 5, 0.0)
+        t = gap_frames(c, 2, t, gap=270, tip=280)
+        t = gap_frames(c, 5, t, tip=320)
+    check("to_gap: 끊김이 확인 안 되면(1~2프레임) 차선 끝만으로 안 끝남", c.idx == 0)
+    with quiet():
+        c = lf.CourseRunner([cs.to_gap(0.85), finish()])
+        t = gap_frames(c, 5, 0.0)
+        t = gap_frames(c, 5, t, tip=320)
+    check("to_gap: 끊김을 본 적 없으면 차선 끝만으로 안 끝남", c.idx == 0)
+    with quiet():
+        c = lf.CourseRunner([cs.to_gap(0.85), finish()])
+        t = gap_frames(c, 5, 0.0)
+        t = gap_frames(c, 5, t, gap=270, tip=280)
+        t = gap_frames(c, int(lf.GAP_TIP_MEMORY / 0.05) + 2, t)
+        t = gap_frames(c, 5, t, tip=320)
+    check("to_gap: 오래전 끊김은 기억하지 않음", c.idx == 0)
+    with quiet():
+        c = lf.CourseRunner([cs.to_gap(0.85), finish()])
+        t = gap_frames(c, 5, 0.0)
+        t = gap_frames(c, 5, t, gap=270, tip=280)
+        t = gap_frames(c, 5, t, tip=320, junction=270)
+    check("to_gap: 가로선이 보이면 끊김이 아님", c.idx == 0)
+    with quiet():
+        c = lf.CourseRunner([cs.to_gap(0.85), finish()])
+        t = gap_frames(c, 5, 0.0)
+        t = gap_frames(c, 5, t, gap=306, tip=330)
+    check("to_gap: 칸 판정만으로도 기존처럼 끝", c.idx == 1)
+    img = lane_frame()
+    cv2.rectangle(img, (0, 0), (W, H // 2 + 60), (30, 30, 30), -1)
+    img2 = np.full((H, W, 3), 30, np.uint8)
+    cv2.line(img2, (W // 2, H - 1), (W - 1, 280), (235,) * 3, 11)
+    d, _ = run_detector(img2)
+    check("lane_tip: 화면 옆으로 나가는 곡선은 끝이 아님", d.lane_tip() is None, d.lane_tip())
+
+
+def test_align_steer():
+    print("[정렬: 조향 제한]")
+
+    class Fixed(lf.LaneDetector):
+        """The real detector, reporting a chosen lane error with a horizontal line in view."""
+        err = (0.0, 0.0)
+
+        def __call__(self, frame, side="center", draw=True):
+            _, junction, dbg = super().__call__(frame, side, draw)
+            self.junction_y = 234
+            return self.err, junction, dbg
+
+    def peak(off, head):
+        d = lf.Driver([follow(until="aligned", max_sec=30, speed=0.4, style="soft"), finish()])
+        d.detect = Fixed()
+        d.detect.err = (off, head)
+        with quiet():
+            angles = [d.tick(lane_frame(), 0.05 * i)[0] for i in range(40)]
+        return max(abs(a) for a in angles if a is not None)
+
+    limit = lf.ALIGN_STEER_MAX + 0.5
+    check("정렬: 가로로 지나는 곡선 차선(heading 0.55)은 제한 없이 조향", peak(-0.4, -0.55) > limit, f"{peak(-0.4, -0.55):.1f}도")
+    check("정렬: 진짜 가로선(heading 1.0)은 계속 제한", peak(-0.4, -1.0) <= limit, f"{peak(-0.4, -1.0):.1f}도")
+
+
 def main():
-    for t in (test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
+    for t in (test_end_cm, test_gap_tip, test_align_steer, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
               test_driver_smoke, test_person_detect, test_person_stop, test_set_speed):
         t()
