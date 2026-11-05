@@ -7,10 +7,10 @@ SPEED = 0.5                 # 기본 주행 속도. 코스 중간에 바꾸려�
 
 # --- 레고 사람 (등록: Tune Person.command) ---
 PERSON_ON = True            # 사람을 보고 멈출지
-PERSON_AT = None            # 정지 위치: 화면 높이 0.4~0.95, 클수록 가까이. None = 등록한 위치
-PERSON_SLOW = 0.3           # 사람이 보일 때 줄일 속도. None = 안 줄임
-PERSON_STOP_DELAY = 0.0     # 정지 위치에 닿고 더 가는 시간 (초)
-PERSON_RESUME_DELAY = 1.5   # 사람이 없어지고 출발까지 기다리는 시간 (초)
+PERSON_AT = None            # 화면에 그리는 기준선: 높이 0.4~0.95. None = 등록한 위치. 정지는 위치와 상관없이 감지되면 바로 함
+PERSON_SLOW = 0.3           # 사람이 보일 때 줄일 속도. None = 안 줄임 (감지되면 바로 멈추므로 거의 쓰이지 않음)
+PERSON_STOP_DELAY = 0.0     # 지금은 안 씀 (감지되면 바로 멈춤)
+PERSON_RESUME_DELAY = 1.5   # 사람이 전혀 안 보인 뒤 출발까지 기다리는 시간 (초). 그 사이 한 번이라도 보이면 다시 기다림
 PERSON_MIN_STOP = 2.0       # 최소 정지 시간 (초)
 PERSON_MAX_WAIT = None      # 사람이 있어도 출발하는 시간 (초). None = 없어질 때까지 대기
 PERSON_X = (0.1, 0.9)       # 사람을 찾을 가로 범위: 왼쪽 0 ~ 오른쪽 1
@@ -383,18 +383,26 @@ def describe(step):
 
 COURSE = _flat([
     start_gate(2),
-    
-    set_speed(0.4),    
-    cross_gap(),
-    set_speed(0.6),        
-    to_junction(cm=7),
+    to_junction(cm=8),
+    straight(2),
     tr(),
-    to_junction(cm=7),
-    tl(),
-    to_end(max_sec=8),
-
-
-
+    to_crosswalk(0.8),
+    straight(1.5),
+    wait_green(max_sec=20),
+    stop(1.5),
+    pass_crosswalk(),
+    to_junction(cm=8),
+    straight(2),
+    tr(),
+    to_junction(cm=8),
+    straight(2),
+    set_speed(0.4),
+    to_junction(cm=8),
+    straight(5),
+    tr(),
+    set_speed(0.6),
+    to_junction(cm=8),
+    straight(3),
     finish(),
 
  
