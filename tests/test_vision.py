@@ -248,6 +248,29 @@ def test_course_logic():
         c = lf.CourseRunner([wait_green(max_sec=1), finish()])
         feed(c, 30, 0.0)
     check("wait_green: 인식 실패해도 max_sec 뒤 출발", c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([wait_green(max_sec=1), finish()])
+        t = feed(c, 3, 0.0, light="red")
+        t = feed(c, 200, t, light="red")
+    check("wait_green: 빨간불을 봤으면 max_sec가 지나도 안 떠남", c.idx == 0 and c.stopped(t), f"{t:.0f}초")
+    with quiet():
+        t = feed(c, 200, t)
+    check("wait_green: 빨간불을 본 뒤 신호가 안 보여도 계속 기다림", c.idx == 0, f"{t:.0f}초")
+    with quiet():
+        t = feed(c, 3, t, light="green")
+    check("wait_green: 그 뒤 초록이면 출발", c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([wait_green(max_sec=1), finish()])
+        t = feed(c, 2, 0.0, light="red")
+        t = feed(c, 30, t)
+    check("wait_green: 빨강이 1~2프레임뿐이면 못 찾은 것으로 보고 max_sec 뒤 출발", c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([wait_green(max_sec=1), follow(1), finish()])
+        t = feed(c, 3, 0.0, light="red")
+        t = feed(c, 30, t, light="red")
+        t = feed(c, 3, t, light="green")
+        t = feed(c, 30, t, light="red")
+    check("wait_green: 다음 동작의 max_sec에는 영향 없음", c.idx == 2 or c.done, f"동작 {c.idx + 1}")
 
     with quiet():
         c = lf.CourseRunner([wait_green(max_sec=30), finish()])
@@ -1603,6 +1626,64 @@ def test_tools_read_web_keys():
     check("tune_person: 웹 키로 끝남", run_tool(tune_person, "zq") == {})
 
 
+def test_red_search():
+    print("[wait_green: 빨간불 찾기 후진]")
+
+    def run(d, frames, t):
+        cmds = []
+        for _ in range(frames):
+            cmds.append(d.tick(lane_frame(), t)[1])
+            t += 0.05
+        return cmds, t
+
+    def backs(cmds):
+        return sum(1 for a, b in zip([0.0] + cmds, cmds) if b < 0 and a >= 0)
+
+    d = lf.Driver([wait_green(max_sec=20), finish()])
+    d.history = [(0.05, 7.0, 0.5)] * 40
+    with quiet():
+        cmds, t = run(d, 45, 0.0)
+    first = next((i for i, c in enumerate(cmds) if c < 0), None)
+    check("빨간불이 안 보이면 2초 뒤 후진", first is not None and abs(first * 0.05 - lf.RED_LOOK_SEC) <= 0.1, first)
+    check("후진 조향은 왔던 길을 따름", d.steering.angle > 0, d.steering.angle)
+    with quiet():
+        more, t = run(d, 400, t)
+    all_cmds = cmds + more
+    time_back = sum(1 for c in all_cmds if c < 0) * 0.05
+    check("후진은 최대 2번, 각 1초", backs(all_cmds) == 2 and abs(time_back - 2 * lf.RED_BACK_SEC) <= 0.15, f"{backs(all_cmds)}번, {time_back:.2f}초")
+    check("그래도 못 찾으면 max_sec 뒤 출발", d.done or d.course.idx == 1, f"동작 {d.course.idx + 1}")
+    check("후진 후 기록에서 지나온 구간을 지움", len(d.history) < 40, len(d.history))
+
+    d = lf.Driver([wait_green(max_sec=20), finish()])
+    with quiet():
+        cmds, t = run(d, 45, 0.0)
+        d.course.red_seen = True
+        after, t = run(d, 60, t)
+    check("빨간불을 찾으면 후진 멈추고 기다림", any(c < 0 for c in cmds) and all(c == 0 for c in after), after[:3])
+    check("빨간불을 찾으면 max_sec에 안 떠남", d.course.idx == 0 or not d.done)
+
+    d = lf.Driver([wait_green(max_sec=20), finish()])
+    with quiet():
+        d.tick(lane_frame(), 0.0)
+        for i in range(60):
+            angle = d.search_red(0.05 * i, True)
+            assert angle is None
+    check("사람 앞에 서 있으면 후진 안 함", d.red["tries"] == 0)
+
+    old = lf.RED_BACK_ON
+    lf.RED_BACK_ON = False
+    d = lf.Driver([wait_green(max_sec=5), finish()])
+    with quiet():
+        cmds, _ = run(d, 120, 0.0)
+    lf.RED_BACK_ON = old
+    check("RED_BACK_ON=False: 후진 없이 max_sec 뒤 출발", all(c >= 0 for c in cmds) and (d.done or d.course.idx == 1))
+
+    d = lf.Driver([stop(5), finish()])
+    with quiet():
+        cmds, _ = run(d, 60, 0.0)
+    check("다른 정지 동작에서는 후진 안 함", all(c == 0 for c in cmds))
+
+
 def test_key_route():
     print("[웹페이지: /key와 페이지]")
     s = lf.Stream(0, "T", "w/s", confirm="\nq", key="secret", serve=False)
@@ -1713,7 +1794,7 @@ def test_saved_with_run():
 
 
 def main():
-    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
+    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
               test_driver_smoke, test_person_detect, test_person_stop, test_set_speed):
         t()

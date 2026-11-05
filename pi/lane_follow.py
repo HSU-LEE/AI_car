@@ -39,7 +39,7 @@ import cv2
 import numpy as np
 
 from car import STEER_LIMIT
-from course import COURSE, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_SLOW, PERSON_X
+from course import COURSE, RED_BACK_ON, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_SLOW, PERSON_X
 from person import PERSON_FILE, PersonDetector, PersonWatch
 
 # --- Settings ---
@@ -107,6 +107,9 @@ LOST_BACK_SEC = 1.5     # Then reverse for up to this long, replaying the recent
 LOST_BACK_SPEED = 0.5   # Motor command while backing up. Reverse needs a higher command than forward to move at all.
 LOST_BACK_TRIES = 2     # Back-ups allowed per action. Each needs a fresh loss of the lane, so the car cannot rock back and forth forever.
 LOST_BACK_MEMORY = 4.0  # Seconds of forward steering kept for the retrace.
+RED_LOOK_SEC = 2.0      # wait_green: look for the red light this long, standing still, before backing up to see more.
+RED_BACK_SEC = 1.0      # wait_green: back up this long along the recent path. The light may be out of view because the car stopped too close.
+RED_BACK_TRIES = 2      # wait_green: back-ups allowed per action. After them it waits out max_sec, as before.
 STEP_MAX_SEC = 20       # If an until action sets no max_sec, warn and advance after this many seconds so a step cannot run forever.
 LIGHT_VIEW_EVERY = 3    # Not waiting for green: the traffic light is detected for the view only once every this many frames.
 PERSON_EVERY = 2        # The LEGO figure is looked for once every this many frames. Its stop position and delays are in course.py.
@@ -1394,7 +1397,8 @@ class CourseRunner:
             elapsed = now - self.step_start
             if step["sec"] is not None:
                 reason = "시간" if elapsed >= step["sec"] else None
-            elif step["max"] is not None and elapsed >= step["max"]:
+            elif step["max"] is not None and elapsed >= step["max"] and not (self.needs_light() and self.red_seen):
+                # wait_green: max_sec is for a red light that was never found. Once red is seen, the car waits for green, however long.
                 reason = "최대 시간"
             elif (step.get("deg") and self.turned is not None and elapsed >= step["min"]
                   and self.turned >= step["deg"] / 90 * TURN_YAW_PX):
@@ -1986,7 +1990,52 @@ class Driver:
         self.det, self.junction, self.light = None, False, None
         self.light_tick = 0         # Frames since start, for LIGHT_VIEW_EVERY.
         self.approach = (0.0, -1.0, -1)    # slow=: (slowdown amount 0 to 1, time the line was last seen, action index).
+        self.red = None             # wait_green looking for red: action index, back-ups used, when this look began, back-up in progress.
         self.hline_t = None         # While aligning: last time heading said the horizontal line in view is a real one.
+
+    def retrace_plan(self, seconds):
+        """Recent forward driving played backwards: [(time it ends, steering angle)], up to this many seconds of reversing."""
+        plan, t = [], 0.0
+        for dt, angle, speed in reversed(self.history):     # Newest first: undo the last stretch first.
+            t += dt * float(np.clip(speed / LOST_BACK_SPEED, 0.3, 2.0))
+            plan.append((t, angle))
+            if t >= seconds:
+                break
+        return plan or [(seconds, self.steering.angle)]
+
+    def end_red_back(self, red, now):
+        """That stretch of forward driving is behind the car now."""
+        used = sum(1 for t_end, _ in red["back"] if t_end <= now - red["back_t"])
+        del self.history[len(self.history) - used:]
+        red["back"], red["look"] = None, now
+
+    def search_red(self, now, hold):
+        """wait_green with no red light found yet: back up a little and look again. Returns the steering angle while backing, otherwise None."""
+        course, red = self.course, self.red
+        if not RED_BACK_ON or not course.needs_light() or course.red_seen:
+            if red is not None and red["back"] is not None:
+                self.end_red_back(red, now)
+            self.red = None
+            return None
+        if red is None or red["idx"] != course.idx:
+            red = self.red = {"idx": course.idx, "tries": 0, "look": now, "back": None, "back_t": now}
+        if hold or self.edge:       # The LEGO figure is in the way, or the mat ends: stand still and start the look over.
+            if red["back"] is not None:
+                self.end_red_back(red, now)
+            red["look"] = now
+            return None
+        if red["back"] is not None:
+            elapsed = now - red["back_t"]
+            if elapsed < RED_BACK_SEC:
+                return next((a for t_end, a in red["back"] if t_end > elapsed), red["back"][-1][1])
+            self.end_red_back(red, now)
+            return None
+        if red["tries"] < RED_BACK_TRIES and now - red["look"] >= RED_LOOK_SEC:
+            red["tries"] += 1
+            red["back"], red["back_t"] = self.retrace_plan(RED_BACK_SEC), now
+            print(f"\n[신호등] 빨간불을 못 찾음 → {RED_BACK_SEC:g}초 후진 ({red['tries']}/{RED_BACK_TRIES})")
+            return red["back"][0][1]
+        return None
 
     def back_up(self, now, lost_long, steer):
         """Lost lane for LOST_HOLD: reverse along the recent path (steering history played backwards) until the lane comes back.
@@ -2009,14 +2058,7 @@ class Driver:
         if (not lost_long or LOST_BACK_SEC <= 0 or course.stopped(now) or self.edge or self.lost_since == self.back_lost
                 or self.back_tries.get(course.idx, 0) >= LOST_BACK_TRIES):
             return steer
-        plan, t = [], 0.0
-        for dt, angle, speed in reversed(self.history):     # Newest first: undo the last stretch first.
-            t += dt * float(np.clip(speed / LOST_BACK_SPEED, 0.3, 2.0))
-            plan.append((t, angle))
-            if t >= LOST_BACK_SEC:
-                break
-        if not plan:
-            plan = [(LOST_BACK_SEC, self.steering.angle)]
+        plan = self.retrace_plan(LOST_BACK_SEC)
         self.back = {"start": now, "plan": plan, "len": min(plan[-1][0], LOST_BACK_SEC), "used_at": 0, "idx": course.idx}
         self.back_lost = self.lost_since
         self.back_tries[course.idx] = self.back_tries.get(course.idx, 0) + 1
@@ -2135,7 +2177,9 @@ class Driver:
         elif self.edge:
             banner = ("MAT EDGE - STOP", (40, 40, 220))
         elif step["do"] == "wait" and step["until"] == "green":
-            banner = ("RED LIGHT - WAIT", (40, 40, 220)) if course.red_seen else ("FINDING RED LIGHT", (120, 100, 80))
+            backing_red = self.red is not None and self.red["back"] is not None
+            banner = (("RED LIGHT - WAIT", (40, 40, 220)) if course.red_seen else
+                      (("NO RED - BACKING UP", (200, 120, 0)) if backing_red else ("FINDING RED LIGHT", (120, 100, 80))))
         elif step["do"] == "wait":
             banner = ({"clear": "WAIT: REMOVE OBSTACLE", "obstacle": "WAIT: OBSTACLE"}.get(step["until"], "WAIT"),
                       (160, 120, 40))
@@ -2174,7 +2218,7 @@ class Driver:
         idx, n = min(course.idx + 1, len(course.course)), len(course.course)
         text(f"STEP {idx}/{n}", 12, 24, 0.5, grey)
         el = now - course.step_start if course.step_start is not None else 0.0
-        lim = step and (step["sec"] or step["max"])
+        lim = None if course.needs_light() and course.red_seen else step and (step["sec"] or step["max"])
         t = f"{el:.1f}s" + (f" / {lim:g}s" if lim else "")
         text(t, W - 12 - cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0][0], 24, 0.45, grey)
         cv2.rectangle(p, (12, 31), (W - 12, 34), (70, 70, 70), -1)
@@ -2335,7 +2379,11 @@ class Driver:
         self.edge = detect.edge and det is None and not course.turning(now)
         steer = self.back_up(now, lost_long, steer)
         backing = self.back is not None
-        if course.stopped(now) or self.edge or hold:    # hold here: a stop action just ended with the figure still there.
+        red_angle = self.search_red(now, hold)
+        if red_angle is not None:
+            steer = steering.output(red_angle, now, 0.0)
+            speed = -LOST_BACK_SPEED
+        elif course.stopped(now) or self.edge or hold:    # hold here: a stop action just ended with the figure still there.
             speed = 0.0
         elif backing:
             speed = -LOST_BACK_SPEED

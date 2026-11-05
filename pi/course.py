@@ -2,8 +2,10 @@
 
 
 # --- 주행 ---
-# 전진 최소 속도는 0.3 (lane_follow.MOTOR_MIN). 그보다 낮은 값은 0.3으로 달린다.
-SPEED = 0.5                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
+SPEED = 0.4                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
+
+# --- 신호등 ---
+RED_BACK_ON = True          # wait_green에서 빨간불을 못 찾으면 후진해서 다시 찾을지 (True / False)
 
 # --- 레고 사람 (등록: Tune Person.command) ---
 PERSON_ON = True            # 사람을 보고 멈출지
@@ -140,7 +142,7 @@ def stop(sec, speed=0.0):
 
 
 def wait_green(max_sec=10, min_sec=0.0, speed=0.0):
-    """선 채로 신호등이 빨강에서 초록으로 바뀌면 출발한다."""
+    """선 채로 신호등이 빨강에서 초록으로 바뀌면 출발한다. 빨강을 봤으면 초록까지 무제한 기다린다. 빨강을 못 찾으면 2초마다 1초씩 최대 2번 후진해 다시 찾고, 그래도 없으면 max_sec초 뒤 출발한다."""
     return _step("wait", 0.0, None, "green", min_sec=min_sec, max_sec=max_sec, speed=speed)
 
 
@@ -271,7 +273,6 @@ def _expand(steps):
 
 
 def _flat(steps):
-    """묶음(list)을 펼치고, set_speed를 그 뒤 동작들의 속도에 반영한다."""
     out, cruise = [], None
     for s in _expand(steps):
         if s["do"] == "set_speed":
@@ -323,7 +324,7 @@ def describe(step):
 # curve(angle, sec)         지정 각도로 돌면서 차선 추종을 섞음
 # stop(sec)                 그 자리에서 sec초 정지
 # wait(until="clear")       선 채로 앞 장애물이 없어질 때까지 대기
-# wait_green(max_sec)       선 채로 초록불이 될 때까지 대기 (최대 max_sec초)
+# wait_green(max_sec)       선 채로 초록불이 될 때까지 대기 (빨간불을 봤으면 무제한. 못 찾으면 1초씩 최대 2번 후진해 찾고, 그래도 없으면 max_sec초 뒤 출발)
 # start_gate(hold_sec)      출발선 앞 장애물이 치워지고 hold_sec초 지나면 출발
 # finish()                  코스 끝, 정지
 # set_speed(v)              이 뒤 주행 속도를 v로 (턴, straight, 직접 준 speed= 제외). set_speed()는 기본값으로 되돌림
@@ -353,27 +354,17 @@ def describe(step):
 # style=     조향 성향 ("soft"/"normal"/"sharp")    steer=     최대 조향각
 # hold_sec=  조건이 이 시간 동안 유지돼야 끝
 # until=     "junction" "crosswalk" "lane" "gap" "end" "crossed" "green" "obstacle" "clear" "lost" "aligned"
+
 # --- 예시 코스 ---
 
-    # set_speed(0.4),        
-    # cross_gap(),
-    # set_speed(0.6),        
-    # to_crosswalk(0.8),
-    # stop(3),
-    # pass_crosswalk(),
-    # to_junction(),
-    # tr(),
-    # to_junction(),
-    # straight(3),
-    # tl(),
-    # follow(7),
-#------------------------------------------------
-
+    # start_gate(2),
     # to_junction(cm=8),
     # straight(2),
     # tr(),
-    # to_crosswalk(0.85),
-    # follow(1.75),
+    # follow(4),
+    # set_speed(0.35),
+    # to_crosswalk(0.8),
+    # follow(1.4),
     # wait_green(max_sec=20),
     # stop(1.5),
     # pass_crosswalk(),
@@ -385,15 +376,18 @@ def describe(step):
     # straight(2.5),
     # follow(4),
     # set_speed(0.4),
-    # to_junction(cm=8),
+    # to_junction(),
     # follow(2.5),    
     # straight(2),
     # tr(),
     # set_speed(0.6),
-    # to_junction(cm=8),
-    # straight(9),
+    # to_junction(),
+    # to_crosswalk(0.85),
+    # straight(4),
+    # finish(),
 
 
+# -------------
 
 
 
