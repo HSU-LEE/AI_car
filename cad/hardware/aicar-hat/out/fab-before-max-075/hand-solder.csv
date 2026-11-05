@@ -1,0 +1,9 @@
+Designator,Part,Footprint
+J1,Pi 2x20 socket,PinSocket_2x20_P2.54mm_Vertical
+J2,Pack 1 JST-XH,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical
+J3,Pack 2 JST-XH,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical
+SW1,Power switch,PinHeader_1x03_P2.54mm_Vertical
+J4,Motor wires,SolderWire-0.5sqmm_1x02_P4.6mm_D0.9mm_OD2.1mm
+J5,Servo,PinHeader_1x03_P2.54mm_Vertical
+J6,Sharp,PinHeader_1x03_P2.54mm_Vertical
+J7,VL53L0X,PinHeader_1x04_P2.54mm_Vertical

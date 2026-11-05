@@ -1,0 +1,5 @@
+J1 pin 1 at (32.5, 3.5), want (8.37, 4.77)
+J1 pin 2 at (29.96, 3.5), want (8.37, 2.23)
+J1 pin 3 at (32.5, 0.96), want (10.91, 4.77)
+J1 pin 40 at (29.96, -44.76), want (56.63, 2.23)
+saved /Users/hsu/AICAR/hardware/aicar-hat/aicar-hat.kicad_pcb

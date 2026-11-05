@@ -1,0 +1,20 @@
+Designator,Part,Pin 1 position
+C5,470uF 16V,right
+C6,470uF 16V,left
+C7,470uF 16V,left
+D1,SMAJ12A,top
+D2,SMAJ12A,top
+D3,SMAJ12A,top
+D4,SMBJ5.0A,top
+D5,Red PWR,left
+D6,Red STATUS,left
+Q1,AO4406A,bottom-right
+Q2,AO4406A,bottom-right
+Q3,AO4407A,bottom-right
+U1,LM5050MKX-1,top-left
+U2,LM5050MKX-1,top-left
+U3,TL431AIDBZR,top-left
+U4,SY8205FCC,top-left
+U5,SY8205FCC,top-left
+U6,TB6612FNG,bottom-right
+U7,ADS1115IDGSR,top-left

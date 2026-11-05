@@ -1,0 +1,16 @@
+08:08:06 PM: Debug: Adding duplicate image handler for 'PNG file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'JPEG file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'TIFF file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'GIF file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'PNM file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'PCX file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'IFF file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'Windows icon file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'Windows cursor file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'Windows animated cursor file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'TGA file'
+08:08:06 PM: Debug: Adding duplicate image handler for 'XPM file'
+link vias 0 gnd groups 4
+  cut off F.Cu 15.0 37.3 15.8 38.3
+  cut off F.Cu 36.3 31.2 38.5 32.5
+  cut off F.Cu 12.0 17.4 13.6 19.0

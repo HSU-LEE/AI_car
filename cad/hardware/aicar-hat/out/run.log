@@ -1,0 +1,87 @@
+saved /Users/hsu/AICAR/hardware/aicar-hat/aicar-hat.kicad_pcb
+03:50:42 PM: Debug: Adding duplicate image handler for 'PNG file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'JPEG file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'TIFF file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'GIF file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'PNM file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'PCX file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'IFF file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'Windows icon file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'Windows cursor file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'Windows animated cursor file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'TGA file'
+03:50:42 PM: Debug: Adding duplicate image handler for 'XPM file'
+GND removed from router: 1
+2026-11-04 15:50:53.398 INFO   [98F4DE\828BBA] Job '98F4DE\828BBA' finished with state: COMPLETED (elapsed: 9.12 seconds, finished at UTC: 2026-11-04T06:50:53.3
+2026-11-04 15:50:53.417 INFO   Saving output file '/Users/hsu/AICAR/hardware/aicar-hat/out/board.ses' (SES)...
+2026-11-04 15:50:53.419 INFO   Successfully saved output file '/Users/hsu/AICAR/hardware/aicar-hat/out/board.ses' (37748 bytes).
+03:50:55 PM: Debug: Adding duplicate image handler for 'PNG file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'JPEG file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'TIFF file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'GIF file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'PNM file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'PCX file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'IFF file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'Windows icon file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'Windows cursor file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'Windows animated cursor file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'TGA file'
+03:50:55 PM: Debug: Adding duplicate image handler for 'XPM file'
+stitching vias 62
+tracks 691
+03:50:56 PM: Debug: Adding duplicate image handler for 'PNG file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'JPEG file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'TIFF file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'GIF file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'PNM file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'PCX file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'IFF file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'Windows icon file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'Windows cursor file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'Windows animated cursor file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'TGA file'
+03:50:56 PM: Debug: Adding duplicate image handler for 'XPM file'
+  no room for C20
+  no room for C16
+  no room for C26
+  no room for R15
+  no room for R12
+  no room for R16
+  no room for C33
+  no room for R11
+  no room for D6
+  no room for J2
+  no room for U7
+silk refs placed 73 hidden 11
+island vias 2 pad stubs 0
+DRC 보고서를 out/drc.json에 저장함
+03:50:58 PM: Debug: Adding duplicate image handler for 'PNG file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'JPEG file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'TIFF file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'GIF file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'PNM file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'PCX file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'IFF file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'Windows icon file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'Windows cursor file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'Windows animated cursor file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'TGA file'
+03:50:58 PM: Debug: Adding duplicate image handler for 'XPM file'
+  no room for C20
+  no room for C16
+  no room for C26
+  no room for R15
+  no room for R12
+  no room for R16
+  no room for C33
+  no room for R11
+  no room for D6
+  no room for J2
+  no room for U7
+silk refs placed 73 hidden 11
+island vias 0 pad stubs 0
+DRC 보고서를 out/drc.json에 저장함
+violations 0 {}
+unconnected 0
+parity 0 {}
+unconnected nets []

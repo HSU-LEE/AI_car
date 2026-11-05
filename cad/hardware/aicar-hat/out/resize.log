@@ -1,0 +1,15 @@
+04:02:02 PM: Debug: Adding duplicate image handler for 'PNG file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'JPEG file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'TIFF file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'GIF file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'PNM file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'PCX file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'IFF file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'Windows icon file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'Windows cursor file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'Windows animated cursor file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'TGA file'
+04:02:02 PM: Debug: Adding duplicate image handler for 'XPM file'
+before {(0.8, 0.13): 84, (1.0, 0.15): 4, (0.7, 0.12): 1}
+after {(0.4, 0.08): 84, (0.5, 0.08): 4, (0.35, 0.08): 1}
+tracks 0 footprints 89

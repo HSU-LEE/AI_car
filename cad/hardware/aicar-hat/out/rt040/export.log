@@ -1,0 +1,11 @@
+SMT lines 30 SMT parts 72 hand 8
+total 832
+drwxr-xr-x@  9 hsu  staff     288 Nov  4 20:35 .
+drwxr-xr-x@ 33 hsu  staff    1056 Nov  4 20:35 ..
+-rw-r--r--@  1 hsu  staff  189669 Nov  4 20:35 aicar-hat-gerber.zip
+-rw-r--r--@  1 hsu  staff  210652 Nov  4 20:35 aicar-hat-schematic.pdf
+-rw-r--r--@  1 hsu  staff    1337 Nov  4 20:35 bom-jlcpcb.csv
+-rw-r--r--@  1 hsu  staff    2792 Nov  4 20:35 cpl-jlcpcb.csv
+drwxr-xr-x@ 16 hsu  staff     512 Nov  4 20:35 gerber
+-rw-r--r--@  1 hsu  staff     430 Nov  4 20:35 hand-solder.csv
+-rw-r--r--@  1 hsu  staff    5552 Nov  4 20:35 pos.csv

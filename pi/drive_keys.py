@@ -12,12 +12,10 @@ import argparse
 import select
 import sys
 import termios
-import time
 import tty
 
 from car import STEER_LIMIT, Car
 
-KICK_SPEED, KICK_TIME = 0.6, 0.25   # Same launch kick as lane_follow.py. Low speeds do not turn the motor.
 
 
 def main():
@@ -38,7 +36,6 @@ def main():
             if not select.select([sys.stdin], [], [], 0.1)[0]:
                 continue
             key = sys.stdin.read(1)
-            prev = speed
             if key == "w":
                 speed = min(args.max_speed, round(speed + 0.1, 1))
             elif key == "s":
@@ -54,9 +51,6 @@ def main():
             elif key == "q":
                 break
             car.steer(angle)
-            if prev == 0 and speed != 0:
-                car.drive(KICK_SPEED if speed > 0 else -KICK_SPEED)
-                time.sleep(KICK_TIME)
             car.drive(speed)
     except KeyboardInterrupt:
         pass
