@@ -13,6 +13,10 @@ Each frame then goes through:
   5. Outline compared with the same view. A box of the figure's color does not have a head, arms, and legs.
 Only a blob that passes all of these counts. Anything else may be a decoy, so a miss is preferred to a false match.
 
+While driving, only how close it is decides whether these steps apply. Feet above the near line (PERSON_AT) are too far to judge, so that figure is ignored until the car
+has come closer: at that size a real figure passes in one frame out of ten, and it stopped and started the car over and over. Feet below the line must never be missed, so only
+its colors are compared (NEAR_COLOR), and only something far bigger than a figure is left out (NEAR_BIG). Outline, brightness, and place in the frame change or get cut off up close, and none of them can reject it there.
+
 Saved to person.json on the Pi. `aicar push` does not overwrite it.
 """
 import json
@@ -36,6 +40,8 @@ TRACK_ONLY = 0.1        # Colorless pixels count only when real colors cover les
 
 ALPHA = 2.0             # A color counts as the figure when its share of the figure is at least this times its share of the background.
 FIG_MIN = 0.01          # A color must cover at least this share of the figure. Smaller is noise from the cutout.
+NEAR_COLOR = 0.7        # Minimum color match past the near line. Real figure there, under other light than at registration, even lying down: 0.78-0.80.
+NEAR_BIG = 2.5          # Past the near line, a blob wider or taller than this times the registered figure at that place on the floor is not a figure, however close it is. Real figure: at most 1.5. A yellow block joined to the wooden edge beside the track, which also matches at 0.75: 3 and up.
 MATCH = 0.7             # Minimum color match with a registered view (0 to 1), until registration sets it (auto_tune).
 SHAPE_MATCH = 0.82      # Minimum outline overlap with the same view (0 to 1), until registration sets it (auto_tune). On the real figure: itself 0.88-1.0, an oval 0.78, a box 0.63.
 LAB_L = 18              # Largest difference from the view's mean lightness (Lab L, 0 to 100). Real figure at +-15% brightness: about 10.
@@ -142,6 +148,7 @@ class PersonDetector:
         self.table = None               # Per color bin: whether it counts as the figure.
         self.sigs = []                  # Per view: the colors that count, for comparing with a blob.
         self.band_sigs = []             # Per view: the same, per slice from top to bottom.
+        self.upper_sigs = []            # Per view: the colors without the legs, for a figure so close that the frame cuts them off.
         self.found = None               # Last match: {"x", "y", "w", "h", "feet", "score"} in full-frame px.
         self.near = []                  # Blobs of plausible size that failed: [(x, y, w, h, color match, outline match)]. Shown while tuning.
         self.fg = None                  # Last color mask at half size. Shown while tuning.
@@ -321,7 +328,7 @@ class PersonDetector:
     def fit(self):
         """Rebuild the color table and the per-view colors from the views and the background."""
         if not self.views:
-            self.table, self.sigs, self.band_sigs = None, [], []
+            self.table, self.sigs, self.band_sigs, self.upper_sigs = None, [], [], []
             return
         hists = [np.array(v["hist"]) for v in self.views]
         fig = smooth(np.max(hists, axis=0))     # Largest over views, so a color seen from only one side still counts.
@@ -331,6 +338,7 @@ class PersonDetector:
             self.table[HUE_BINS:] = False
         self.sigs = [smooth(normalized(h * self.table)) for h in hists]
         self.band_sigs = [np.array(v["bands"]) * self.table for v in self.views]
+        self.upper_sigs = [smooth(normalized(b[:BANDS - 1].sum(axis=0))) for b in self.band_sigs]
 
     # --- Detection ---
     @staticmethod
@@ -411,8 +419,44 @@ class PersonDetector:
                 best = (margin, color, shape, feet)
         return best[1:]
 
-    def __call__(self, frame, x_range=(0.0, 1.0)):
-        """Best match inside x_range (fractions of the frame width, by the blob's center), or None."""
+    def _not_too_big(self, view, feet, w, h):
+        """Whether a blob (half-size px) could be this view at this place on the floor. The expected size grows as it comes closer, so closeness alone never fails this."""
+        size = (feet - self.horizon) / max(view["feet"] - self.horizon, 1)
+        return w * 2 <= NEAR_BIG * view["w"] * size and h * 2 <= NEAR_BIG * view["h"] * size
+
+    def _score_near(self, small, q, group, near_y):
+        """(color match, outline match, real feet y) of a blob standing past near_y, or None if it is farther or is not on the floor.
+
+        The top of a figure stays below the horizon at any distance, because the camera is higher than the figure. What reaches above it is the room.
+        """
+        x, y, w, h, labels, area, ids = group
+        if h < MIN_H or area < MIN_AREA or area < MIN_FILL * w * h or y * 2 <= self.horizon:
+            return None
+        close = [(i, (y + h * (1 + v["below"])) * 2) for i, v in enumerate(self.views)]
+        close = [(i, feet) for i, feet in close if feet >= near_y and self._not_too_big(self.views[i], feet, w, h)]
+        if not close:
+            return None
+        inside, qcrop = np.isin(labels[y:y + h, x:x + w], ids), q[y:y + h, x:x + w]
+        pixels = qcrop[inside & self.table[qcrop]]
+        if not len(pixels):
+            return None
+        sig = smooth(normalized(np.bincount(pixels, minlength=N_BINS).astype(np.float64)))
+        cut = y + h >= small.shape[0]       # The frame ends at its legs.
+        outline = self._outline(inside)
+        best = None
+        for i, feet in close:
+            color = float(np.minimum(sig, self.sigs[i]).sum())
+            if cut:
+                color = max(color, float(np.minimum(sig, self.upper_sigs[i]).sum()))
+            if best is None or color > best[0]:
+                best = (color, self._overlap(np.array(self.views[i]["outline"], dtype=bool), outline), feet)
+        return best
+
+    def __call__(self, frame, x_range=(0.0, 1.0), near_y=None):
+        """Best match inside x_range (fractions of the frame width, by the blob's center), or None.
+
+        near_y: feet height in px where the figure counts as close. Only blobs past it count, and only their colors are judged. None judges every blob by every check.
+        """
         self.found, self.near = None, []
         if self.table is None:
             return None
@@ -424,11 +468,11 @@ class PersonDetector:
             x, y, w, h = group[:4]
             if not x_range[0] <= (x + w / 2) / small.shape[1] <= x_range[1]:
                 continue
-            result = self._score(small, q, group)
+            result = self._score(small, q, group) if near_y is None else self._score_near(small, q, group, near_y)
             if result is None:
                 continue
             color, shape, feet = result
-            margin = min(color / self.match, shape / self.shape)
+            margin = min(color / self.match, shape / self.shape) if near_y is None else color / NEAR_COLOR
             if margin < 1:
                 self.near.append((x * 2, y * 2, w * 2, h * 2, color, shape))
             elif margin > best:
@@ -505,7 +549,8 @@ class AutoViews:
 class PersonWatch:
     """Whether the car must stand still for the figure.
 
-    Any sighting stops the car, wherever the figure is, for check_sec. A few sightings in that time, in a row or not, mean it is there. One alone was a misread, and the car goes on.
+    Only a figure with its feet past the near line (at) counts. Farther away it is not looked at, and the car drives on towards it.
+    Any sighting stops the car, wherever it is across the frame, for check_sec. A few sightings in that time, in a row or not, mean it is there. One alone was a misread, and the car goes on.
     Once it is there the car waits until it has not been seen at all for resume_delay: a sighting that flickers keeps it waiting.
 
     hold is the answer. A figure that outlasts max_wait is ignored until it has gone away, so the car does not stop for it again the moment it starts.
@@ -514,7 +559,7 @@ class PersonWatch:
     def __init__(self, detector, frame_h, at=None, x_range=(0.0, 1.0), resume_delay=1.0, min_stop=0.0, max_wait=None, every=1,
                  check_sec=CHECK_SEC, confirm=CONFIRM_HITS):
         self.detector, self.frame_h = detector, frame_h
-        self.at = at if at is not None else detector.stop_at(frame_h)   # Only drawn on the view: the car no longer waits for the feet to reach a height.
+        self.at = at if at is not None else detector.stop_at(frame_h)   # Near line: feet height as a fraction of the frame.
         self.x_range = x_range
         self.resume_delay, self.min_stop, self.max_wait = resume_delay, min_stop, max_wait
         self.check_sec, self.confirm = check_sec, confirm
@@ -539,7 +584,7 @@ class PersonWatch:
         """Look at this frame (every `every` frames) and return whether to stand still."""
         hit = False
         if self.tick % self.every == 0:
-            self.box = self.detector(frame, self.x_range)
+            self.box = self.detector(frame, self.x_range, self.at * self.frame_h if self.at is not None else None)
             hit = bool(self.box)
             self.misses = 0 if hit else self.misses + 1
             self.seen = hit or (self.seen and self.misses < HITS)

@@ -142,7 +142,7 @@ cmd_config() {
     run "cd ~/$REMOTE && echo '[calib.json] 서보 보정 (motor_min 값은 쓰지 않음. 최소 속도는 lane_follow.py의 MOTOR_MIN)'; cat calib.json 2>/dev/null || echo '  (없음)'; echo
          echo '[vision.json] 흰 선/카메라'; cat vision.json 2>/dev/null || echo '  (없음 - 자동)'; echo"
     bold "[lane_follow.py 주요 설정] (맥 pi/lane_follow.py에서 수정 후 aicar push)"
-    grep -E '^(BASE_SPEED|MIN_SPEED|KICK_SPEED|KP|KH|KD|SMOOTH|AUTO_STEER_MAX|STEER_RATE|ROI_TOP|LINE_MODE|LENS_POSITION|JUNCTION_Y|EDGE_STOP_Y|AUTO_TRIM) ' \
+    grep -E '^(BASE_SPEED|MIN_SPEED|KP|KH|KD|SMOOTH|AUTO_STEER_MAX|STEER_RATE|ROI_TOP|LINE_MODE|LENS_POSITION|JUNCTION_Y|EDGE_STOP_Y|AUTO_TRIM) ' \
         "$CODE/lane_follow.py" | sed 's/^/  /'
     bold "[car.py 조향]"
     grep -E '^(STEER_LIMIT|STEER_SCALE|STEER_INVERT|SERVO_PIN|MOTOR_PWM)' "$CODE/car.py" | sed 's/^/  /'

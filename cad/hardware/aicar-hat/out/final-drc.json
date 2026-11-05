@@ -1,0 +1,2033 @@
+{
+    "$schema": "https://schemas.kicad.org/drc.v1.json",
+    "coordinate_units": "mm",
+    "date": "2026-11-04T20:59:49",
+    "ignored_checks": [
+        {
+            "description": "Footprint has no courtyard defined",
+            "key": "missing_courtyard"
+        },
+        {
+            "description": "Track endpoint not centered on via",
+            "key": "track_not_centered_on_via"
+        },
+        {
+            "description": "Tuning profile track geometries",
+            "key": "tuning_profile_track_geometries"
+        },
+        {
+            "description": "Footprint doesn't match symbol's footprint filters",
+            "key": "footprint_filters_mismatch"
+        },
+        {
+            "description": "Footprint component type doesn't match footprint pads",
+            "key": "footprint_type_mismatch"
+        }
+    ],
+    "included_severities": [
+        "error",
+        "warning",
+        "exclusion"
+    ],
+    "kicad_version": "10.0.7",
+    "schematic_parity": [
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C1",
+                    "pos": {
+                        "x": 135.5,
+                        "y": 129.0
+                    },
+                    "uuid": "4ea6e5a1-299d-4532-8e5e-d71812076de3"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C2",
+                    "pos": {
+                        "x": 135.5,
+                        "y": 132.0
+                    },
+                    "uuid": "ab380c0c-ae56-4df1-a289-18bbce1bb12f"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C3",
+                    "pos": {
+                        "x": 144.5,
+                        "y": 110.0
+                    },
+                    "uuid": "dfd260e6-cc34-41f3-b129-cbfd51cee2ad"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C4",
+                    "pos": {
+                        "x": 141.5,
+                        "y": 123.0
+                    },
+                    "uuid": "8ddf0b9b-7d2e-470a-9732-2f7746f2a00f"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "CP_Elec_8x10이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:CP_Elec_8x10)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C5",
+                    "pos": {
+                        "x": 120.0,
+                        "y": 123.0
+                    },
+                    "uuid": "4785c53f-6c64-48fa-a978-6fea939cc55c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "CP_Elec_8x10이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:CP_Elec_8x10)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C6",
+                    "pos": {
+                        "x": 137.5,
+                        "y": 144.0
+                    },
+                    "uuid": "3cfa4bdc-f991-4abf-931a-285d3b5aab28"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "CP_Elec_8x10이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:CP_Elec_8x10)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C7",
+                    "pos": {
+                        "x": 120.0,
+                        "y": 144.0
+                    },
+                    "uuid": "5a75acc5-c5c4-495c-8427-f778539388ce"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C10",
+                    "pos": {
+                        "x": 125.0,
+                        "y": 109.0
+                    },
+                    "uuid": "b945a1a0-7731-4263-bedc-7fc921111141"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C11",
+                    "pos": {
+                        "x": 128.5,
+                        "y": 109.0
+                    },
+                    "uuid": "61377aab-d237-42b0-90a3-c25a6db2b698"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C12",
+                    "pos": {
+                        "x": 104.0,
+                        "y": 117.0
+                    },
+                    "uuid": "3ecfcd93-d996-43f6-925f-22df06b35258"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C13",
+                    "pos": {
+                        "x": 108.0,
+                        "y": 117.0
+                    },
+                    "uuid": "2d257f7b-3055-4c25-b263-62d601d813df"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C14",
+                    "pos": {
+                        "x": 112.0,
+                        "y": 117.0
+                    },
+                    "uuid": "65b9789d-1e63-4b33-bfc0-6f2a59436655"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C15",
+                    "pos": {
+                        "x": 115.0,
+                        "y": 108.5
+                    },
+                    "uuid": "65f3ea9e-9278-4b66-ae46-6abb53ba2401"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C16",
+                    "pos": {
+                        "x": 125.5,
+                        "y": 113.0
+                    },
+                    "uuid": "53a0abc2-92b5-4532-9a8d-b426d11fb91a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C17",
+                    "pos": {
+                        "x": 118.5,
+                        "y": 115.5
+                    },
+                    "uuid": "dc3598bc-a228-4bec-adde-b5400db27049"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C18",
+                    "pos": {
+                        "x": 125.5,
+                        "y": 116.0
+                    },
+                    "uuid": "681b2cca-7da0-440b-b8f8-a6409562113f"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C20",
+                    "pos": {
+                        "x": 125.0,
+                        "y": 130.475
+                    },
+                    "uuid": "173e4ab0-4a1c-460a-b595-5ae1f95bb2f5"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C21",
+                    "pos": {
+                        "x": 128.0,
+                        "y": 130.475
+                    },
+                    "uuid": "15aef4b4-d035-4118-970c-4ad54093dfc6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C22",
+                    "pos": {
+                        "x": 104.0,
+                        "y": 139.0
+                    },
+                    "uuid": "3b04c143-9a8b-41ce-b7f7-41471d0f78f5"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C23",
+                    "pos": {
+                        "x": 108.0,
+                        "y": 139.0
+                    },
+                    "uuid": "c600e997-5ce0-47c2-9e1b-22a319f1627a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C24",
+                    "pos": {
+                        "x": 112.0,
+                        "y": 139.0
+                    },
+                    "uuid": "f2309d7c-1504-44ce-b2fe-242a3791ca61"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C25",
+                    "pos": {
+                        "x": 113.5,
+                        "y": 127.0
+                    },
+                    "uuid": "2e0dc819-27f0-4f43-815f-11ddcf0ad8c2"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C26",
+                    "pos": {
+                        "x": 125.0,
+                        "y": 134.5
+                    },
+                    "uuid": "5e530414-9c78-438e-8df9-c2e762accfb9"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C27",
+                    "pos": {
+                        "x": 118.0,
+                        "y": 137.5
+                    },
+                    "uuid": "fbff9224-34b0-44c2-bb3b-8ece042a374d"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C28",
+                    "pos": {
+                        "x": 125.0,
+                        "y": 137.5
+                    },
+                    "uuid": "293cf6e7-ff9c-4a2d-a06c-789bdd2a3208"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C30",
+                    "pos": {
+                        "x": 155.5,
+                        "y": 135.0
+                    },
+                    "uuid": "475c6670-2bd4-451a-9885-8fb65d4781c5"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C31",
+                    "pos": {
+                        "x": 151.5,
+                        "y": 140.5
+                    },
+                    "uuid": "1695f275-72d5-477b-b55e-4f780a9f923f"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C32",
+                    "pos": {
+                        "x": 151.5,
+                        "y": 144.0
+                    },
+                    "uuid": "67b619bb-050f-4d7f-a01e-b56f46c803d7"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C33",
+                    "pos": {
+                        "x": 137.5,
+                        "y": 124.5
+                    },
+                    "uuid": "ed898c26-b841-40b8-b95e-abd529dff3db"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C34",
+                    "pos": {
+                        "x": 107.0,
+                        "y": 147.0
+                    },
+                    "uuid": "6ab495ea-1801-42ab-bddb-2aa46406433e"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "C_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Capacitor_SMD:C_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 C35",
+                    "pos": {
+                        "x": 129.5,
+                        "y": 142.0
+                    },
+                    "uuid": "e64e1f7d-c86e-4365-8791-b36aeec9cb92"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "D_SMA이(가) 심볼이 지정한 풋프린트(Diode_SMD:D_SMA)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 D1",
+                    "pos": {
+                        "x": 156.0,
+                        "y": 111.0
+                    },
+                    "uuid": "e987feb1-707b-44fb-b734-015f4c03625c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "D_SMA이(가) 심볼이 지정한 풋프린트(Diode_SMD:D_SMA)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 D2",
+                    "pos": {
+                        "x": 156.0,
+                        "y": 124.0
+                    },
+                    "uuid": "3f2973e1-1c47-46d6-b8f5-dc17a7f2834e"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "D_SMA이(가) 심볼이 지정한 풋프린트(Diode_SMD:D_SMA)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 D3",
+                    "pos": {
+                        "x": 128.0,
+                        "y": 123.0
+                    },
+                    "uuid": "38aba5c8-5b93-45a4-9fc9-49df4e9f4750"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "D_SMB이(가) 심볼이 지정한 풋프린트(Diode_SMD:D_SMB)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 D4",
+                    "pos": {
+                        "x": 105.0,
+                        "y": 124.5
+                    },
+                    "uuid": "0450ab1f-a57c-4b3e-913f-bdedf61a799c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "LED_0603_1608Metric이(가) 심볼이 지정한 풋프린트(LED_SMD:LED_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 D5",
+                    "pos": {
+                        "x": 139.5,
+                        "y": 135.0
+                    },
+                    "uuid": "c8ab8230-20fe-45aa-bc2c-b19ba9de2523"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "LED_0603_1608Metric이(가) 심볼이 지정한 풋프린트(LED_SMD:LED_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 D6",
+                    "pos": {
+                        "x": 139.5,
+                        "y": 137.5
+                    },
+                    "uuid": "0904532f-add2-4503-8471-e9dd804e4ba3"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "Fuse_1206_3216Metric이(가) 심볼이 지정한 풋프린트(Fuse:Fuse_1206_3216Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 F1",
+                    "pos": {
+                        "x": 133.0,
+                        "y": 111.0
+                    },
+                    "uuid": "7e9797f7-15bb-4625-a596-126b61e590cc"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "PinSocket_2x20_P2.54mm_Vertical이(가) 심볼이 지정한 풋프린트(Connector_PinSocket_2.54mm:PinSocket_2x20_P2.54mm_Vertical)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J1",
+                    "pos": {
+                        "x": 108.37,
+                        "y": 104.77
+                    },
+                    "uuid": "081a4518-b2d6-4847-b92a-33e17a02ce6e"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J1",
+                    "pos": {
+                        "x": 108.37,
+                        "y": 104.77
+                    },
+                    "uuid": "081a4518-b2d6-4847-b92a-33e17a02ce6e"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad7))가 없습니다",
+            "items": [
+                {
+                    "description": "7의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 115.99,
+                        "y": 104.77
+                    },
+                    "uuid": "1c44d7fa-e2ca-4044-89b8-d3f5ea2d2bde"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad8))가 없습니다",
+            "items": [
+                {
+                    "description": "8의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 115.99,
+                        "y": 102.23
+                    },
+                    "uuid": "0fd828aa-063b-4779-a300-2d564fbf9947"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad10))가 없습니다",
+            "items": [
+                {
+                    "description": "10의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 118.53,
+                        "y": 102.23
+                    },
+                    "uuid": "0f04473c-a144-4f87-be12-a1a42291f0e5"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad13))가 없습니다",
+            "items": [
+                {
+                    "description": "13의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 123.61,
+                        "y": 104.77
+                    },
+                    "uuid": "960a3bbd-404e-4eb6-bfd0-625fa0d245d6"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad15))가 없습니다",
+            "items": [
+                {
+                    "description": "15의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 126.15,
+                        "y": 104.77
+                    },
+                    "uuid": "a9344ee5-902f-4c8b-9b9a-618ba0825cab"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad19))가 없습니다",
+            "items": [
+                {
+                    "description": "19의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 131.23,
+                        "y": 104.77
+                    },
+                    "uuid": "bb26cddc-b85b-4440-9a54-d9ad33572d53"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad21))가 없습니다",
+            "items": [
+                {
+                    "description": "21의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 133.77,
+                        "y": 104.77
+                    },
+                    "uuid": "657a42e9-cb6e-4c5b-b0c5-84700a99d3e6"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad22))가 없습니다",
+            "items": [
+                {
+                    "description": "22의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 133.77,
+                        "y": 102.23
+                    },
+                    "uuid": "07da5545-7861-4627-9029-a447876137ee"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad23))가 없습니다",
+            "items": [
+                {
+                    "description": "23의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 136.31,
+                        "y": 104.77
+                    },
+                    "uuid": "1ddbf8f4-3cfa-492a-8747-a8f74d2b9d4d"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad24))가 없습니다",
+            "items": [
+                {
+                    "description": "24의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 136.31,
+                        "y": 102.23
+                    },
+                    "uuid": "1da92330-ea04-400d-a13a-302508559be4"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad26))가 없습니다",
+            "items": [
+                {
+                    "description": "26의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 138.85,
+                        "y": 102.23
+                    },
+                    "uuid": "4d5ed572-f228-4abe-b562-2a5781ea069d"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad27))가 없습니다",
+            "items": [
+                {
+                    "description": "27의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 141.39,
+                        "y": 104.77
+                    },
+                    "uuid": "f836ec84-c29e-490e-a1b3-d143c45a97f4"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad28))가 없습니다",
+            "items": [
+                {
+                    "description": "28의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 141.39,
+                        "y": 102.23
+                    },
+                    "uuid": "36991a15-87d5-484b-8f42-7ad86e1b484b"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad29))가 없습니다",
+            "items": [
+                {
+                    "description": "29의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 143.93,
+                        "y": 104.77
+                    },
+                    "uuid": "54e73de2-d5d0-43ba-bd21-323e4f60c654"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad31))가 없습니다",
+            "items": [
+                {
+                    "description": "31의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 146.47,
+                        "y": 104.77
+                    },
+                    "uuid": "851f64e0-c28a-46a0-82fc-7ac7c5144c5f"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad32))가 없습니다",
+            "items": [
+                {
+                    "description": "32의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 146.47,
+                        "y": 102.23
+                    },
+                    "uuid": "9f048750-d4ad-454e-9047-230df78daa04"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad35))가 없습니다",
+            "items": [
+                {
+                    "description": "35의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 151.55,
+                        "y": 104.77
+                    },
+                    "uuid": "04ca92f9-cb3d-4ea2-96f9-3b7026d842af"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad36))가 없습니다",
+            "items": [
+                {
+                    "description": "36의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 151.55,
+                        "y": 102.23
+                    },
+                    "uuid": "2713d117-f707-465d-9672-f5002cc1f58f"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad37))가 없습니다",
+            "items": [
+                {
+                    "description": "37의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 154.09,
+                        "y": 104.77
+                    },
+                    "uuid": "f23c1bdb-d069-4558-a38d-09e8e02be236"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(J1-Pad38))가 없습니다",
+            "items": [
+                {
+                    "description": "38의 PTH 패드[<no net>]J1",
+                    "pos": {
+                        "x": 154.09,
+                        "y": 102.23
+                    },
+                    "uuid": "0fbf5d24-26de-4c3c-a7b4-9317fa31c80b"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical이(가) 심볼이 지정한 풋프린트(Connector_JST:JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J2",
+                    "pos": {
+                        "x": 162.1,
+                        "y": 113.5
+                    },
+                    "uuid": "eb5a814d-d516-47d8-8daa-63bab67eae63"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J2",
+                    "pos": {
+                        "x": 162.1,
+                        "y": 113.5
+                    },
+                    "uuid": "eb5a814d-d516-47d8-8daa-63bab67eae63"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical이(가) 심볼이 지정한 풋프린트(Connector_JST:JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J3",
+                    "pos": {
+                        "x": 162.1,
+                        "y": 123.5
+                    },
+                    "uuid": "8b329cf1-9a79-4937-bfd7-fcc94b6751e0"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J3",
+                    "pos": {
+                        "x": 162.1,
+                        "y": 123.5
+                    },
+                    "uuid": "8b329cf1-9a79-4937-bfd7-fcc94b6751e0"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "SolderWire-0.5sqmm_1x02_P4.6mm_D0.9mm_OD2.1mm이(가) 심볼이 지정한 풋프린트(Connector_Wire:SolderWire-0.5sqmm_1x02_P4.6mm_D0.9mm_OD2.1mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J4",
+                    "pos": {
+                        "x": 156.5,
+                        "y": 152.2
+                    },
+                    "uuid": "cd046126-8035-43fa-9b74-d41e518ce903"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트 속성이 심볼과 일치하지 않음: 'BOM에서 제외' 설정이 다릅니다",
+            "items": [
+                {
+                    "description": "풋프린트 J4",
+                    "pos": {
+                        "x": 156.5,
+                        "y": 152.2
+                    },
+                    "uuid": "cd046126-8035-43fa-9b74-d41e518ce903"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J4",
+                    "pos": {
+                        "x": 156.5,
+                        "y": 152.2
+                    },
+                    "uuid": "cd046126-8035-43fa-9b74-d41e518ce903"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "PinHeader_1x03_P2.54mm_Vertical이(가) 심볼이 지정한 풋프린트(Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J5",
+                    "pos": {
+                        "x": 108.5,
+                        "y": 152.2
+                    },
+                    "uuid": "95ae8ef3-c86a-40d1-86e0-8735488a507b"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J5",
+                    "pos": {
+                        "x": 108.5,
+                        "y": 152.2
+                    },
+                    "uuid": "95ae8ef3-c86a-40d1-86e0-8735488a507b"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "PinHeader_1x03_P2.54mm_Vertical이(가) 심볼이 지정한 풋프린트(Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J6",
+                    "pos": {
+                        "x": 118.5,
+                        "y": 152.2
+                    },
+                    "uuid": "faf44cbb-7f33-4bfd-bdb6-8f787b8a603c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J6",
+                    "pos": {
+                        "x": 118.5,
+                        "y": 152.2
+                    },
+                    "uuid": "faf44cbb-7f33-4bfd-bdb6-8f787b8a603c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "PinHeader_1x04_P2.54mm_Vertical이(가) 심볼이 지정한 풋프린트(Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J7",
+                    "pos": {
+                        "x": 129.5,
+                        "y": 152.2
+                    },
+                    "uuid": "88617ae0-1f3a-49f8-8d22-541c912e305c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 J7",
+                    "pos": {
+                        "x": 129.5,
+                        "y": 152.2
+                    },
+                    "uuid": "88617ae0-1f3a-49f8-8d22-541c912e305c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "L_APV_APH0650이(가) 심볼이 지정한 풋프린트(Inductor_SMD:L_APV_APH0650)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 L1",
+                    "pos": {
+                        "x": 109.5,
+                        "y": 111.0
+                    },
+                    "uuid": "483f7eef-1e60-41fd-af84-8fb314077509"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "L_APV_APH0650이(가) 심볼이 지정한 풋프린트(Inductor_SMD:L_APV_APH0650)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 L2",
+                    "pos": {
+                        "x": 109.5,
+                        "y": 132.5
+                    },
+                    "uuid": "162ee2f2-f42c-42fa-aa92-867b40e9e211"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "SOIC-8_3.9x4.9mm_P1.27mm이(가) 심볼이 지정한 풋프린트(Package_SO:SOIC-8_3.9x4.9mm_P1.27mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 Q1",
+                    "pos": {
+                        "x": 149.5,
+                        "y": 111.0
+                    },
+                    "uuid": "9589f3de-561f-40f1-a098-df865b33cf4e"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "SOIC-8_3.9x4.9mm_P1.27mm이(가) 심볼이 지정한 풋프린트(Package_SO:SOIC-8_3.9x4.9mm_P1.27mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 Q2",
+                    "pos": {
+                        "x": 149.5,
+                        "y": 124.0
+                    },
+                    "uuid": "ece2377d-1906-44df-8242-d46719b36514"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "SOIC-8_3.9x4.9mm_P1.27mm이(가) 심볼이 지정한 풋프린트(Package_SO:SOIC-8_3.9x4.9mm_P1.27mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 Q3",
+                    "pos": {
+                        "x": 139.5,
+                        "y": 111.0
+                    },
+                    "uuid": "9db0731a-dba0-4509-83dc-8064fc19898e"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R1",
+                    "pos": {
+                        "x": 155.0,
+                        "y": 118.0
+                    },
+                    "uuid": "dc3257b3-2187-4d64-a9e6-acdf558ac15e"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R2",
+                    "pos": {
+                        "x": 155.5,
+                        "y": 129.5
+                    },
+                    "uuid": "44b07fc1-672a-461e-8726-07e2500a22fc"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R3",
+                    "pos": {
+                        "x": 131.5,
+                        "y": 129.0
+                    },
+                    "uuid": "721ceccb-93ea-4bb8-8cff-72a3517e5b1f"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R4",
+                    "pos": {
+                        "x": 131.5,
+                        "y": 132.0
+                    },
+                    "uuid": "20095b66-d096-411c-a5ad-02e3be5ca79a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R5",
+                    "pos": {
+                        "x": 146.5,
+                        "y": 118.5
+                    },
+                    "uuid": "628f5f4f-8af1-4144-a3b6-3459c56e1fdd"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R6",
+                    "pos": {
+                        "x": 144.5,
+                        "y": 114.5
+                    },
+                    "uuid": "b5c75f16-2b8d-4ffb-96b4-d9b1f8c033e3"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R7",
+                    "pos": {
+                        "x": 144.5,
+                        "y": 123.5
+                    },
+                    "uuid": "e572658d-bac3-4de0-b3e4-622fe56c48f6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R8",
+                    "pos": {
+                        "x": 138.0,
+                        "y": 119.5
+                    },
+                    "uuid": "bc9bccd4-b6f8-4e45-8b1e-5cceab61ea20"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R9",
+                    "pos": {
+                        "x": 138.0,
+                        "y": 116.0
+                    },
+                    "uuid": "6d3017f5-98f0-4b64-b939-94d584d112a6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R10",
+                    "pos": {
+                        "x": 129.0,
+                        "y": 114.0
+                    },
+                    "uuid": "7b69642c-0ce0-4e66-b52b-27ea899e6a65"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R11",
+                    "pos": {
+                        "x": 115.0,
+                        "y": 116.5
+                    },
+                    "uuid": "f1e98228-9127-46be-9c21-530aceba6fad"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R12",
+                    "pos": {
+                        "x": 120.5,
+                        "y": 117.5
+                    },
+                    "uuid": "8e91cf55-f091-40de-aafa-5bdcec4d1c82"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R13",
+                    "pos": {
+                        "x": 129.0,
+                        "y": 116.5
+                    },
+                    "uuid": "7688a92f-0ca8-45f9-b4b5-6edd19315076"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R14",
+                    "pos": {
+                        "x": 128.5,
+                        "y": 135.5
+                    },
+                    "uuid": "81a64476-d81e-4715-a2de-d37f0491d6d2"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R15",
+                    "pos": {
+                        "x": 115.5,
+                        "y": 137.5
+                    },
+                    "uuid": "6e839433-81fe-489f-86bb-f3cb4053cbb6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R16",
+                    "pos": {
+                        "x": 121.5,
+                        "y": 137.5
+                    },
+                    "uuid": "b48a64b3-4e68-4ffa-9188-c97bf1ed2432"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R17",
+                    "pos": {
+                        "x": 128.5,
+                        "y": 138.0
+                    },
+                    "uuid": "12c559d9-72b9-43e7-9702-8154e1dc1d80"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R20",
+                    "pos": {
+                        "x": 112.0,
+                        "y": 147.0
+                    },
+                    "uuid": "0d4cb575-280f-4a52-bbf3-3aeba031c1e4"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R21",
+                    "pos": {
+                        "x": 128.0,
+                        "y": 144.5
+                    },
+                    "uuid": "0317e0de-aa59-4ce2-b478-9af5a52ed4b7"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R22",
+                    "pos": {
+                        "x": 129.5,
+                        "y": 147.0
+                    },
+                    "uuid": "5c5cf14f-c459-4f16-869b-35a8293d8111"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R23",
+                    "pos": {
+                        "x": 135.5,
+                        "y": 135.0
+                    },
+                    "uuid": "a6fd335f-e356-420d-b3fb-adc64fb25bb4"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "R_0603_1608Metric이(가) 심볼이 지정한 풋프린트(Resistor_SMD:R_0603_1608Metric)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 R24",
+                    "pos": {
+                        "x": 135.5,
+                        "y": 137.5
+                    },
+                    "uuid": "b219f0ea-0bfd-4d73-939b-a31bf843fbc7"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "PinHeader_1x03_P2.54mm_Vertical이(가) 심볼이 지정한 풋프린트(Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 SW1",
+                    "pos": {
+                        "x": 133.5,
+                        "y": 116.0
+                    },
+                    "uuid": "9c916c1c-ecd5-40be-ab56-31b2c3788bb5"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 SW1",
+                    "pos": {
+                        "x": 133.5,
+                        "y": 116.0
+                    },
+                    "uuid": "9c916c1c-ecd5-40be-ab56-31b2c3788bb5"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "TestPoint_Pad_D1.5mm이(가) 심볼이 지정한 풋프린트(TestPoint:TestPoint_Pad_D1.5mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP1",
+                    "pos": {
+                        "x": 146.5,
+                        "y": 129.5
+                    },
+                    "uuid": "33bbd131-f077-48a0-bb90-38111e86bc52"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트 속성이 심볼과 일치하지 않음: 'BOM에서 제외' 설정이 다릅니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP1",
+                    "pos": {
+                        "x": 146.5,
+                        "y": 129.5
+                    },
+                    "uuid": "33bbd131-f077-48a0-bb90-38111e86bc52"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP1",
+                    "pos": {
+                        "x": 146.5,
+                        "y": 129.5
+                    },
+                    "uuid": "33bbd131-f077-48a0-bb90-38111e86bc52"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "TestPoint_Pad_D1.5mm이(가) 심볼이 지정한 풋프린트(TestPoint:TestPoint_Pad_D1.5mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP2",
+                    "pos": {
+                        "x": 133.5,
+                        "y": 125.5
+                    },
+                    "uuid": "d48ad8f2-3101-47c2-940b-1fcce99838a6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트 속성이 심볼과 일치하지 않음: 'BOM에서 제외' 설정이 다릅니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP2",
+                    "pos": {
+                        "x": 133.5,
+                        "y": 125.5
+                    },
+                    "uuid": "d48ad8f2-3101-47c2-940b-1fcce99838a6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP2",
+                    "pos": {
+                        "x": 133.5,
+                        "y": 125.5
+                    },
+                    "uuid": "d48ad8f2-3101-47c2-940b-1fcce99838a6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "TestPoint_Pad_D1.5mm이(가) 심볼이 지정한 풋프린트(TestPoint:TestPoint_Pad_D1.5mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP3",
+                    "pos": {
+                        "x": 110.0,
+                        "y": 122.5
+                    },
+                    "uuid": "2b8bf10f-e62f-4378-aeb0-9c4fdfa80a2a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트 속성이 심볼과 일치하지 않음: 'BOM에서 제외' 설정이 다릅니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP3",
+                    "pos": {
+                        "x": 110.0,
+                        "y": 122.5
+                    },
+                    "uuid": "2b8bf10f-e62f-4378-aeb0-9c4fdfa80a2a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP3",
+                    "pos": {
+                        "x": 110.0,
+                        "y": 122.5
+                    },
+                    "uuid": "2b8bf10f-e62f-4378-aeb0-9c4fdfa80a2a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "TestPoint_Pad_D1.5mm이(가) 심볼이 지정한 풋프린트(TestPoint:TestPoint_Pad_D1.5mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP4",
+                    "pos": {
+                        "x": 102.5,
+                        "y": 133.0
+                    },
+                    "uuid": "5c5b5ea8-2f9f-456e-99f7-5ba603757e8a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트 속성이 심볼과 일치하지 않음: 'BOM에서 제외' 설정이 다릅니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP4",
+                    "pos": {
+                        "x": 102.5,
+                        "y": 133.0
+                    },
+                    "uuid": "5c5b5ea8-2f9f-456e-99f7-5ba603757e8a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP4",
+                    "pos": {
+                        "x": 102.5,
+                        "y": 133.0
+                    },
+                    "uuid": "5c5b5ea8-2f9f-456e-99f7-5ba603757e8a"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "TestPoint_Pad_D1.5mm이(가) 심볼이 지정한 풋프린트(TestPoint:TestPoint_Pad_D1.5mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP5",
+                    "pos": {
+                        "x": 102.5,
+                        "y": 147.0
+                    },
+                    "uuid": "8ba363f6-5851-4771-8178-c0fab75c5038"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트 속성이 심볼과 일치하지 않음: 'BOM에서 제외' 설정이 다릅니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP5",
+                    "pos": {
+                        "x": 102.5,
+                        "y": 147.0
+                    },
+                    "uuid": "8ba363f6-5851-4771-8178-c0fab75c5038"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "풋프린트에 심볼 필드 'LCSC'이(가) 없습니다",
+            "items": [
+                {
+                    "description": "풋프린트 TP5",
+                    "pos": {
+                        "x": 102.5,
+                        "y": 147.0
+                    },
+                    "uuid": "8ba363f6-5851-4771-8178-c0fab75c5038"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_field_mismatch"
+        },
+        {
+            "description": "TSOT-23-6이(가) 심볼이 지정한 풋프린트(Package_TO_SOT_SMD:TSOT-23-6)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 U1",
+                    "pos": {
+                        "x": 150.5,
+                        "y": 116.5
+                    },
+                    "uuid": "c4183c14-0500-4006-9e74-83037b9d6a96"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "TSOT-23-6이(가) 심볼이 지정한 풋프린트(Package_TO_SOT_SMD:TSOT-23-6)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 U2",
+                    "pos": {
+                        "x": 150.5,
+                        "y": 129.5
+                    },
+                    "uuid": "bb2e860b-4951-4fcc-bd18-f256fef02810"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "SOT-23이(가) 심볼이 지정한 풋프린트(Package_TO_SOT_SMD:SOT-23)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 U3",
+                    "pos": {
+                        "x": 142.5,
+                        "y": 119.0
+                    },
+                    "uuid": "ef66bcda-6ba0-4049-bb54-e4f043a52c0f"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.3mm이(가) 심볼이 지정한 풋프린트(Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.3mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 U4",
+                    "pos": {
+                        "x": 119.5,
+                        "y": 111.0
+                    },
+                    "uuid": "9fc2077e-744c-4543-9d2c-c770d0f2f762"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.3mm이(가) 심볼이 지정한 풋프린트(Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.41x3.3mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 U5",
+                    "pos": {
+                        "x": 119.5,
+                        "y": 132.5
+                    },
+                    "uuid": "fc5b8495-d677-4a74-9f70-587e788d5cee"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "SSOP-24_5.3x8.2mm_P0.65mm이(가) 심볼이 지정한 풋프린트(Package_SO:SSOP-24_5.3x8.2mm_P0.65mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 U6",
+                    "pos": {
+                        "x": 158.0,
+                        "y": 143.0
+                    },
+                    "uuid": "8af51b1b-45c6-4cde-9199-83a1eca81c7c"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(U6-Pad7))가 없습니다",
+            "items": [
+                {
+                    "description": "패드 7 [<no net>]의 U6 위F.Cu",
+                    "pos": {
+                        "x": 161.5,
+                        "y": 142.675
+                    },
+                    "uuid": "846f73fc-a607-4078-8c33-8c377552cd52"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(U6-Pad8))가 없습니다",
+            "items": [
+                {
+                    "description": "패드 8 [<no net>]의 U6 위F.Cu",
+                    "pos": {
+                        "x": 161.5,
+                        "y": 142.025
+                    },
+                    "uuid": "a30c4d95-b15e-47e2-97da-55096eed3f78"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(U6-Pad11))가 없습니다",
+            "items": [
+                {
+                    "description": "패드 11 [<no net>]의 U6 위F.Cu",
+                    "pos": {
+                        "x": 161.5,
+                        "y": 140.075
+                    },
+                    "uuid": "5dfdc426-3220-4f3e-b96a-14e91ae69f9f"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(U6-Pad12))가 없습니다",
+            "items": [
+                {
+                    "description": "패드 12 [<no net>]의 U6 위F.Cu",
+                    "pos": {
+                        "x": 161.5,
+                        "y": 139.425
+                    },
+                    "uuid": "2284ea09-a383-48bd-a406-c2980070bed5"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "MSOP-10_3x3mm_P0.5mm이(가) 심볼이 지정한 풋프린트(Package_SO:MSOP-10_3x3mm_P0.5mm)와 일치하지 않습니다",
+            "items": [
+                {
+                    "description": "풋프린트 U7",
+                    "pos": {
+                        "x": 141.0,
+                        "y": 128.5
+                    },
+                    "uuid": "97c9108e-c18d-4e2e-920b-16631c1b8be6"
+                }
+            ],
+            "severity": "warning",
+            "type": "footprint_symbol_mismatch"
+        },
+        {
+            "description": "패드에 회로도에서 지정한 네트(unconnected-(U7-Pad2))가 없습니다",
+            "items": [
+                {
+                    "description": "패드 2 [<no net>]의 U7 위F.Cu",
+                    "pos": {
+                        "x": 138.9,
+                        "y": 128.0
+                    },
+                    "uuid": "ea32c9bd-7537-4153-87d3-43e038d07f7a"
+                }
+            ],
+            "severity": "warning",
+            "type": "net_conflict"
+        },
+        {
+            "description": "Extra footprint",
+            "items": [
+                {
+                    "description": "풋프린트 H3",
+                    "pos": {
+                        "x": 103.5,
+                        "y": 152.5
+                    },
+                    "uuid": "7ea74083-e428-47ae-b670-f699ecd067f0"
+                }
+            ],
+            "severity": "warning",
+            "type": "extra_footprint"
+        },
+        {
+            "description": "Extra footprint",
+            "items": [
+                {
+                    "description": "풋프린트 H4",
+                    "pos": {
+                        "x": 161.5,
+                        "y": 152.5
+                    },
+                    "uuid": "e924c5b6-a305-4c52-af4f-337b09d45d24"
+                }
+            ],
+            "severity": "warning",
+            "type": "extra_footprint"
+        },
+        {
+            "description": "Extra footprint",
+            "items": [
+                {
+                    "description": "풋프린트 H1",
+                    "pos": {
+                        "x": 103.5,
+                        "y": 103.5
+                    },
+                    "uuid": "f76e6f72-b82a-475d-94f0-c856e2ac6b04"
+                }
+            ],
+            "severity": "warning",
+            "type": "extra_footprint"
+        },
+        {
+            "description": "Extra footprint",
+            "items": [
+                {
+                    "description": "풋프린트 H2",
+                    "pos": {
+                        "x": 161.5,
+                        "y": 103.5
+                    },
+                    "uuid": "fbf16413-87e3-4294-bc85-33b7fb56864e"
+                }
+            ],
+            "severity": "warning",
+            "type": "extra_footprint"
+        }
+    ],
+    "source": "aicar-hat.kicad_pcb",
+    "unconnected_items": [],
+    "violations": []
+}

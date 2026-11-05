@@ -34,7 +34,7 @@ def main():
             det, junction, dbg = detect(frame)
             light = traffic(frame)
             traffic.draw(dbg)
-            found = person(frame, lf.PERSON_X) if person else None
+            found = person(frame, lf.PERSON_X, (lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H)) * lf.FRAME_H) if person else None
             if person:
                 lf.draw_person(dbg, person, lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H))
             raw = frame.copy()

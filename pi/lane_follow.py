@@ -101,8 +101,6 @@ BASE_SPEED = 0.3        # Speed going straight, when an action sets none.
 MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of slow=, and while the lane is lost.
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
-KICK_SPEED = 0.6        # Brief speed when starting from a stop, because the motor will not turn at a low speed.
-KICK_TIME = 0.25        # Start-kick duration, in seconds.
 LOST_LIMIT = 15         # Old setting, unused. Lost-lane timing uses LOST_HOLD (seconds) instead of a frame count.
 LOST_HOLD = 1.0         # After the lane is lost, hold the last steering and creep for this many seconds, then back up (LOST_BACK_SEC), then stop.
 LOST_BACK_SEC = 1.5     # Then reverse for up to this long, replaying the recent steering backwards so the car retraces its path, until the lane comes back. 0 = just stop.
@@ -118,7 +116,6 @@ FAR_HLINE = 0.8         # A far horizontal line counts only if connected white p
                         # A thin far line shows only its middle in the mask (1.2 missed the T-junction line in runs 20261103-1939/1940 until it was at 0.5).
                         # Used only to slow down, not for the junction decision (until), so a curve mistaken for a line only slows the car briefly.
 APPROACH_HOLD = 0.5     # slow=: keep slowing for this many seconds after the line disappears, so one or two false frames do not react.
-KICK_AFTER_STOP = 0.3   # Use the start kick only after standing still at least this long, in seconds. A brief hesitation gets no kick.
 MOTOR_MIN = 0.3         # Lowest forward motor command. Every lower command is raised to this, whatever speed= or slow= asks for.
 MOTOR_MIN_TURN = 0.3    # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
                         # Fixed here. motor_min / motor_min_turn in calib.json on the Pi are no longer read.
@@ -178,7 +175,7 @@ STRAIGHT_CORR = 6       # straight(): when the lane is visible, correct only wit
 CURVE_ASSIST = 0.5      # curve(): blend of the set angle and lane-follow steering. 0 is a fixed angle, 1 is the lane only.
 
 # Traffic light. tune_light.py adjusts these for the venue lighting and saves them in vision.json.
-LIGHT_Y = (0.0, 0.5)    # Height range searched for a lamp, as a fraction of frame height. Above the lane region (ROI_TOP).
+LIGHT_Y = (0.0, 0.7)    # Height range searched for a lamp, as a fraction of frame height. Stopped just before the crosswalk, the lamp is at 0.54-0.59.
 LIGHT_SIDE = 0.4        # Look only in this fraction of the width on the left and the right. The light sits beside the lane. [narrow FOV 0.35]
 LIGHT_S_MIN = 110       # Minimum saturation that counts as a color (0-255).
 LIGHT_V_MIN = 170       # Minimum value that counts as a color (0-255). An LED emits light, so it is brighter than nearby objects.
@@ -323,7 +320,7 @@ def dashed_hline(img, y, color, x0=0, x1=None, dash=10, gap=6, thick=1):
 
 
 def draw_person(dbg, detector, at):
-    """LEGO figure on the view: where its feet stop the car, blobs of the right size with the wrong colors, and the match."""
+    """LEGO figure on the view: the line its feet must pass to count, blobs of the right size with the wrong colors, and the match."""
     if at is not None:
         dashed_hline(dbg, int(at * FRAME_H), C_PERSON, dash=4, gap=8)
     for x, y, w, h, color, shape in detector.near:
@@ -896,7 +893,7 @@ class LaneDetector:
 class TrafficLight:
     """Lamp color each frame: "red", "green", or None.
 
-    Looks only above the lane ROI (ROI_TOP) and at the left and right edges (LIGHT_SIDE). Two methods are used together:
+    Looks only in the upper part of the frame (LIGHT_Y) and at the left and right edges (LIGHT_SIDE). Two methods are used together:
       1. Highly saturated, bright, nearly square blobs of red (H<10 or >170) or green (H 40-80).
          Green stops at 80 so a cyan obstacle block (H 85-95) is not taken as a green light.
       2. An LED blows out white in the center and keeps color only in a ring, so the ring color is used.
@@ -1982,8 +1979,6 @@ class Driver:
         self.back = None            # Back-up in progress: start, plan [(seconds, angle)], entries used, lost episode, action index.
         self.back_tries = {}        # Action index: back-ups used.
         self.back_lost = None       # lost_since of the episode that already backed up (one back-up per loss).
-        self.stopped_since = 0.0    # Time speed became 0 (used for the start kick).
-        self.kick_until = 0.0
         self.cw_since = None
         self.speed = 0.0
         self.edge = False
@@ -2041,8 +2036,6 @@ class Driver:
         level, seen_t, idx = self.approach
         self.approach = (level, seen_t + dt, idx)
         self.back, self.lost_since, self.cw_since = None, None, None
-        if self.speed > 0:
-            self.stopped_since = now
         self.speed = 0.0
 
     def approach_speed(self, base, now):
@@ -2356,11 +2349,6 @@ class Driver:
             speed = base        # Turn, straight, and curve keep the speed that was set.
         if speed > 0 and self.lost_since is None and abs(steering.angle) > HARD_STEER:
             speed += HARD_STEER_BOOST   # A large steer drags the wheels and slows the car, so add this back. Skipped while the lane is lost.
-        if speed == 0:
-            if self.speed > 0:
-                self.stopped_since = now
-        elif self.speed == 0 and now - self.stopped_since >= KICK_AFTER_STOP:
-            self.kick_until = now + KICK_TIME   # Kick only when actually starting after standing still.
         self.speed = speed
         if speed > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
             # The speed the motor really gets, so a retrace covers the distance really driven.
@@ -2368,7 +2356,7 @@ class Driver:
             while sum(h[0] for h in self.history) > LOST_BACK_MEMORY:
                 self.history.pop(0)
         self.last_t = now
-        cmd = KICK_SPEED if speed > 0 and now < self.kick_until else speed
+        cmd = speed
         if cmd > 0:
             # On the floor a motor command that is too low leaves the car stopped, especially at a large steer or on a weak battery, so raise it to the minimum.
             cmd = max(cmd, motor_floor(steering.angle))

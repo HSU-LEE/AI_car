@@ -103,7 +103,7 @@ def main():
     try:
         while not done:
             frame = cam.capture_array()
-            found = detector(frame, lf.PERSON_X)
+            found = detector(frame, lf.PERSON_X, show_at(detector) * lf.FRAME_H if detector.views else None)
             view = frame.copy()
             lf.draw_person(view, detector, show_at(detector))
             x0, y0, x1, y1 = guide_px(frame.shape, detector.box)

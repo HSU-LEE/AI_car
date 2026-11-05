@@ -194,6 +194,9 @@ def test_track_color():
 
 def test_traffic_light():
     print("[신호등]")
+    close = np.zeros((H, W, 3), np.uint8)
+    cv2.circle(close, (30, int(H * 0.57)), 8, (40, 40, 240), -1)    # Stopped just before the crosswalk: the lamp is this low in the frame.
+    check("횡단보도 바로 앞에서 낮게 보이는 빨간불도 찾음", lf.TrafficLight()(close) == "red")
     tl = lf.TrafficLight()
     check("왼쪽 빨간 램프", tl(lamp_img(((50, 60), RED))) == "red", tl.state)
     check("오른쪽 초록 램프", tl(lamp_img(((W - 50, 60), GREEN))) == "green", tl.state)
@@ -761,6 +764,24 @@ def test_person_detect():
     white, (_, msg) = registered_figure(back=lane_frame(line=20, bg=120), torso=(235, 235, 235), legs=(235, 235, 235), head=(235, 235, 235))
     check("거의 흰/검정 사람: 등록 때 경고", "주의" in msg, msg)
 
+    print("  -- 가까운 사람은 무조건, 먼 사람은 나중에")
+    near_y = 0.55 * lf.FRAME_H
+    check("거리: 선보다 먼 사람은 안 봄", det(minifig(empty, 320, 190), (0.0, 1.0), near_y) is None)
+    check("거리: 선을 넘은 사람은 찾음", det(minifig(empty, 320, 205), (0.0, 1.0), near_y) is not None)
+    check("거리: 화면 양끝에 잘린 사람도 찾음", all(det(minifig(empty, x, 300), (0.0, 1.0), near_y) for x in (5, 25, 615, 635)))
+    check("거리: 다리가 화면 아래로 잘린 사람도 찾음", det(minifig(empty, 320, 400), (0.0, 1.0), near_y) is not None)
+    check("거리: 등록 때보다 훨씬 크게 보여도 찾음", all(det(minifig(empty, 320, f), (0.0, 1.0), near_y) for f in (280, 320, 350)))
+    grown = empty.copy()
+    grown_fig = cv2.resize(minifig(empty, 320, 240)[150:244, 290:350], None, fx=2.0, fy=1.0, interpolation=cv2.INTER_NEAREST)
+    grown[220:220 + grown_fig.shape[0], 260:260 + grown_fig.shape[1]] = grown_fig
+    check("거리: 윤곽과 크기가 맞지 않아도 색이 맞으면 찾음", det(grown) is None and det(grown, (0.0, 1.0), near_y) is not None)
+    check("거리: 가까워도 사람 없는 차로는 없음", det(empty, (0.0, 1.0), near_y) is None and det(lane_frame(crosswalk=True), (0.0, 1.0), near_y) is None)
+    check("거리: 가까워도 옷 색이 다른 사람은 아님", det(minifig(empty, 320, 300, torso=(60, 150, 50)), (0.0, 1.0), near_y) is None)
+    block = minifig(empty, 320, 240)[150:244, 290:350]
+    huge = empty.copy()
+    huge[210:350, 40:600] = cv2.resize(block, (560, 140), interpolation=cv2.INTER_NEAREST)
+    check("거리: 사람보다 훨씬 큰 같은 색 덩어리는 아님", det(huge, (0.0, 1.0), near_y) is None)
+
     print("  -- 배경 사진 없는 등록")
     tall = int(0.42 * (240 - lf.HORIZON_Y))     # Height minifig() draws at feet=240.
     behind = lane_frame()       # Run on the Pi: a same-colored patch behind the figure was joined to it, and the registered height was 108 px instead of 67.
@@ -989,7 +1010,7 @@ def found_feet(det):
 
 
 def person_driver(course, feet=240, **config):
-    defaults = {"PERSON_AT": None, "PERSON_RESUME_DELAY": 0.5,
+    defaults = {"PERSON_AT": 0.55, "PERSON_RESUME_DELAY": 0.5,
                 "PERSON_MIN_STOP": 0.0, "PERSON_MAX_WAIT": None, "PERSON_X": (0.1, 0.9)}
     old = {k: getattr(lf, k) for k in defaults}
     for k, v in {**defaults, **config}.items():
@@ -1030,7 +1051,7 @@ def test_person_stop():
     t, cmds = run_frames(d, empty, t, 0.3)
     check("사람이 없어져도 딜레이 동안은 서 있음", all(c == 0 for c in cmds))
     t, cmds = run_frames(d, empty, t, 0.5)
-    check("딜레이가 지나면 다시 출발 (출발 킥 포함)", cmds[-1] > 0 and not d.person.hold and max(cmds) >= lf.KICK_SPEED)
+    check("딜레이가 지나면 다시 출발 (큰 값으로 튀지 않음)", cmds[-1] > 0 and not d.person.hold and max(cmds) < cmds[-1] + 0.02, (max(cmds), cmds[-1]))
     used = t - d.course.step_start
     check("멈춘 시간을 뺀 만큼만 동작 시간이 지남", 0.5 < used < 2.0, f"{used:.2f}초")
     t, _ = run_frames(d, empty, t, 2.0 - used + 0.2)
@@ -1038,7 +1059,13 @@ def test_person_stop():
 
     d = person_driver([follow(30), finish()])
     t, cmds = run_frames(d, far, 0.0, 0.5)
-    check("멀리 있어도 감지되면 바로 멈춤", cmds[-1] == 0 and d.person.hold)
+    check("멀리 있으면 사람으로 안 보고 계속 달림", cmds[-1] > 0 and not d.person.hold and not d.person.seen)
+    t, cmds = run_frames(d, minifig(lane_frame(), 320, 215), t, 0.5)
+    check("가까워져 선을 넘으면 바로 멈춤", cmds[-1] == 0 and d.person.hold)
+
+    d = person_driver([follow(30), finish()], PERSON_X=(0.0, 1.0))
+    t, cmds = run_frames(d, minifig(lane_frame(), 25, 300), 0.0, 0.5)
+    check("가까우면 화면 가장자리에 걸쳐도 멈춤", cmds[-1] == 0 and d.person.hold)
 
     d = person_driver([follow(30), finish()], PERSON_RESUME_DELAY=1.0)
     t, _ = run_frames(d, empty, 0.0, 0.2)

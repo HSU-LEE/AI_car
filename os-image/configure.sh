@@ -16,7 +16,7 @@ autoconnect-priority=100
 
 [wifi]
 mode=ap
-ssid=AICAR
+ssid=${APSSID:-04}
 band=bg
 channel=6
 
