@@ -1017,6 +1017,7 @@ def test_set_speed():
     check("묶음 동작: 안의 차선 주행은 바뀌고", set(follows) == {0.33}, follows)
     check("묶음 동작: 안의 straight는 그대로", set(straights) == {cs.SPEED}, straights)
     defaults = cs._flat([cs.to_end(), cs.uturn("left"), cs.follow(1)])
+    check("to_end: max_sec로 시간 제한", cs.to_end(max_sec=8)["max"] == 8 and cs.to_end()["max"] is None)
     check("set_speed 없으면 기존 기본값 그대로", (defaults[0]["speed"], defaults[1]["speed"], defaults[-1]["speed"]) == (0.3, 0.4, 0.425))
     d = lf.Driver([cs.set_speed(0.33), follow(9), finish()])
     with quiet():
@@ -1151,7 +1152,10 @@ def test_gap_tip():
     import course as cs
 
     d, _ = run_detector(split_lane(320, 260))
-    check("lane_tip: 양쪽 끝의 가운데", d.tip_y is not None and abs(d.tip_y - 290) <= 3, d.tip_y)
+    check("lane_tip: 양쪽 끝의 가운데", abs(d.lane_tip() - 290) <= 3, d.lane_tip())
+    d, _ = run_detector(lane_frame(y_end=230, shift=90))
+    tip = d.lane_tip()
+    check("lane_tip: 차가 치우쳐도 차선 끝을 잼", tip is not None and abs(tip - 230) <= 4, tip)
     d, _ = run_detector(lane_frame())
     check("gap_y: 끊김이 없으면 없음", d.gap_y is None and d.tip_y is None, d.gap_y)
 
@@ -1195,17 +1199,30 @@ def test_gap_tip():
     other = np.full((H, W, 3), 30, np.uint8)
     cv2.line(other, (W // 2, H - 1), (W - 1, 280), (235,) * 3, 11)
     d, _ = run_detector(other)
-    check("lane_tip: 화면 옆으로 나가는 곡선은 끝이 아님", d.tip_y is None, d.tip_y)
+    check("lane_tip: 화면 옆으로 나가는 곡선은 끝이 아님", d.lane_tip() is None, d.lane_tip())
     near_center = np.full((H, W, 3), 30, np.uint8)
     cv2.line(near_center, (W // 2 + 20, H - 1), (W // 2 + 20, 260), (235,) * 3, 11)
     d, _ = run_detector(near_center)
-    check("lane_tip: 차선 자리에 없는 테이프는 끝이 아님", d.tip_y is None, d.tip_y)
+    check("lane_tip: 차선 자리에 없는 테이프는 끝이 아님", d.lane_tip() is None, d.lane_tip())
     one = lane_frame(y_end=300, right=False)
     d, _ = run_detector(one)
-    check("lane_tip: 한쪽만 끝나고 다른 쪽을 본 적 없으면 끝이 아님", d.tip_y is None, d.tip_y)
+    check("lane_tip: 한쪽만 끝나고 다른 쪽을 본 적 없으면 끝이 아님", d.lane_tip() is None, d.lane_tip())
     d, _ = run_detector(split_lane(330, 270))
+    d.lane_tip()
     d(lane_frame(y_end=280, left=False), draw=False)
-    check("lane_tip: 한쪽이 먼저 나가면 다른 쪽 + 간격으로 이어감", d.tip_y is not None and abs(d.tip_y - 310) <= 4, d.tip_y)
+    check("lane_tip: 먼저 끝난 쪽이 나가면 남은 쪽 + 간격으로 이어감", abs(d.lane_tip() - 310) <= 4, d.lane_tip())
+    d, _ = run_detector(split_lane(330, 270))
+    d.lane_tip()
+    d(lane_frame(y_end=330, right=False), draw=False)
+    check("lane_tip: 나중 끝난 쪽이 잠깐 안 보이면 간격을 빼서 이어감", abs(d.lane_tip() - 300) <= 4, d.lane_tip())
+
+    d = lf.LaneDetector()
+    real = d.find_gap
+    img = split_lane(320, 260)
+    for hit in (True, True) + (False,) * lf.GAP_HIT_WINDOW + (True,):
+        d.find_gap = (lambda *a: 270) if hit else (lambda *a: None)
+        d(img, draw=False)
+    check("끊김: 멀리 떨어진 오탐은 쌓이지 않음", not d.gap_held, d.gap_hits)
 
 
 def test_end_ruler():
@@ -1332,6 +1349,25 @@ def test_end_ruler():
     r.feed("line", None, 0.05)
     check("측정자: 잰 속도가 0이어도 움직이는 차는 거리가 줄어듦", r.z < 30.0, r.z)
 
+    with quiet():   # One misread in the very frame the line is reached.
+        c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), finish()])
+        t = feed(c, 5, 0.0)
+        z = 40.0
+        for i in range(30):
+            read = y_at(60.0) if c.hits["junction"] == 2 else y_at(z)
+            c.update(c.hits["junction"] < 3, t, (0.0, 0.0), False, {"junction": int(y_at(z)), "hline_y": read, "near": True})
+            if c.run_out:
+                break
+            z -= 0.25
+            t += 1 / 40
+    check("cm=: 닿는 순간의 오측정에 잠기지 않음", c.run_out and abs(c.ruler.z - z) < 1.0, f"측정 {c.ruler.z:.1f}, 실제 {z:.1f}")
+
+    r = lf.EndRuler()
+    r.z, r.t, r.guess, r.coarse, r.kind = 40.0, 0.0, True, True, "line"
+    r.feed("line", y_at(36.0), 0.025, locked=True)
+    check("측정자: 칸 위치로 시작해도 정밀 측정이 고침", abs(r.z - 36.0) < 0.1 and not r.coarse, r.z)
+    check("floor_y: floor_cm의 역함수", abs(lf.floor_cm(lf.floor_y(30.0)) - 30.0) < 0.01)
+
     with quiet():
         c = lf.CourseRunner([cs.to_junction(0.6, blind_sec=0), finish()])
         t = feed(c, 5, 0.0)
@@ -1396,6 +1432,136 @@ def test_align_steer():
     check("후진 기록: 실제 모터 명령을 저장", d.history and min(h[2] for h in d.history) >= lf.MOTOR_MIN, d.history[:1])
 
 
+class FakeCamera:
+    def capture_array(self):
+        return lane_frame()
+
+    def stop(self):
+        pass
+
+
+class FakeStream:
+    """Web keys for a tuning tool, with no server."""
+    keys_left = ""
+
+    def __init__(self, *a, **k):
+        self.inbox = lf.KeyInbox()
+        self.inbox.add(FakeStream.keys_left)
+
+    def read_keys(self, terminal=True):
+        return self.inbox.take()
+
+    def update(self, img):
+        pass
+
+
+def run_tool(tool, keys):
+    """Run a tuning tool with no camera or browser, on a terminal of its own. Returns what it saved."""
+    import pty
+    import types
+    master, slave = pty.openpty()
+    saved, old = {}, (lf.open_camera, lf.Stream, lf.save_vision, sys.stdin, sys.argv, lf.WHITE_THR)
+    lf.open_camera, lf.Stream = FakeCamera, FakeStream
+    lf.save_vision = lambda **v: saved.update(v)
+    sys.stdin, sys.argv = os.fdopen(slave, "r"), ["tool"]
+    FakeStream.keys_left = keys
+    try:
+        with quiet():
+            tool.main()
+    finally:
+        sys.stdin.close()
+        os.close(master)
+        lf.open_camera, lf.Stream, lf.save_vision, sys.stdin, sys.argv, lf.WHITE_THR = old
+    return saved
+
+
+def test_tools_read_web_keys():
+    print("[튜닝 도구: 웹페이지 키]")
+    import tune_light
+    import tune_white
+    saved = run_tool(tune_white, "WW\n")
+    check("tune_white: 웹 키로 값을 바꾸고 Enter로 저장", saved.get("white_thr") is not None, saved)
+    check("tune_white: q는 저장 안 함", run_tool(tune_white, "wq") == {})
+    check("tune_white: Ctrl+C는 저장 안 하고 끝", run_tool(tune_white, "w\x03") == {})
+    before = lf.LIGHT_S_MIN
+    saved = run_tool(tune_light, "w\n")
+    check("tune_light: 웹 키로 값을 바꾸고 Enter로 저장", saved.get("light_s_min") == before + 5, saved)
+    lf.LIGHT_S_MIN = before
+    check("tune_light: Ctrl+C는 저장 안 하고 끝", run_tool(tune_light, "\x03") == {})
+    check("tune_person: 웹 키로 끝남", run_tool(tune_person, "zq") == {})
+
+
+def test_key_route():
+    print("[웹페이지: /key와 페이지]")
+    s = lf.Stream(0, "T", "w/s", confirm="\nq", key="secret", serve=False)
+    web = s.app.test_client()
+
+    def post(body, key="secret", program=None):
+        headers = {"X-AICAR-Program": program or s.program}
+        if key:
+            headers["X-AICAR-Key"] = key
+        return web.post("/key", data=body, headers=headers).status_code
+
+    check("키: 비밀키가 맞으면 전달", post("w") == 204 and s.keys.take() == "w")
+    check("키: 비밀키가 없거나 틀리면 거부", post("w", key=None) == 403 and post("w", key="bad") == 403 and s.keys.take() == "")
+    check("키: 긴 요청은 거부", post("x" * 33) == 413 and s.keys.take() == "")
+    check("키: 다른 프로그램용 페이지의 키는 거부", post("\n", program="old") == 409 and s.keys.take() == "")
+    code = post("\x03", program="old")
+    try:
+        s.keys.take()
+        stopped = False
+    except KeyboardInterrupt:
+        stopped = True
+    check("키: 옛 페이지에서도 Ctrl+C는 멈춤", code == 204 and stopped)
+    html = web.get("/?key=secret").get_data(as_text=True)
+    check("페이지: 비밀키 주소는 키를 보낼 수 있음", 'KEY = "secret"' in html and s.program in html and "__" not in html.split("<script>")[1].split("KEYS_TO_PROGRAM")[0])
+    bare = web.get("/").get_data(as_text=True)
+    check("페이지: 비밀키 없으면 보기 전용, 비밀키 노출 없음", 'KEY = ""' in bare and "secret" not in bare)
+    check("페이지: 확인이 필요한 키 전달", 'CONFIRM = "\\nq"' in html)
+    s.update(np.zeros((10, 10, 3), np.uint8))
+    check("페이지: 프로그램 번호를 영상에 함께 보냄", web.get("/frame.jpg").headers.get("X-AICAR-Program") == s.program)
+    import shutil as sh
+    import socket
+    import subprocess
+    if sh.which("node"):
+        with tempfile.NamedTemporaryFile("w", suffix=".js") as f:
+            f.write(html.split("<script>")[1].split("</script>")[0])
+            f.flush()
+            check("페이지: 스크립트 문법 정상", subprocess.run(["node", "--check", f.name], capture_output=True).returncode == 0)
+    busy = socket.socket()
+    busy.bind(("0.0.0.0", 0))
+    busy.listen()
+    try:
+        lf.Stream(busy.getsockname()[1], key="x")
+        refused = False
+    except SystemExit:
+        refused = True
+    busy.close()
+    check("Stream: 포트를 못 열면 조용히 넘어가지 않음", refused)
+
+
+def test_key_inbox():
+    print("[웹페이지 키 입력]")
+    script = lf.Stream.PAGE.split("<script>")[1].split("</script>")[0]
+    check("페이지: 스크립트 문자열이 줄바꿈으로 안 깨짐", all(line.count('"') % 2 == 0 for line in script.splitlines()))
+    box = lf.KeyInbox()
+    box.add("wS \n+")
+    check("키: 순서대로 프로그램에 전달", box.take() == "wS \n+")
+    check("키: 한 번 읽으면 비워짐", box.take() == "")
+    box.add("a\x1b[Aㅈ")
+    check("키: 제어 문자와 다른 글자는 버림", box.take() == "a[A")
+    box.add("x" * 100)
+    check("키: 안 읽어도 무한정 쌓이지 않음", len(box.take()) == 64)
+    box.add("w\x03")
+    try:
+        box.take()
+        stopped = False
+    except KeyboardInterrupt:
+        stopped = True
+    check("키: Ctrl+C는 터미널처럼 프로그램을 멈춤", stopped)
+    check("키: 멈춘 뒤 Ctrl+C가 남지 않음", box.take() == "")
+
+
 def test_saved_with_run():
     print("[녹화에 저장되는 설정 / 서보 중앙 / 사람 등록 취소]")
     import types
@@ -1424,7 +1590,7 @@ def test_saved_with_run():
 
 
 def main():
-    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
+    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
               test_driver_smoke, test_person_detect, test_person_stop, test_set_speed):
         t()

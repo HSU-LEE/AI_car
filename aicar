@@ -62,7 +62,9 @@ open_stream() {
          curl -s -o /dev/null -m 1 "http://$HOST:$STREAM_PORT/" && break
          sleep 0.5
      done
-     open "http://$HOST:$STREAM_PORT") >/dev/null 2>&1 &
+     # The address with the secret can send keys from the page. Without it the page only shows the view.
+     key=$(run "cat ~/$REMOTE/web_key.json" | tr -d '"')
+     open "http://$HOST:$STREAM_PORT/?key=$key") >/dev/null 2>&1 &
     echo "인식 화면: http://$HOST:$STREAM_PORT"
 }
 
@@ -168,15 +170,17 @@ cmd_fetch() {
 ensure_mac_venv() {
     if [ ! -x "$ROOT/.venv/bin/python" ]; then
         echo "맥에 분석용 파이썬 환경을 만드는 중 (처음 한 번)..."
-        python3 -m venv "$ROOT/.venv" && "$ROOT/.venv/bin/pip" install -q numpy opencv-python || die "환경 설치 실패"
+        python3 -m venv "$ROOT/.venv" && "$ROOT/.venv/bin/pip" install -q numpy opencv-python flask || die "환경 설치 실패"
     fi
+    "$ROOT/.venv/bin/python" -c "import flask" 2>/dev/null || "$ROOT/.venv/bin/pip" install -q flask || die "환경 설치 실패"
 }
 
 cmd_replay() {
     local name="${1:-latest}"; shift || true
     if [ "$name" = latest ]; then
         # The Pi's newest, or with no Pi around, the newest copy on this Mac.
-        name=$(latest_run 2>/dev/null) || name=$(ls -1d "$RUNS"/2*/ 2>/dev/null | tail -1 | xargs -n 1 basename 2>/dev/null)
+        name=$(latest_run 2>/dev/null) || name=""
+        [ -n "$name" ] || name=$(ls -1d "$RUNS"/2*/ 2>/dev/null | tail -1 | xargs -n 1 basename 2>/dev/null)
         [ -n "$name" ] || die "녹화가 없습니다"
     fi
     [ -d "$RUNS/$name" ] || cmd_fetch "$name"

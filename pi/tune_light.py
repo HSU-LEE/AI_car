@@ -16,7 +16,6 @@ A good value boxes only the red and green lamps.
     A green lamp at H 80..100 looks cyan. wait_green still accepts it; a full-frame search does not.
   If S or V is below the threshold shown (S>=, V>=), lower it with w/s or e/d.
 """
-import select
 import sys
 import termios
 import tty
@@ -43,7 +42,7 @@ def lamp_hsv(frame):
 def main():
     print(__doc__)
     cam = lf.open_camera()
-    stream = lf.Stream(8000)
+    stream = lf.Stream(8000, "AICAR 신호등", "w/s 채도 · e/d 밝기 · r/f 크기 · Enter 두 번 저장 · q 두 번 저장 안 하고 끝", confirm="\nq")
     traffic = lf.TrafficLight()
     traffic.keep_mask = True
     steps = {"w": ("LIGHT_S_MIN", 5), "s": ("LIGHT_S_MIN", -5),
@@ -67,21 +66,19 @@ def main():
             stream.update(np.hstack([view, traffic.mask_vis]))
             print(f"\r{info}      ", end="", flush=True)
 
-            if not select.select([sys.stdin], [], [], 0)[0]:
-                continue
-            key = sys.stdin.read(1)
-            if key in steps:
-                name, step = steps[key]
-                setattr(lf, name, int(max(0, min(255 if name != "LIGHT_AREA_MIN" else 2000,
-                                                 getattr(lf, name) + step))))
-            elif key in ("\n", "\r"):
-                lf.save_vision(light_s_min=lf.LIGHT_S_MIN, light_v_min=lf.LIGHT_V_MIN,
-                               light_area_min=lf.LIGHT_AREA_MIN)
-                print(f"\n저장됨: {lf.VISION_FILE}")
-                break
-            elif key == "q":
-                print("\n저장하지 않고 종료")
-                break
+            for key in stream.read_keys():
+                if key in steps:
+                    name, step = steps[key]
+                    setattr(lf, name, int(max(0, min(255 if name != "LIGHT_AREA_MIN" else 2000,
+                                                     getattr(lf, name) + step))))
+                elif key in ("\n", "\r"):
+                    lf.save_vision(light_s_min=lf.LIGHT_S_MIN, light_v_min=lf.LIGHT_V_MIN,
+                                   light_area_min=lf.LIGHT_AREA_MIN)
+                    print(f"\n저장됨: {lf.VISION_FILE}")
+                    return
+                elif key == "q":
+                    print("\n저장하지 않고 종료")
+                    return
     except KeyboardInterrupt:
         print("\n저장하지 않고 종료")
     finally:

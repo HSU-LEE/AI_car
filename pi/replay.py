@@ -9,7 +9,9 @@ Writes <run>/replay.mp4 and prints a short summary.
 import argparse
 import ast
 import csv
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 
 import cv2
@@ -40,6 +42,14 @@ def main():
         course_list = module.COURSE
     else:
         print("[주의] 이 녹화에 course.py가 없어 현재 코스로 판단합니다")
+    if (run / "course.py").exists():
+        for name in dir(module):        # The figure's settings are read from the course file too.
+            if name.startswith("PERSON_"):
+                setattr(lf, name, getattr(module, name))
+    saved = json.loads((run / "run.json").read_text()) if (run / "run.json").exists() else {}
+    if saved.get("lane_follow_md5") not in (None, hashlib.md5(Path(lf.__file__).read_bytes()).hexdigest()):
+        print("[주의] 녹화 때와 lane_follow.py가 달라 판단이 다를 수 있습니다")
+    args.set = list(saved.get("set", [])) + args.set     # Settings of that run first. Yours win.
 
     for kv in args.set:
         key, val = kv.split("=", 1)
@@ -62,7 +72,7 @@ def main():
         rows = rows[a:b + 1]
 
     # Same decisions as a real run, including course options and the LEGO figure saved with the recording.
-    driver = lf.Driver(course_list, person=lf.PersonDetector.load(lf.HORIZON_Y, run / lf.PERSON_FILE.name) if lf.PERSON_ON else None)
+    driver = lf.Driver(course_list, base_speed=saved.get("base_speed") or lf.BASE_SPEED, person=lf.PersonDetector.load(lf.HORIZON_Y, run / lf.PERSON_FILE.name) if lf.PERSON_ON else None)
     detect, steering, traffic, course = driver.detect, driver.steering, driver.traffic, driver.course
     out = Path(args.out) if args.out else run / "replay.mp4"
     writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), 20,

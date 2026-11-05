@@ -12,7 +12,6 @@ Open http://10.42.0.1:8000 and watch the orange pixels (pixels treated as the li
 
 A good value paints the white line and nothing else.
 """
-import select
 import sys
 import termios
 import tty
@@ -25,7 +24,7 @@ import lane_follow as lf
 def main():
     print(__doc__)
     cam = lf.open_camera()
-    stream = lf.Stream(8000)
+    stream = lf.Stream(8000, "AICAR 선 기준", "w/s ±2 · W/S ±10 · a 자동 · Enter 두 번 저장 · q 두 번 저장 안 하고 끝", confirm="\nq")
     detect = lf.LaneDetector()
     steps = {"w": 2, "s": -2, "W": 10, "S": -10}
 
@@ -41,21 +40,19 @@ def main():
             stream.update(dbg)
             print(f"\r{mode:6s} white = {detect.thr:5.1f}   ", end="", flush=True)
 
-            if not select.select([sys.stdin], [], [], 0)[0]:
-                continue
-            key = sys.stdin.read(1)
-            if key in steps:
-                base = detect.thr if lf.WHITE_THR is None else lf.WHITE_THR
-                lf.WHITE_THR = int(max(5, min(250, base + steps[key])))
-            elif key == "a":
-                lf.WHITE_THR = None
-            elif key in ("\n", "\r"):
-                lf.save_vision(white_thr=lf.WHITE_THR)
-                print(f"\n저장됨: {lf.VISION_FILE} (white_thr = {lf.WHITE_THR or '자동'})")
-                break
-            elif key == "q":
-                print("\n저장하지 않고 종료")
-                break
+            for key in stream.read_keys():
+                if key in steps:
+                    base = detect.thr if lf.WHITE_THR is None else lf.WHITE_THR
+                    lf.WHITE_THR = int(max(5, min(250, base + steps[key])))
+                elif key == "a":
+                    lf.WHITE_THR = None
+                elif key in ("\n", "\r"):
+                    lf.save_vision(white_thr=lf.WHITE_THR)
+                    print(f"\n저장됨: {lf.VISION_FILE} (white_thr = {lf.WHITE_THR or '자동'})")
+                    return
+                elif key == "q":
+                    print("\n저장하지 않고 종료")
+                    return
     except KeyboardInterrupt:
         print("\n저장하지 않고 종료")
     finally:
