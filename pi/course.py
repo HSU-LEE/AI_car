@@ -178,9 +178,9 @@ def to_gap(at=0.85, slow=0.3, speed=None):
     return _auto(follow(until="gap", speed=speed, at=at, slow=slow), speed, SPEED)
 
 
-def to_end(at=0.5, slow=0.3, blind_sec=0.0, speed=None, shift=None, cm=None):
+def to_end(at=0.5, slow=0.3, blind_sec=0.0, speed=None, shift=None, cm=None, max_sec=None):
     """바로 앞 끝(교차로선이든 차선 끊김이든 먼저 오는 쪽)에서 끝낸다. shift=치우쳐 달릴 cm(+는 오른쪽). cm=면 선을 자로 재서 기준 위치에서 그만큼 더 간 뒤 끝낸다."""
-    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift, cm=cm), speed, 0.3)
+    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift, cm=cm, max_sec=max_sec), speed, 0.3)
 
 
 def _turn_fn(direction):
@@ -391,7 +391,7 @@ COURSE = _flat([
     tr(),
     to_junction(cm=7),
     tl(),
-    to_end(),
+    to_end(max_sec=8),
 
 
 

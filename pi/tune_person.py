@@ -91,7 +91,7 @@ def main():
     if lf.CAMERA_LOCK is None:
         print("  [주의] 노출이 고정되어 있지 않습니다. 먼저 aicar calibrate 를 하면 더 안정적입니다.\n")
     cam = lf.open_camera()
-    stream = lf.Stream(8000, "AICAR 레고 사람")
+    stream = lf.Stream(8000, "AICAR 레고 사람", "Enter 두 번 저장 · wasd 네모 이동 · z/x 크기 · Space 찍기 · t 자동 촬영 · u 취소 · +/- 기준 · q 두 번 저장 안 하고 끝", confirm="\nq")
     auto = AutoViews(detector)
 
     fd = sys.stdin.fileno()
@@ -122,7 +122,7 @@ def main():
                   f"{'인식됨' if found else '인식 안 됨'}      ", end="", flush=True)
             note = auto.update(frame, time.monotonic()) if auto else None
 
-            for key in read_keys(fd):
+            for key in read_keys(fd) + stream.read_keys(terminal=False).lower():
                 if key in MOVES or key in ("z", "x"):
                     detector.box = move_box(detector.box, *MOVES[key]) if key in MOVES else resize_box(detector.box, 1 if key == "x" else -1)
                     if auto:

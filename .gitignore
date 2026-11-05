@@ -16,6 +16,7 @@ pi/runs/
 pi/calib.json
 pi/vision.json
 pi/person.json
+pi/web_key.json
 pi/drive.log
 pi/drive.pid
 
@@ -25,3 +26,8 @@ pi/drive.pid
 __pycache__/
 *.pyc
 .DS_Store
+
+# 연습 경기장 (공식 타일과 인쇄용 PDF)
+track/tiles/
+track/*.pdf
+track/*.png

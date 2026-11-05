@@ -21,10 +21,16 @@ Usage (on the Pi)
 """
 import argparse
 import ast
+import collections
+import hashlib
+import hmac
 import json
 import queue
+import secrets
+import select
 import shutil
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -140,6 +146,7 @@ JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a 
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
 BLIND_REARM_FRAMES = 5  # blind_sec: a line gone for this many frames in a row during the blind period arms its event, so it can end the action once blind is over.
 GAP_MAX_HEADING = 0.5   # Skip the gap test when heading error is larger than this, because the car is badly misaligned with the lane.
+GAP_HIT_WINDOW = 30     # Band-test sightings count toward confirming a gap only if none of them is further than this many frames from the last.
 GAP_TIP_LOST = 5        # A confirmed gap is followed by its line tips until they are gone for this many frames in a row.
                         # The band test needs both sides, so when one line ends well before the other it may hold only 1-2 frames near the car (runs 20261104-230925, 231241).
 GAP_BANDS = 2           # Lane gap: one empty band is enough if the line resumes above it.
@@ -356,6 +363,7 @@ class LaneDetector:
         self.tip_y = None               # Where the lane lines that end ahead end (lane_tip).
         self.tip_diff = None            # How far apart the two line tips are, while both are in view.
         self.gap_hits = 0               # Frames the band test saw a gap, while its line tips stayed in view.
+        self.gap_miss = 0               # Frames since the band test last saw it.
         self.tip_lost = 0               # Frames in a row the line tips were not seen.
         self.gap_held = False           # A gap was confirmed and its line tips are being followed.
         top = int(FRAME_H * ROI_TOP)
@@ -652,11 +660,12 @@ class LaneDetector:
         """y where the lane ends ahead: halfway between the tips of the left and right lines. None if the lane does not end in view.
 
         Halfway does not depend on which line ends first, which a slightly turned car changes. A line must sit about where a lane line does at
-        that height, so other tape near the frame side does not count. Once one tip has left the frame, the other one stands in, by the distance they had.
+        that height, so other tape near the frame side does not count. While one tip is out of view, the other one stands in, by the distance they had.
         """
         labels, stats = self.blobs
         cx0 = FRAME_W * CAMERA_X
         top_row = int(FRAME_H * ROI_TOP)
+        band_h = max(self.band_h, 1)
         tips = {}
         for i, (x, y, w, h, area) in enumerate(stats[1:], 1):
             # Comes from the near half of the view or the frame side (a near line can be cut off there), and stops below the ROI top.
@@ -669,22 +678,27 @@ class LaneDetector:
                 continue
             tip_x = float(top.mean())
             lane_w = LANE_WIDTH_PX * (top_row + y - HORIZON_Y) / (342 - HORIZON_Y)
+            # Measured from the lane's center last frame, so a car off to one side (shift=) still counts its lines. The camera's center only before that is known.
+            band = min(max((self.mask.shape[0] - 1 - int(y)) // band_h, 0), SLICES - 1)
+            center = next((c for c in (self.center[band], self.center[0]) if c is not None), cx0)
             # At the frame side, it is a line leaving by the side (a curve), not one that ends.
-            if 0.08 * FRAME_W <= tip_x <= 0.92 * FRAME_W and 0.2 * lane_w <= abs(tip_x - cx0) <= 0.85 * lane_w:
-                side = tip_x < cx0
+            if 0.08 * FRAME_W <= tip_x <= 0.92 * FRAME_W and 0.2 * lane_w <= abs(tip_x - center) <= 0.85 * lane_w:
+                side = tip_x < center
                 tips[side] = max(tips.get(side, 0), int(y))
         if len(tips) == 2:
-            self.tip_diff = abs(tips[True] - tips[False])
+            self.tip_diff = tips[True] - tips[False]    # Left tip minus right tip.
             return top_row + (tips[True] + tips[False]) / 2
         if not tips:
             self.tip_diff = None
         if len(tips) == 1 and self.tip_diff is not None:
-            return top_row + next(iter(tips.values())) + self.tip_diff / 2
+            side, y = next(iter(tips.items()))
+            return top_row + y + (-self.tip_diff if side else self.tip_diff) / 2
         return None
 
     def follow_gap(self, bands):
         """Keep a confirmed gap in gap_y while the band test cannot see it but its line tips are still in view."""
-        self.tip_y = self.lane_tip()
+        # Only near a gap. Elsewhere there is nothing to read it for, and it costs a look at every blob.
+        self.tip_y = self.lane_tip() if self.gap_y is not None or self.gap_hits or self.gap_held else None
         if self.gap_y is not None and self.tip_y is None:
             # A lane that really ends shows where its lines end. A curved line after a turn can look like a gap to the bands (run 20261104-230540, frames 979-984).
             self.gap_y, self.gap_why = None, "no line tips"
@@ -692,9 +706,14 @@ class LaneDetector:
         if self.edge or any(special for _, _, special in bands) or self.tip_lost >= GAP_TIP_LOST:
             self.gap_hits, self.gap_held = 0, False
         elif self.gap_y is not None:
-            # Counted over the whole time the tips are followed, not in a row: uneven tips let the band test see the gap only in short spells.
+            # Not counted in a row: uneven tips let the band test see the gap only in short spells. But close together, so scattered misreads do not add up.
             self.gap_hits += 1
+            self.gap_miss = 0
             self.gap_held = self.gap_hits >= JUNCTION_FRAMES
+        elif not self.gap_held:
+            self.gap_miss += 1
+            if self.gap_miss >= GAP_HIT_WINDOW:
+                self.gap_hits = 0
         if self.gap_y is None and self.gap_held and self.tip_y is not None:
             self.gap_y = int(self.tip_y)
             self.gap_why = "held by line tips"
@@ -1051,6 +1070,11 @@ def floor_cm(y):
     return CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(y - HORIZON_Y, 1.0)
 
 
+def floor_y(cm):
+    """Screen height of a floor point this far ahead of the camera. The inverse of floor_cm."""
+    return HORIZON_Y + CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(cm, 1.0)
+
+
 class EndRuler:
     """cm=: where the line this action ends on is, using the line itself as a ruler. It needs no floor texture and adds up no error.
 
@@ -1066,6 +1090,7 @@ class EndRuler:
     def reset(self, kind):
         """A different line. The car's speed still holds."""
         self.kind, self.z, self.t, self.read_t, self.guess = kind, None, None, None, False
+        self.coarse = False     # z came from a band center. The first exact reading corrects it.
         self.raw, self.track, self.jump = [], [], []
 
     def feed(self, kind, y, now, locked=False, moving=True):
@@ -1074,6 +1099,9 @@ class EndRuler:
         dt = 0.0 if self.t is None else min(now - self.t, 0.1)      # Capped: a stop for the LEGO figure is not driving.
         self.t = now
         z = None if y is None else floor_cm(y)
+        if z is not None and self.coarse and abs(z - self.z) < 8:
+            self.z, self.coarse, self.guess = None, False, False
+            self.raw, self.track = [], []
         if z is not None and self.z is not None and not -6 < z - self.z < 3:
             self.jump = (self.jump + [z])[-END_SWITCH_FRAMES:]
             if locked or len(self.jump) < END_SWITCH_FRAMES or max(self.jump) - min(self.jump) >= 3:
@@ -1355,14 +1383,17 @@ class CourseRunner:
         ruler = self.ruler
         kind = "line" if step["until"] == "junction" or ys.get("junction") is not None else "tip"
         y = ys.get("hline_y") if kind == "line" else ys.get("tip_y")
-        if kind != ruler.kind or ruler.jump or ruler.read_t is None or now - ruler.read_t > END_FRESH_SEC:
+        band = ys.get("junction") if kind == "line" else ys.get("gap")
+        stale = kind != ruler.kind or ruler.read_t is None or now - ruler.read_t > END_FRESH_SEC
+        # This frame's reading jumped: either the line really is a new one, or it is a misread. The band test says which is nearer the truth.
+        moved = (ruler.jump and y is not None and band is not None
+                 and abs(floor_cm(y) - floor_cm(band)) < abs(ruler.z - floor_cm(band)))
+        if stale or moved:
             ruler.reset(kind)
             if y is not None:
                 ruler.feed(kind, y, now, locked=True)
-            else:       # Only the band test sees it. Its band center is coarse, but much better than no distance at all.
-                band = ys.get("junction") if kind == "line" else ys.get("gap")
-                if band is not None:
-                    ruler.z, ruler.t, ruler.guess = floor_cm(band), now, True
+            elif band is not None:      # Only the band test sees it. Its band center is coarse, but much better than no distance at all.
+                ruler.z, ruler.t, ruler.guess, ruler.coarse = floor_cm(band), now, True, True
 
     def end_reached(self, step):
         """cm=: the end line has come to its place. A line never measured ends at once, since nothing can be said about it."""
@@ -1533,8 +1564,41 @@ def speed_for(angle, base):
     return base - (base - MIN_SPEED) * ratio
 
 
+WEB_KEY_FILE = VISION_FILE.with_name("web_key.json")
+
+
+def web_key():
+    """Secret for sending keys from the web page, made once and kept on the Pi. aicar puts it in the address it opens."""
+    try:
+        return json.loads(WEB_KEY_FILE.read_text())
+    except (OSError, ValueError):
+        key = secrets.token_urlsafe(16)
+        WEB_KEY_FILE.touch(mode=0o600)
+        WEB_KEY_FILE.write_text(json.dumps(key))
+        return key
+
+
+class KeyInbox:
+    """Keys typed on the web page, waiting for the running program. Keys only: the page can run nothing else on the car."""
+
+    def __init__(self):
+        self.pending = collections.deque(maxlen=64)     # A program that reads none keeps only the newest.
+
+    def add(self, text):
+        self.pending.extend(c for c in text if " " <= c <= "~" or c in "\n\r\x03")
+
+    def take(self):
+        """Keys typed since the last call. Ctrl+C acts as it does in a terminal, so each program's existing clean exit runs."""
+        keys = ""
+        while self.pending:
+            keys += self.pending.popleft()
+        if "\x03" in keys:
+            raise KeyboardInterrupt
+        return keys
+
+
 class Stream:
-    """Send the debug view to a browser.
+    """Send the debug view to a browser, and take keys from it for the running program (self.keys).
 
     The page fetches the latest frame one at a time (/frame.jpg). If Wi-Fi drops briefly or the program restarts, the page reconnects on its own, and a slow client always gets the latest frame with none queued up.
     JPEG encoding runs on the browser request thread, not the main loop, and only while someone is watching.
@@ -1563,7 +1627,9 @@ img{display:block;width:100%;height:100%;object-fit:contain}
  border:1px solid var(--warn);border-radius:6px;padding:4px 10px;font-weight:600}
 #toast{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;
  border-radius:6px;padding:6px 12px;opacity:0;transition:opacity .3s;pointer-events:none}
-@media (max-width:600px){header small,kbd{display:none} .tools{width:100%} button{flex:1}}
+#keys{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
+#keys label{color:#fff;font-weight:600;font-size:13px} #kstate{color:var(--ok);font-size:12px} #keys small{color:var(--dim);flex:1 1 200px}
+@media (max-width:600px){header small,kbd{display:none} .tools{width:100%} button{flex:1} #keys small{flex-basis:100%}}
 </style></head><body>
 <header><b>__TITLE__</b><small>실시간 인식 화면</small>
 <span id="st"><i id="dot"></i><span id="stt">연결 중…</span></span>
@@ -1574,6 +1640,8 @@ img{display:block;width:100%;height:100%;object-fit:contain}
 </span></header>
 <div class="wrap" id="wrap"><img id="v" alt=""><div id="paused">일시정지</div>
 <div id="msg">연결이 끊겼어요 · 다시 연결하는 중…</div><div id="toast"></div></div>
+<div id="keys"><label id="klabel">터미널 입력</label>
+<button id="bEnter">Enter</button><button id="bStop">Ctrl+C</button><span id="kstate"></span><small>__KEYS_HELP__</small></div>
 <script>
 // 최신 화면을 한 장씩 받아옴. 실패하면 잠깐 쉬고 계속 다시 시도 (프로그램이 다시 켜지면 자동으로 이어짐)
 const $ = id => document.getElementById(id);
@@ -1594,18 +1662,84 @@ function save() {
 }
 function full() { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen?.(); }
 $("bPause").onclick = () => setPaused(!paused); $("bSave").onclick = save; $("bFull").onclick = full; wrap.ondblclick = full;
+// 키를 읽는 프로그램이면 이 창에서 누른 키가 클릭 없이 바로 프로그램으로 감. 아니면 Ctrl+C만 가고 나머지는 화면 단축키.
+// 물리 키(code)로 읽어서 한글 입력 상태에서도 w는 w로 감.
+const KEY = "__KEY__", PROGRAM = "__PROGRAM__", CONFIRM = __CONFIRM__;      // KEY가 비면 보기 전용.
+const KEYS_TO_PROGRAM = __KEYS_TO_PROGRAM__ && !!KEY;
+const KEY_CODES = {Minus: ["-", "_"], Equal: ["=", "+"]};
+let keyQueue = Promise.resolve(), armed = null, armedAt = 0;
+function postKeys(text, ms) {
+  return fetch("/key", {method: "POST", body: text, signal: AbortSignal.timeout(ms),
+                        headers: {"X-AICAR-Key": KEY, "X-AICAR-Program": PROGRAM}});
+}
+function sendKeys(text) {
+  if (!text) return;
+  keyQueue = keyQueue.then(() => postKeys(text, 1500)).then(r => {
+    if (r.status === 409) { location.reload(); return; }      // 그 사이 다른 프로그램으로 바뀜. 그 프로그램에 키를 보내면 안 됨.
+    if (!r.ok) throw new Error(r.status);
+  }).catch(() => toast("키를 보내지 못했어요 · 프로그램이 꺼졌을 수 있어요"));
+}
+async function sendStop() {     // 앞의 키가 멈춰 있어도 기다리지 않고 바로, 될 때까지 몇 번 보냄.
+  for (let i = 0; i < 5; i++) {
+    try {
+      if ((await postKeys("\\x03", 1000)).ok) { toast("Ctrl+C를 보냈어요"); return; }
+    } catch (e) {}
+    await new Promise(ok => setTimeout(ok, 200));
+  }
+  toast("Ctrl+C를 보내지 못했어요 · 맥에서 aicar stop");
+}
+function pressKey(text, repeat) {   // 저장·종료처럼 되돌릴 수 없는 키는 2초 안에 한 번 더 눌러야 함.
+  if (!CONFIRM.includes(text.toLowerCase())) { armed = null; sendKeys(text); return; }
+  if (repeat) return;
+  if (armed === text && Date.now() - armedAt < 2000) { armed = null; sendKeys(text); return; }
+  armed = text; armedAt = Date.now();
+  toast((text === "\\n" ? "Enter" : text) + " 한 번 더 누르면 실행합니다");
+}
+function keyText(e) {
+  if (e.code === "Enter") return "\\n";
+  if (e.code === "Space") return " ";
+  const letter = /^Key([A-Z])$/.exec(e.code);
+  if (letter) return e.shiftKey ? letter[1] : letter[1].toLowerCase();
+  const digit = /^Digit([0-9])$/.exec(e.code);
+  if (digit && !e.shiftKey) return digit[1];
+  if (KEY_CODES[e.code]) return KEY_CODES[e.code][e.shiftKey ? 1 : 0];
+  return e.key.length === 1 && e.key <= "~" ? e.key : "";
+}
 addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT") return;
-  if (e.code === "Space") { e.preventDefault(); setPaused(!paused); }
-  else if (e.key === "s" || e.key === "S") save();
-  else if (e.key === "f" || e.key === "F") full();
+  if (e.metaKey || e.altKey) return;
+  if (e.ctrlKey) {
+    if (KEY && !e.repeat && (e.code === "KeyC" || e.key === "c" || e.key === "C")) { e.preventDefault(); sendStop(); }
+    return;
+  }
+  if (KEYS_TO_PROGRAM) {
+    const text = keyText(e);
+    if (text) { e.preventDefault(); pressKey(text, e.repeat); }     // 방금 누른 버튼이 Space나 Enter로 다시 눌리지 않게도 막음.
+  } else if (e.code === "Space") { e.preventDefault(); if (!e.repeat) setPaused(!paused); }
+  else if (e.repeat) return;
+  else if (e.code === "KeyS") save();
+  else if (e.code === "KeyF") full();
 });
+function showFocus() {
+  if (!KEY) return;
+  const on = document.hasFocus();
+  $("kstate").textContent = on ? "키 받는 중" : "창을 한 번 누르면 키를 받습니다"; $("kstate").style.color = on ? "var(--ok)" : "var(--warn)";
+}
+addEventListener("focus", showFocus); addEventListener("blur", showFocus); showFocus();
+if (KEYS_TO_PROGRAM) document.querySelectorAll("kbd").forEach(k => k.remove());
+if (!KEYS_TO_PROGRAM) $("bEnter").style.display = "none";
+if (!KEY) {
+  $("bStop").style.display = "none";
+  $("klabel").textContent = "보기 전용"; $("kstate").textContent = "aicar가 연 주소에서만 키를 보낼 수 있습니다"; $("kstate").style.color = "var(--dim)";
+}
+$("bEnter").onclick = () => pressKey("\\n", false); $("bStop").onclick = sendStop;
 async function loop() {
   for (;;) {
     const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 3000);
     try {
       const r = await fetch("/frame.jpg?after=" + seq, {cache: "no-store", signal: ctl.signal});
       clearTimeout(t);
+      const program = r.headers.get("X-AICAR-Program");
+      if (program && program !== PROGRAM) { location.reload(); return; }     // 다른 프로그램이 켜짐. 그 프로그램의 키와 안내로 다시 열기.
       if (r.status === 204) {     // 1초 동안 새 화면 없음 (프로그램은 켜져 있음)
         fails = 0; msg.style.display = "none"; status(true, "연결됨 · 새 화면 없음"); continue;
       }
@@ -1632,27 +1766,38 @@ async function loop() {
 loop();
 </script></body></html>"""
 
-    def __init__(self, port, title="AICAR"):
+    def __init__(self, port, title="AICAR", keys_help=None, confirm="", key=None, serve=True):
+        """keys_help: the keys this program reads, shown under the view. With it, keys pressed on the page go straight to the program, with no click.
+
+        confirm: of those, the ones that save or quit. The page asks for them twice, so a stray key cannot.
+        A browser sends keys only with the secret in the address aicar opens (web_key). Without it the page only shows the view.
+        """
         import logging
         import flask.cli
-        from flask import Flask, Response
+        from flask import Flask, Response, request
+        from werkzeug.serving import make_server
         logging.getLogger("werkzeug").setLevel(logging.ERROR)   # Turn off the request log printed for every frame.
         flask.cli.show_server_banner = lambda *_: None          # And the startup lines.
         self.img, self.seq = None, 0            # Latest frame and its number, written by the main loop.
         self.jpg, self.jpg_seq = None, -1       # Last encoded JPEG and the frame number it came from.
         self.lock = threading.Lock()
         self.last_request = -1e9                # Time a browser last fetched a frame (used for watching).
+        self.keys = KeyInbox()
+        self.key = web_key() if key is None else key
+        self.program = secrets.token_hex(4)     # Tells this program from whichever one a page was opened for.
         app = Flask(__name__)
-        page = self.PAGE.replace("__TITLE__", title)
+        page = (self.PAGE.replace("__TITLE__", title).replace("__KEYS_TO_PROGRAM__", "true" if keys_help else "false")
+                .replace("__KEYS_HELP__", keys_help or "").replace("__PROGRAM__", self.program)
+                .replace("__CONFIRM__", json.dumps(confirm)))
 
         @app.route("/")
         def index():
-            return Response(page, mimetype="text/html", headers={"Cache-Control": "no-store"})
+            allowed = hmac.compare_digest(request.args.get("key", ""), self.key)
+            return Response(page.replace("__KEY__", self.key if allowed else ""), mimetype="text/html", headers={"Cache-Control": "no-store"})
 
         @app.route("/frame.jpg")
         def frame():
             # Wait up to 1 second for a frame newer than after, then send only the latest one.
-            from flask import request
             self.last_request = time.monotonic()
             after = request.args.get("after", -1, type=int)
             if after > self.seq:        # The program restarted and the number went back to the start, so just send the latest frame.
@@ -1662,9 +1807,22 @@ loop();
                 time.sleep(0.01)
             jpg, seq = self.encoded()
             if jpg is None or seq <= after:
-                return Response(status=204)
+                return Response(status=204, headers={"X-AICAR-Program": self.program})
             return Response(jpg, mimetype="image/jpeg",
-                            headers={"X-Seq": str(seq), "Cache-Control": "no-store"})
+                            headers={"X-Seq": str(seq), "X-AICAR-Program": self.program, "Cache-Control": "no-store"})
+
+        @app.route("/key", methods=["POST"])
+        def key():
+            if not hmac.compare_digest(request.headers.get("X-AICAR-Key", ""), self.key):
+                return Response(status=403)
+            if (request.content_length or 0) > 32:
+                return Response(status=413)
+            text = request.get_data(as_text=True)
+            # A page opened for an earlier program must not press this one's keys. It can still stop it.
+            if request.headers.get("X-AICAR-Program") != self.program and text != "\x03":
+                return Response(status=409)
+            self.keys.add(text)
+            return Response(status=204)
 
         @app.route("/video")
         def video():
@@ -1680,13 +1838,25 @@ loop();
                         yield b"--f\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
             return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=f")
 
-        threading.Thread(target=lambda: app.run(host="0.0.0.0", port=port, threaded=True),
-                         daemon=True).start()
+        self.app = app
+        if serve:
+            try:
+                server = make_server("0.0.0.0", port, app, threaded=True)
+            except (OSError, SystemExit) as e:   # Otherwise the page and its keys would still reach whichever program holds the port.
+                raise SystemExit(f"포트 {port}을 다른 프로그램이 쓰고 있습니다. 먼저 aicar stop ({e})")
+            threading.Thread(target=server.serve_forever, daemon=True).start()
 
     @property
     def watching(self):
         """Whether a browser fetched a frame in the last 2 seconds. If nobody is watching, the view does not need to be drawn."""
         return time.monotonic() - self.last_request < 2.0
+
+    def read_keys(self, terminal=True):
+        """Keys pressed since the last call: on the web page, then in the terminal the program was started from."""
+        keys = self.keys.take()
+        if terminal and select.select([sys.stdin], [], [], 0)[0]:
+            keys += sys.stdin.read(1)
+        return keys
 
     def update(self, img):
         """Store the frame without encoding it. img must be a new array that is not modified afterward."""
@@ -1704,12 +1874,13 @@ loop();
 
 
 class Recorder:
+    # Settings a replay needs, besides the calibration and the course.
     """Save raw frames and a log under runs/<time>/. Replay them on a Mac with replay.py.
 
     JPEGs are written on a separate thread so the drive loop does not wait. close() finishes whatever is left.
     """
 
-    def __init__(self):
+    def __init__(self, base_speed=None, settings=()):
         self.dir = Path(__file__).with_name("runs") / time.strftime("%Y%m%d-%H%M%S")
         self.dir.mkdir(parents=True)
         if PERSON_ON and PERSON_FILE.exists():      # Replaying this run later needs the figure registered on the day.
@@ -1717,6 +1888,8 @@ class Recorder:
         if VISION_FILE.exists():                    # And the calibration of the day: the Mac has none of its own.
             shutil.copy(VISION_FILE, self.dir / VISION_FILE.name)
         shutil.copy(Path(__file__).with_name("course.py"), self.dir / "course.py")      # And the course as it was.
+        (self.dir / "run.json").write_text(json.dumps({
+            "base_speed": base_speed, "set": list(settings), "lane_follow_md5": hashlib.md5(Path(__file__).read_bytes()).hexdigest()}))
         self.log = open(self.dir / "log.csv", "w")
         self.log.write("frame,t,offset,heading,junction,steer,speed,step,status,cmd\n")
         self.n = 0
@@ -1764,6 +1937,7 @@ class Driver:
         self.kick_until = 0.0
         self.cw_since = None
         self.speed = 0.0
+        self.cmd = 0.0              # What the motor gets: speed, after the start kick and the minimum.
         self.edge = False
         self.done = False
         self.det, self.junction, self.light = None, False, None
@@ -1899,7 +2073,11 @@ class Driver:
             at = step.get("at") or JUNCTION_Y       # With no at=, it ends at JUNCTION_Y.
             ay = int(at * FRAME_H)
             dashed_hline(dbg, ay, C_AT, thick=2)
-            chip(dbg, f"END @{at:g}", FRAME_W - 90, ay - 22, C_AT, 0.38)
+            chip(dbg, f"{'SEEN' if step.get('cm') is not None else 'END'} @{at:g}", FRAME_W - 90, ay - 22, C_AT, 0.38)
+            if step.get("cm") is not None:      # cm=: where the line really ends this action, once it has been seen.
+                cy = int(min(floor_y(END_BASE_CM - step["cm"]), FRAME_H - 1))
+                dashed_hline(dbg, cy, C_AT, thick=2)
+                chip(dbg, f"END +{step['cm']:g}cm", FRAME_W - 90, cy - 22, C_AT, 0.38)
 
         # Car position (bottom center) and an arrow for the current steering direction.
         cx0, by = int(FRAME_W * CAMERA_X), FRAME_H - 6
@@ -1976,7 +2154,7 @@ class Driver:
 
         # Speed / steering.
         slow = course.opt("slow")
-        bar(168, "SPEED", self.speed / 0.6, f"{self.speed:.2f}", C_PATH if self.speed > 0 else (40, 40, 220),
+        bar(168, "SPEED", abs(self.cmd) / 0.6, f"{self.cmd:.2f}", C_PATH if self.cmd > 0 else (40, 40, 220),
             None if slow is None else slow / 0.6)
         text("STEER", 12, 206)
         st = steering.angle
@@ -2047,6 +2225,7 @@ class Driver:
         if course.paused:
             self.stand_for_person(now)
             self.det, self.junction, self.light = det, junction, light
+            self.cmd = 0.0
             return None, 0.0, dbg
         if step is not None and step["do"] in ("left", "right") and step.get("deg"):
             if self.yaw_idx != course.idx:
@@ -2064,6 +2243,7 @@ class Driver:
         self.det, self.junction, self.light = det, junction, light
         if course.done:
             self.done = True
+            self.cmd = 0.0
             return None, 0.0, dbg
 
         base = course.speed if course.speed is not None else self.base_speed
@@ -2150,6 +2330,7 @@ class Driver:
         if cmd > 0:
             # On the floor a motor command that is too low leaves the car stopped, especially at a large steer or on a weak battery, so raise it to the minimum.
             cmd = max(cmd, motor_floor(steering.angle))
+        self.cmd = cmd
         return steer, cmd, dbg
 
 
@@ -2234,7 +2415,7 @@ def main():
     cam = open_camera()
     driver = Driver(COURSE, args.start, args.speed, obs, load_person())
     stream = None if args.no_stream else Stream(args.port, "AICAR 주행")
-    rec = Recorder() if args.record else None
+    rec = Recorder(args.speed, args.set) if args.record else None
     print("모터", "ON" if args.drive else "OFF (조향만)",
           f"| 코스 {len(COURSE)}단계, {args.start}번부터 | Ctrl+C로 정지")
 
@@ -2271,10 +2452,12 @@ def main():
             frames += 1
             if show:
                 stream.update(driver.view(dbg, now, fps))
+            if stream:
+                stream.keys.take()      # Driving reads no keys. Ctrl+C on the page stops the car, like in the terminal.
             if time.monotonic() - t0 >= 1:
                 fps = frames / (time.monotonic() - t0)
                 print(f"\r{fps:4.1f} fps  "
-                      f"steer {steering.angle:+5.1f}  speed {speed:.2f}  "
+                      f"steer {steering.angle:+5.1f}  speed {driver.cmd:.2f}  "
                       f"step {course.label()} {course.status(now):9s} "
                       + (f"center {car.bias:+.1f} " if AUTO_TRIM else "")
                       + (f"light {light} " if light else "")

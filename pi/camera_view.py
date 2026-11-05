@@ -56,6 +56,7 @@ def main():
                 state += f"  PERSON {found['feet'] / lf.FRAME_H:.2f}"
             cv2.putText(dbg, f"DETECT  {state}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
             stream.update(np.hstack([raw, dbg]))
+            stream.keys.take()      # Reads no keys. Ctrl+C on the page ends this, like in the terminal.
 
             frames += 1
             if now - t0 >= 1:
