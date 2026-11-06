@@ -45,6 +45,7 @@ ALPHA = 2.0             # A color counts as the figure when its share of the fig
 FIG_MIN = 0.01          # A color must cover at least this share of the figure. Smaller is noise from the cutout.
 NEAR_COLOR = 0.7        # Minimum color match past the near line. Real figure there, under other light than at registration, even lying down: 0.78-0.80.
 EMBED_MIN = 0.4         # Lowest likeness (0 to 1) to a registered view. Registered figure in other recordings: 0.86-0.99, or 0.33-0.49 for a small one from one view. Off-track things in its colors: 0.1-0.2. Another figure or a toy block: up to 0.5.
+EMBED_MIN_EDGE = 0.6    # Same, for a blob cut off by the left or right edge of the frame, which is off the car's path anyway. Things beside the track there: 0.42-0.49. The real figure inside the frame, registered at two places: 0.74-0.95.
 EMBED_MARGIN = 0.25     # The picture compared is the blob's box and this much around it, as a share of its longer side.
 EMBED_MAX = 2           # At most this many blobs are looked at per frame. Each costs about 13 ms on the Pi.
 NEAR_SHAPE = 0.25       # Past the near line, the outline must overlap a view at least this much, standing or lying. A room object in the figure's colors: 0.14. Real figure, cut off or not: 0.43 and up.
@@ -560,7 +561,8 @@ class PersonDetector:
         for _, blob in passed[:EMBED_MAX]:      # The costly look only for what passed everything else.
             look = self.likeness(frame, blob["x"], blob["y"], blob["w"], blob["h"])
             blob["look"] = look
-            if look is None or look >= EMBED_MIN:
+            edge = blob["x"] <= 0 or blob["x"] + blob["w"] >= frame.shape[1]
+            if look is None or look >= (EMBED_MIN_EDGE if edge else EMBED_MIN):
                 self.found = blob
                 break
             self.near.append((blob["x"], blob["y"], blob["w"], blob["h"], blob["score"], blob["shape"]))

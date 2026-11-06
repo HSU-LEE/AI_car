@@ -1115,6 +1115,17 @@ def test_person_look():
         Fake.calls = 0
         again = det(crowd, (0, 1), 198)
         check("가짜 후보가 여럿이어도 레고를 먼저 확인", again is not None and abs(again["x"] - found["x"]) < 10 and Fake.calls == 1, (again and again["x"], found["x"], Fake.calls))
+        # A blob cut off by the side of the frame needs a closer likeness; the same look inside the frame is enough.
+        y0, y1, x0, w = found["y"], found["y"] + found["h"], found["x"], found["w"]
+        edge = back.copy()
+        edge[y0:y1, :w - w // 3] = fig[y0:y1, x0 + w // 3:x0 + w]
+        det.likeness = lambda *_: (P.EMBED_MIN + P.EMBED_MIN_EDGE) / 2
+        check("안쪽 후보는 중간 정도 닮음으로 통과", det(fig, (0, 1), 198) is not None)
+        check("화면 가장자리에 잘린 후보는 중간 정도 닮음으로는 사람 아님", det(edge, (0, 1), 198) is None and any(n[0] <= 0 for n in det.near), det.near)
+        det.likeness = lambda *_: P.EMBED_MIN_EDGE
+        cut = det(edge, (0, 1), 198)
+        check("화면 가장자리에 잘린 후보도 많이 닮으면 사람", cut is not None and cut["x"] <= 0, cut)
+        del det.likeness
         det.embeds = -det.embeds        # Now nothing looks alike.
         Fake.calls = 0
         check("안 닮은 후보는 색과 윤곽이 맞아도 사람 아님", det(fig, (0, 1), 198) is None and bool(det.near))
