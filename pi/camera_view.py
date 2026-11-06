@@ -24,6 +24,8 @@ def main():
     stream = lf.Stream(args.port)
     detect, steering, traffic = lf.LaneDetector(), lf.Steering(), lf.TrafficLight()
     person = lf.load_person()
+    if person:
+        person.place = detect.in_lane if lf.PERSON_IN_LANE else None
     print(f"브라우저: http://<파이 IP>:{args.port}  | Ctrl+C로 종료")
 
     frames, t0, fps = 0, time.monotonic(), 0.0

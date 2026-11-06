@@ -39,9 +39,11 @@ import cv2
 import numpy as np
 
 from car import STEER_LIMIT
-from course import COURSE, RED_BACK_ON, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_SLOW, PERSON_X
+from course import COURSE, RED_BACK_ON, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_X
 import course as _course
 from person import AnyFigure, PERSON_FILE, PHOTO_DIR, PersonDetector, PersonWatch, figure_box
+PERSON_IN_LANE = getattr(_course, "PERSON_IN_LANE", False)      # Same for this one.
+PERSON_LANE_MARGIN = 0.05   # PERSON_IN_LANE: a figure's center may be this far outside a lane line, as a share of the lane width, for one standing on the line.
 PERSON_ANY = getattr(_course, "PERSON_ANY", False)      # A course saved with an older run has no such line, and looked only for the registered figure.
 
 # --- Settings ---
@@ -102,11 +104,7 @@ STEER_RATE = 150        # Maximum change in steering angle per second, in deg/s.
 BASE_SPEED = 0.3        # Speed going straight, when an action sets none.
 MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of slow=, and while the lane is lost.
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
-HARD_STEER_OFF = 15     # It stays raised until the steering is back below this. One threshold made the command jump between 0.30 and 0.45 four times in 0.1 s (run 20261105-201406).
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
-SPEED_RAMP_ON = True    # Change the forward motor command gradually (True / False). Stopping and backing up are never delayed.
-SPEED_UP_RATE = 0.6     # Fastest rise of the motor command, per second. 0.3 to 0.5 takes 0.33 s. A car at a standstill always starts at the lowest command that moves it.
-SPEED_DOWN_RATE = 1.5   # Fastest fall of the motor command, per second. Faster than the rise, because slowing for a corner or a line must not come late.
 LOST_LIMIT = 15         # Old setting, unused. Lost-lane timing uses LOST_HOLD (seconds) instead of a frame count.
 LOST_HOLD = 1.0         # After the lane is lost, hold the last steering and creep for this many seconds, then back up (LOST_BACK_SEC), then stop.
 LOST_BACK_SEC = 1.5     # Then reverse for up to this long, replaying the recent steering backwards so the car retraces its path, until the lane comes back. 0 = just stop.
@@ -144,8 +142,6 @@ END_MIN_SPEED = 3.0     # cm=: a measured speed below this (cm/s), on a car that
 END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measured. About what the lowest motor command gives.
 END_SWITCH_FRAMES = 3   # cm=: before the end line is reached, this many readings in a row that agree with each other replace a reading they jump away from.
 END_FRESH_SEC = 0.15    # cm=: a reading older than this when the line is reached does not count as that line's position.
-AT_TRACK_NEAR = 0.8     # at=: a line read below this frame height, then gone, has left by the bottom of the frame. Its place is carried on from the measured speed.
-AT_TRACK_SEC = 1.0      # at=: and for at most this long after it was last read.
 END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is bounded because lost-lane back-up is off during it.
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
@@ -377,6 +373,38 @@ class LaneDetector:
         h = (FRAME_H - top) // SLICES
         self.band_y = [FRAME_H - (i + 0.5) * h for i in range(SLICES)]
 
+    def lane_span(self, y):
+        """(left, right) x of the lane at this height, from the lines found. A line not found is taken one lane width from the other. None if neither was found in any band."""
+        lefts, rights, ys = [], [], []
+        for i in range(SLICES):
+            left, right = self.left[i], self.right[i]
+            if left is None and right is None:
+                continue
+            ys.append(self.band_y[i])
+            lefts.append(left if left is not None else right - self.lane_width(i))
+            rights.append(right if right is not None else left + self.lane_width(i))
+        if not ys:
+            return None
+        order = np.argsort(ys)
+        ys, lefts, rights = np.array(ys, dtype=np.float64)[order], np.array(lefts, dtype=np.float64)[order], np.array(rights, dtype=np.float64)[order]
+
+        def at(xs):
+            if len(ys) == 1:
+                return float(xs[0])
+            if y <= ys[0] or y >= ys[-1]:     # Beyond the bands: straight on from the nearest two.
+                a, b = (0, 1) if y <= ys[0] else (-2, -1)
+                return float(xs[a] + (xs[b] - xs[a]) * (y - ys[a]) / (ys[b] - ys[a]))
+            return float(np.interp(y, ys, xs))
+        return at(lefts), at(rights)
+
+    def in_lane(self, x, feet):
+        """Whether a figure with its center at x and its feet at this height stands between the lane lines. True when no line is known, because then it cannot be told."""
+        span = self.lane_span(feet)
+        if span is None:
+            return True
+        margin = PERSON_LANE_MARGIN * (span[1] - span[0])
+        return span[0] - margin <= x <= span[1] + margin
+
     def model_width(self, i):
         """Perspective model: lane width is 0 at the vanishing point (HORIZON_Y) and widens linearly downward."""
         return LANE_WIDTH_PX * (self.band_y[i] - HORIZON_Y) / (342 - HORIZON_Y)
@@ -412,9 +440,9 @@ class LaneDetector:
         counts = np.bincount(bottom[bottom > 0], minlength=n)
         if counts.max() == 0:
             return None
-        outline, _ = cv2.findContours((labels == counts.argmax()).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)    # A hull needs only the outer edge, not every pixel.
+        pts = cv2.findNonZero((labels == counts.argmax()).astype(np.uint8))
         hull = np.zeros_like(small)
-        cv2.fillConvexPoly(hull, cv2.convexHull(np.concatenate(outline)), 255)
+        cv2.fillConvexPoly(hull, cv2.convexHull(pts), 255)
         hull = cv2.dilate(hull, np.ones((3, 3), np.uint8))
         return cv2.resize(hull, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -513,17 +541,13 @@ class LaneDetector:
         gray = cv2.GaussianBlur(cv2.cvtColor(frame[top:bot], cv2.COLOR_BGR2GRAY), (5, 5), 0)
         half = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
         mask = tophat_ellipse(half, TOPHAT_K) >= self.thr
-        counts = mask.sum(axis=1)
         hits = 0
         for r in range(mask.shape[0] - 1, -1, -1):      # From the bottom (the near side).
-            y = top + 2 * r
-            need = FAR_HLINE * LANE_WIDTH_PX * (y - HORIZON_Y) / (342 - HORIZON_Y)
-            if counts[r] * 2 < need:    # Too few line pixels in the row for any run of them to be long enough.
-                hits = 0
-                continue
             row = np.concatenate(([0], mask[r].astype(np.int8), [0]))
             edges = np.flatnonzero(np.diff(row))
             longest = (edges[1::2] - edges[::2]).max() * 2 if len(edges) else 0
+            y = top + 2 * r
+            need = FAR_HLINE * LANE_WIDTH_PX * (y - HORIZON_Y) / (342 - HORIZON_Y)
             hits = hits + 1 if longest >= need else 0
             if hits >= 2:                               # At least two rows in a row, so noise is excluded.
                 return y + 2
@@ -532,9 +556,7 @@ class LaneDetector:
     @staticmethod
     def find_lines(band):
         """One band: vertical-line x positions, a horizontal-line candidate (start, end) or None, and a crosswalk flag."""
-        cols = cv2.reduce(band, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S).ravel().astype(np.float64)
-        if not cols.any():      # Most bands of a straight lane are mostly empty columns, and some bands are wholly empty. Nothing to look at.
-            return [], None, False
+        cols = band.sum(axis=0).astype(np.float64)
         on = (cols > band.shape[0] * 0.2 * 255).astype(np.int8)
         edges = np.flatnonzero(np.diff(np.concatenate(([0], on, [0]))))
         runs, hline = [], None
@@ -556,10 +578,7 @@ class LaneDetector:
                 merged[-1][1] = b
             else:
                 merged.append([a, b])
-        lines = []
-        for a, b in merged:     # The weighted mean of the columns. np.average does the same with far more checks, and this runs for every line in every band.
-            weights = cols[a:b] + 1e-6
-            lines.append(float(np.multiply(np.arange(a, b), weights).sum() / weights.sum()))
+        lines = [float(np.average(np.arange(a, b), weights=cols[a:b] + 1e-6)) for a, b in merged]
         return lines, hline, False
 
     @staticmethod
@@ -1075,11 +1094,6 @@ def floor_cm(y):
     return CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(y - HORIZON_Y, 1.0)
 
 
-def floor_y(cm):
-    """Screen height of a floor point this far ahead of the camera. The inverse of floor_cm."""
-    return HORIZON_Y + CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(cm, 1.0)
-
-
 class EndRuler:
     """cm=: where the line this action ends on is, using the line itself as a ruler. It needs no floor texture and adds up no error.
 
@@ -1206,7 +1220,6 @@ class CourseRunner:
         self.ruler = EndRuler()     # cm=: where the end line is.
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
         self.run_start = None       # cm=: when the end line was reached.
-        self.at_reads = 0           # at=: frames the line this action ends on has been read.
         self.moving = True          # cm=: whether the motor is driving the car forward. Driver fills it every frame.
 
     def step(self):
@@ -1229,7 +1242,6 @@ class CourseRunner:
         self.red_hits, self.red_seen, self.red_box = 0, False, None
         self.red_boxes, self.local_light = [], None
         self.ruler, self.run_out, self.run_start = EndRuler(), False, None
-        self.at_reads = 0
         step = self.step()
         if step is None:
             print(f"\n[코스 끝] 이제부터 차선만 따라감")
@@ -1344,16 +1356,9 @@ class CourseRunner:
                 "aligned": det is not None and abs(det[0]) < ALIGN_OFFSET and abs(det[1]) < ALIGN_HEADING}
         if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] in ("gap", "end")):
             # gap / end with no at= end at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
-            until_ = step["until"]
-            y = ys.get(until_)
-            if until_ == "junction" and ys.get("hline_y") is not None:
-                y = ys["hline_y"]       # The exact line, not the center of its 36 px band: at=0.9 and 0.95 are different places.
-            end_y = (step.get("at") or JUNCTION_Y) * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
-            seen[until_] = (y is not None and y >= end_y
-                            and (until_ != "junction" or det is not None))    # As above: a junction counts only with the lane in view.
-            if until_ in ("junction", "crosswalk") and step.get("at") is not None and step.get("cm") is None \
-                    and self.track_at(until_, y if until_ != "junction" or det is not None else None, end_y, now):
-                seen[until_] = True
+            y = ys.get(step["until"])
+            seen[step["until"]] = (y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1     # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+                                   and (step["until"] != "junction" or det is not None))    # As above: a junction counts only with the lane in view.
         until = step["until"] if step is not None else None
         # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
         # A line that flickers during that time does not end the action the moment the blind period finishes.
@@ -1373,26 +1378,6 @@ class CourseRunner:
             self.since[k] = (self.since[k] if self.since[k] is not None else now) if v else None
             if not v:
                 self.armed[k] = True
-
-    def track_at(self, kind, y, end_y, now):
-        """at=: whether the line has come down to end_y, even if it can no longer be read.
-
-        Near the frame bottom a stripe or line is cut off or flickers, and at 12 cm/s the last few percent of the frame pass in about 3 frames, too few to count.
-        So a line read several times is followed by the ruler: misreads are refused, and past the frame bottom it is carried on from its speed.
-        """
-        ruler = self.ruler
-        if y is not None:
-            ruler.feed(kind, y, now, moving=self.moving)
-            self.at_reads += 1
-        elif (self.at_reads < JUNCTION_FRAMES or ruler.kind != kind or ruler.read_t is None or now - ruler.read_t > AT_TRACK_SEC
-              or floor_y(ruler.z) < AT_TRACK_NEAR * FRAME_H):
-            ruler.reset(None)   # Gone from mid frame, or long ago: not a line leaving by the bottom. It counts as gone.
-            self.at_reads = 0
-            return False
-        else:
-            ruler.feed(kind, None, now, moving=self.moving)
-        return (self.at_reads >= JUNCTION_FRAMES and ruler.z is not None and ruler.read_t is not None
-                and now - ruler.read_t <= AT_TRACK_SEC and ruler.z <= floor_cm(end_y))
 
     def track_end(self, ys, now):
         """cm=: measure the end line every frame, before it is reached too, so the speed is known by the time it leaves the frame."""
@@ -1468,8 +1453,6 @@ class CourseRunner:
             elif (step["until"] is not None and elapsed >= step["min"]
                   and self.happened(step["until"], now, step.get("hold", 0.0))):
                 reason = self.EVENT_NAMES[step["until"]]
-                if step.get("cm") is None and self.ruler.guess:
-                    reason += f" (화면 {step['at']} 지점, 속도로 추정)"
                 if step["until"] not in self.STATE_EVENTS:
                     self.armed[step["until"]] = False   # Do not count the same line again in the next action.
                 self.count += 1
@@ -1477,7 +1460,6 @@ class CourseRunner:
                     # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
                     print(f"\n[{self.idx + 1}] {reason} {self.count}번째 지나감 ({step['nth']}번째에서 끝)")
                     self.ruler.reset(None)      # The next line is a new one.
-                    self.at_reads = 0
                     reason = None
                 elif step.get("cm") is not None:
                     self.start_run_out(step, ys or {}, now)
@@ -1595,7 +1577,7 @@ def speed_for(angle, base):
     return base - (base - MIN_SPEED) * ratio
 
 
-WEB_KEY_FILE = VISION_FILE.with_name("web_key.json")
+WEB_KEY_FILE =VISION_FILE.with_name("web_key.json")
 
 
 def web_key():
@@ -2032,12 +2014,13 @@ class Driver:
         self.course = CourseRunner(course, start)
         self.base_speed = base_speed
         self.obs = obstacle
+        if person is not None:
+            person.place = self.detect.in_lane if PERSON_IN_LANE else None
         self.person = None if person is None else PersonWatch(   # person is a PersonDetector. None drives without looking for the figure.
             person, FRAME_H, PERSON_AT, PERSON_X, PERSON_RESUME_DELAY, PERSON_MIN_STOP, PERSON_MAX_WAIT, PERSON_EVERY)
         self.lost_since = None      # Time the lane was lost.
         self.yaw, self.yaw_idx = YawMeter(), -1     # Turn angle from the camera, reset at each turn action.
-        self.hard_steer = False     # Steering is past HARD_STEER, and not yet back below HARD_STEER_OFF.
-        self.last_cmd, self.ramp_t = 0.0, None      # Motor command last sent and when, for SPEED_UP_RATE and SPEED_DOWN_RATE.
+        self.approach = (0.0, -1.0, -1)    # slow=: (slowdown amount 0 to 1, time the line was last seen, action index).
         self.history = []           # Recent forward driving: (seconds, steering angle, speed). Replayed backwards when backing up.
         self.last_t = None
         self.back = None            # Back-up in progress: start, plan [(seconds, angle)], entries used, lost episode, action index.
@@ -2049,7 +2032,6 @@ class Driver:
         self.done = False
         self.det, self.junction, self.light = None, False, None
         self.light_tick = 0         # Frames since start, for LIGHT_VIEW_EVERY.
-        self.approach = (0.0, -1.0, -1)    # slow=: (slowdown amount 0 to 1, time the line was last seen, action index).
         self.red = None             # wait_green looking for red: action index, back-ups used, when this look began, back-up in progress.
         self.hline_t = None         # While aligning: last time heading said the horizontal line in view is a real one.
 
@@ -2378,8 +2360,7 @@ class Driver:
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
                        "near": detect.near_line,
-                       **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y} if step is not None and step.get("cm") is not None else
-                          {"hline_y": detect.hline_edge()} if step is not None and step["until"] == "junction" and step.get("at") is not None else {})},
+                       **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y} if step is not None and step.get("cm") is not None else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
         if course.done:
@@ -2388,8 +2369,6 @@ class Driver:
 
         base = course.speed if course.speed is not None else self.base_speed
         base = self.approach_speed(base, now)
-        if PERSON_SLOW is not None and self.person is not None and self.person.ahead:
-            base = min(base, PERSON_SLOW)       # Figure in view: slow down, so the car stops where it should.
         kp, kh, smooth = STYLES[course.opt("style", "normal")]
         if det is not None:
             # shift=+3: follow a line 3 cm to the right of the lane center.
@@ -2456,34 +2435,20 @@ class Driver:
             speed = speed_for(steering.angle, base)   # Slow for a large steer only while following the lane.
         else:
             speed = base        # Turn, straight, and curve keep the speed that was set.
-        self.hard_steer = abs(steering.angle) > (HARD_STEER_OFF if self.hard_steer else HARD_STEER)
-        if speed > 0 and self.lost_since is None and self.hard_steer:
+        if speed > 0 and self.lost_since is None and abs(steering.angle) > HARD_STEER:
             speed += HARD_STEER_BOOST   # A large steer drags the wheels and slows the car, so add this back. Skipped while the lane is lost.
         self.speed = speed
+        if speed > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
+            # The speed the motor really gets, so a retrace covers the distance really driven.
+            self.history.append((now - self.last_t, steering.angle, max(speed, motor_floor(steering.angle))))
+            while sum(h[0] for h in self.history) > LOST_BACK_MEMORY:
+                self.history.pop(0)
+        self.last_t = now
         cmd = speed
         if cmd > 0:
             # On the floor a motor command that is too low leaves the car stopped, especially at a large steer or on a weak battery, so raise it to the minimum.
             cmd = max(cmd, motor_floor(steering.angle))
-        cmd = self.ramp(cmd, now, steering.angle)
-        if cmd > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
-            # The speed the motor really gets, so a retrace covers the distance really driven.
-            self.history.append((now - self.last_t, steering.angle, cmd))
-            while sum(h[0] for h in self.history) > LOST_BACK_MEMORY:
-                self.history.pop(0)
-        self.last_t = now
         return steer, cmd, dbg
-
-    def ramp(self, cmd, now, angle):
-        """The motor command to send for this wanted one: forward driving changes it gradually, a stop or a back-up at once."""
-        dt = now - self.ramp_t if self.ramp_t is not None else 0.0
-        self.ramp_t = now
-        if SPEED_RAMP_ON and cmd > 0:
-            if self.last_cmd > 0:
-                cmd = float(np.clip(cmd, self.last_cmd - SPEED_DOWN_RATE * dt, self.last_cmd + SPEED_UP_RATE * dt))
-            else:
-                cmd = min(cmd, motor_floor(angle))      # From a standstill or from backing up: start at the lowest command that moves it.
-        self.last_cmd = cmd
-        return cmd
 
 
 def open_camera(locked=True):

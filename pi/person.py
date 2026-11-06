@@ -271,6 +271,7 @@ class PersonDetector:
         self.box = GUIDE                # Guide box the next view looks in. Not saved.
         self.photos = []                # Picture of the figure in each view, in the same order. None for a view saved before photos existed.
         self.photo_sigs = None
+        self.place = None               # Asked (x center, feet y) about each blob: may a figure count there? None counts everywhere.
         self.marked = False             # The box was dragged around the figure: all of it is taken as the figure, whatever its colors. Not saved.
         self.added = []                 # Background each view of this session added, so taking the view back takes that back too. Not saved.
 
@@ -727,13 +728,23 @@ class PersonDetector:
                 passed.append((margin, {"x": x * 2, "y": y * 2, "w": w * 2, "h": h * 2, "feet": int(feet), "score": color, "shape": shape}))
         # Most figure-like first, by color and outline together: past the near line color alone passes, and things in the figure's colors can score higher on it
         # than the figure does (1.00 for a chair leg against 0.99, outline 0.4 against 0.9), which would use up the looks before the figure's turn.
+        if self.place is not None:
+            allowed = []
+            for margin, blob in passed:
+                if self.place(blob["x"] + blob["w"] / 2, blob["feet"]):
+                    allowed.append((margin, blob))
+                else:
+                    self.near.append((blob["x"], blob["y"], blob["w"], blob["h"], blob["score"], blob["shape"]))
+            passed = allowed
         if photos and PHOTO_ON and self.photo_sigs is not None:
             passed.sort(key=lambda p: -p[1]["score"] * p[1]["shape"])
             for _, blob in passed[:MAX_PARTS]:
                 look, box = self.photo_match(frame, blob["x"], blob["y"], blob["w"], blob["h"])
                 blob["look"] = look
                 edge = blob["x"] <= 0 or blob["x"] + blob["w"] >= frame.shape[1]
-                if look >= (PHOTO_MIN_EDGE if edge else PHOTO_MIN):
+                bottom = box[1] + box[3]
+                placed = (near_y is None or bottom >= near_y) and (self.place is None or self.place(box[0] + box[2] / 2, bottom))     # Where the whole figure stands, not only the blob.
+                if placed and look >= (PHOTO_MIN_EDGE if edge else PHOTO_MIN):
                     blob.update(x=box[0], y=box[1], w=box[2], h=box[3], feet=box[1] + box[3])
                     self.found = blob
                     break
@@ -801,6 +812,7 @@ class AnyFigure:
     def __init__(self, horizon, weights, registered=None):
         self.horizon, self.weights, self.registered = horizon, weights, registered
         self.found, self.near, self.fg = None, [], None
+        self.place = None       # As in PersonDetector.
 
     @classmethod
     def load(cls, horizon, registered=None, path=ANY_FILE):
@@ -844,12 +856,14 @@ class AnyFigure:
     def __call__(self, frame, x_range=(0.0, 1.0), near_y=None):
         self.found, self.near = None, []
         if self.registered is not None:
+            self.registered.place = self.place
             self.found = self.registered(frame, x_range, near_y)
             self.near = list(self.registered.near)
             if self.found:
                 return self.found
         near_y = ANY_AT * frame.shape[0] if near_y is None else near_y
-        boxes = [b for b in self.blobs(frame, near_y) if x_range[0] <= (b[0] + b[2] / 2) / frame.shape[1] <= x_range[1]]
+        boxes = [b for b in self.blobs(frame, near_y) if x_range[0] <= (b[0] + b[2] / 2) / frame.shape[1] <= x_range[1]
+                 and (self.place is None or self.place(b[0] + b[2] / 2, b[1] + b[3]))]
         for x, y, w, h in boxes[:ANY_MAX]:
             score = float(self.weights[:-1] @ get_embedder()(embed_crop(frame, x, y, w, h)) - self.weights[-1])
             edge = x <= 0 or x + w >= frame.shape[1]
@@ -930,10 +944,6 @@ class PersonWatch:
         self.last_seen = None           # Time of the last sighting.
         self.hold_since = None
         self.gone_since = None          # While holding and not seeing it: when it was last seen. For the display.
-
-    @property
-    def ahead(self):
-        return self.seen and not self.ignored
 
     def update(self, frame, now):
         """Look at this frame (every `every` frames) and return whether to stand still."""

@@ -3,7 +3,7 @@ SIDES = ("left", "right", "center", None)
 STYLES = ("soft", "normal", "sharp", None)
 OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow", "blind_sec", "deg", "nth", "cm")
 
-_speed = 0.5          
+_speed = 0.45     
 
 
 def _hint(word, choices):
@@ -86,7 +86,7 @@ def follow(sec=None, until="junction", speed=None, **opt):
     return _auto(_step("follow", 0.0, sec, until, speed=speed, **opt), speed, 0.425)
 
 
-def straight(sec=None, until=None, angle="hold", speed=None, **opt):
+def straight(sec=2.5, until=None, angle="hold", speed=None, **opt):
     """시작 순간의 조향각을 유지한 채 직진하고, 0이면 정면으로 간다."""
     if not (angle == "hold" or isinstance(angle, (int, float))):
         raise ValueError('straight(): angle은 숫자 또는 "hold"')
@@ -144,7 +144,7 @@ def finish():
     return _step("finish", 0.0, 0, None)
 
 
-def to_junction(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
+def to_junction(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=8):
     """다음 교차로 선 앞까지 가서 끝낸다. nth=2면 첫 번째 선(교차로처럼 보이는 굽은 길 등)은 지나치고 두 번째에서 끝낸다. cm=면 선을 자로 재서 기준 위치에서 그만큼 더 간 뒤 끝낸다."""
     return _auto(follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm), speed, _speed)
 
@@ -228,13 +228,13 @@ def tl(min_sec=0.5, sec=0.50, speed=None, deg=90):
     return _turn_align_stop(left, sec, speed, angle=TL_ANGLE, deg=deg, min_sec=min_sec)
 
 
-TURN_SPEED = 0.35
+TURN_SPEED = 0.45
 TR_ANGLE = 21           
 TL_ANGLE = 26          
 ALIGN_SPEED = 0.4
-SETTLE_SPEED = 0.3     
+SETTLE_SPEED = 0.4     
 TURN_BLIND = 1.0        
-TURN_BLIND_SPEED = 0.35  
+TURN_BLIND_SPEED = 0.4  
 
 
 def _turn_align_stop(turn_fn, stop_sec, speed=None, angle=21, blind_sec=None, max_sec=10, deg=90, min_sec=0.5):
@@ -246,6 +246,8 @@ def _turn_align_stop(turn_fn, stop_sec, speed=None, angle=21, blind_sec=None, ma
     max_sec = max(max_sec, min_sec + 1.0)     # min_sec이 길면 최대 시간도 늘린다 (최소 시간 뒤 1초는 새 차선/deg를 기다림).
     steps = [turn_fn(until="lane", angle=angle, min_sec=min_sec, max_sec=max_sec, speed=turn_speed, blind_sec=blind_sec, deg=deg),
              follow(until="aligned", max_sec=3, speed=align_speed, style="soft")]
+    if speed is None:
+        steps[0]["resume"] = True   # TURN_SPEED로 돈 뒤에는 지정된 속도로 돌아간다 (_flat).
     return steps + [follow(stop_sec, speed=SETTLE_SPEED)] if stop_sec > 0 else steps
 
 def _expand(steps):
@@ -260,6 +262,9 @@ def _flat(steps):
     for s in _expand(steps):
         if s["do"] == "set_speed":
             cruise = s["speed"]
+        elif s.get("resume"):
+            cruise = _speed if cruise is None else cruise   # 턴 뒤 주행 속도: set_speed 값, 없으면 SPEED.
+            out.append({k: v for k, v in s.items() if k != "resume"})   # 표시를 지워서 _flat을 다시 불러도 결과가 같게 한다.
         else:
             out.append(dict(s, speed=cruise) if cruise is not None and s.get("auto") else s)
     return out

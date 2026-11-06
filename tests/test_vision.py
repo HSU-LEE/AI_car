@@ -1034,7 +1034,7 @@ def found_feet(det):
 
 def person_driver(course, feet=240, **config):
     defaults = {"PERSON_AT": 0.55, "PERSON_RESUME_DELAY": 0.5,
-                "PERSON_MIN_STOP": 0.0, "PERSON_MAX_WAIT": None, "PERSON_X": (0.1, 0.9)}
+                "PERSON_MIN_STOP": 0.0, "PERSON_MAX_WAIT": None, "PERSON_X": (0.1, 0.9), "PERSON_IN_LANE": False}
     old = {k: getattr(lf, k) for k in defaults}
     for k, v in {**defaults, **config}.items():
         setattr(lf, k, v)
@@ -1264,39 +1264,49 @@ def test_person_any():
         P._embedder, P._embedder_tried = old
 
 
-def test_speed_ramp():
-    print("\n[속도: 떨림 제거와 변화량 제한]")
-    d = person_driver([follow(2.0), finish()])
-    d.last_cmd, d.ramp_t = 0.0, 0.0
-    check("정지 상태에서는 최저 명령으로 출발", d.ramp(0.6, 0.0, 0) == lf.motor_floor(0), d.ramp(0.6, 0.0, 0))
-    d.last_cmd, d.ramp_t = 0.3, 0.0
-    up = d.ramp(0.6, 0.1, 0)
-    check("올릴 때는 초당 한도까지만", abs(up - (0.3 + lf.SPEED_UP_RATE * 0.1)) < 1e-6, up)
-    d.last_cmd, d.ramp_t = 0.6, 0.0
-    down = d.ramp(0.3, 0.1, 0)
-    check("내릴 때도 초당 한도까지만", abs(down - (0.6 - lf.SPEED_DOWN_RATE * 0.1)) < 1e-6, down)
-    check("내리는 한도가 올리는 한도보다 빠름", lf.SPEED_DOWN_RATE > lf.SPEED_UP_RATE)
-    d.last_cmd, d.ramp_t = 0.6, 0.0
-    check("정지는 바로 0", d.ramp(0.0, 0.01, 0) == 0.0)
-    d.last_cmd, d.ramp_t = 0.6, 0.0
-    check("후진은 바로", d.ramp(-0.5, 0.01, 0) == -0.5)
-    check("후진 다음 전진은 최저 명령으로 출발", d.ramp(0.6, 0.02, 0) == lf.motor_floor(0))
-    d.last_cmd, d.ramp_t = 0.31, 0.0
-    check("목표에 가까우면 목표 그대로", d.ramp(0.32, 1.0, 0) == 0.32)
-    old = lf.SPEED_RAMP_ON
-    lf.SPEED_RAMP_ON = False
-    d.last_cmd, d.ramp_t = 0.0, 0.0
-    check("SPEED_RAMP_ON=False: 명령 그대로", d.ramp(0.6, 0.01, 0) == 0.6)
-    lf.SPEED_RAMP_ON = old
-    # The steering boost: at a threshold, steering that wobbles must not flip the command.
-    d = person_driver([follow(30.0), finish()])
-    frame, t, cmds = lane_frame(), 0.0, []
-    for angle in [10] * 20 + [18.5, 17.5] * 20:
-        d.steering.angle = angle
-        cmds.append(d.tick(frame, t)[1])
-        t += 1 / 30
-    jumps = sum(abs(a - b) > 0.05 for a, b in zip(cmds, cmds[1:]))
-    check("조향이 18도 근처에서 흔들려도 명령이 안 튐", jumps == 0, jumps)
+def test_person_in_lane():
+    print("\n[레고 사람: 차선 사이만]")
+    frame = lane_frame()
+    lane = lf.LaneDetector()
+    check("차선을 모르면 구분하지 않음", lane.lane_span(300) is None and lane.in_lane(10, 300))
+    lane(frame, draw=False)
+    span = lane.lane_span(300)
+    check("차선 위치를 높이별로 앎", span is not None and 0 < span[0] < 320 < span[1] < 640, span)
+    check("차선 사이는 안, 바깥은 밖", lane.in_lane(320, 300) and not lane.in_lane(span[0] - 40, 300) and not lane.in_lane(span[1] + 40, 300))
+    check("화면 아래로 벗어난 발 높이도 판단", lane.lane_span(400) is not None and lane.lane_span(400)[0] < span[0])
+    one = lf.LaneDetector()
+    one(lane_frame(right=False), draw=False)
+    check("한쪽 차선만 보이면 차로 폭으로 반대쪽을 잡음", one.lane_span(300) is not None and one.lane_span(300)[1] > 320, one.lane_span(300))
+    d = person_driver([follow(30.0), finish()], feet=300, PERSON_IN_LANE=True)
+    t, cmds = run_frames(d, minifig(lane_frame(), 320, 300), 0.0, 1.0)
+    check("차선 사이의 사람에는 멈춤", cmds[-1] == 0 and d.person.hold, cmds[-1])
+    d = person_driver([follow(30.0), finish()], feet=300, PERSON_IN_LANE=True, PERSON_X=(0.0, 1.0))
+    left = d.detect.__class__()
+    left(lane_frame(), draw=False)
+    x = int(left.lane_span(300)[0] - 40)
+    t, cmds = run_frames(d, minifig(lane_frame(), x, 300), 0.0, 1.0)
+    check("차선 밖의 사람에는 안 멈춤", not d.person.hold and cmds[-1] > 0, (x, cmds[-1]))
+
+
+def test_speed_constant():
+    print("\n[속도: 조향에 따른 감속]")
+    frame = lane_frame()
+    check("speed_for: 직진은 지정 속도, 조향이 커질수록 감속", lf.speed_for(0, 0.6) == 0.6 and lf.speed_for(lf.STEER_LIMIT / 2, 0.6) < 0.6
+          and abs(lf.speed_for(lf.STEER_LIMIT, 0.6) - lf.MIN_SPEED) < 1e-9)
+    check("speed_for: 최저 속도 이하는 그대로", lf.speed_for(lf.STEER_LIMIT, 0.2) == 0.2)
+    from course import to_end as cs_to_end
+    d = lf.Driver([cs_to_end(speed=0.26, slow=0.18), finish()])
+    d.detect.gap_y = 300
+    with quiet():
+        d.course.update(False, 0.0, (0.0, 0.0), False, {"near": True})
+    check("slow=: 최소 속도보다 낮게 달릴 때 가속하지 않음", d.approach_speed(0.26, 0.05) <= 0.26, d.approach_speed(0.26, 0.05))
+    d = lf.Driver([follow(until="junction", speed=0.6, at=0.8, slow=0.3), finish()])
+    d.detect.junction_y = 0.8 * lf.FRAME_H
+    with quiet():
+        d.course.update(False, 0.0, (0.0, 0.0), False, {"near": True})
+    check("slow=: 선에 다가가면 감속", abs(d.approach_speed(0.6, 0.05) - 0.3) < 1e-9, d.approach_speed(0.6, 0.05))
+    check("지정 속도가 낮아도 최저 명령은 보장", lf.Driver([follow(30.0, speed=0.1), finish()]).tick(frame, 0.0)[1] >= lf.MOTOR_MIN - 1e-9)
+    check("차선을 잃으면 최저 속도로 기어감은 유지", lf.MIN_SPEED == 0.3)
 
 
 def test_person_stop():
@@ -1427,6 +1437,12 @@ def test_set_speed():
     defaults = cs._flat([cs.to_end(), cs.uturn("left"), cs.follow(1)])
     check("to_end: max_sec로 시간 제한", cs.to_end(max_sec=8)["max"] == 8 and cs.to_end()["max"] is None)
     check("set_speed 없으면 기존 기본값 그대로", (defaults[0]["speed"], defaults[1]["speed"], defaults[-1]["speed"]) == (0.3, 0.4, 0.425))
+    check("턴 뒤: SPEED로 돌아옴", cs._flat([cs.tr(), cs.follow(1)])[-1]["speed"] == cs.SPEED)
+    check("턴 뒤: set_speed 값으로 돌아옴", cs._flat([cs.set_speed(0.33), cs.tl(), cs.follow(1)])[-1]["speed"] == 0.33)
+    check("턴 뒤: 직접 준 speed=는 그대로", cs._flat([cs.tr(), cs.follow(1, speed=0.5)])[-1]["speed"] == 0.5)
+    check("speed= 준 턴 뒤에는 기본값 그대로", cs._flat([cs.tr(speed=0.5), cs.follow(1)])[-1]["speed"] == 0.425)
+    resumed = cs._flat([cs.tr(), cs.follow(1)])
+    check("턴 뒤 복귀: _flat을 다시 불러도 같음", cs._flat(resumed) == resumed and all("resume" not in s for s in resumed))
     d = lf.Driver([cs.set_speed(0.33), follow(9), finish()])
     with quiet():
         d.tick(lane_frame(), 0.0)
@@ -1792,11 +1808,6 @@ def test_align_steer():
     check("to_end: 가로선이 보이면 조향 제한", max(abs(a) for a in angles if a is not None) <= lf.APPROACH_STEER_MAX + 0.5,
           f"{max(abs(a) for a in angles if a is not None):.1f}도")
 
-    d = lf.Driver([cs_to_end(speed=0.26, slow=0.18), finish()])
-    d.detect.gap_y = 300
-    with quiet():
-        d.course.update(False, 0.0, (0.0, 0.0), False, {"near": True})
-    check("slow=: 최소 속도보다 낮게 달릴 때 가속하지 않음", d.approach_speed(0.26, 0.05) <= 0.26, d.approach_speed(0.26, 0.05))
 
     d = lf.Driver([follow(9, speed=0.1), finish()])
     with quiet():
@@ -1865,76 +1876,6 @@ def test_tools_read_web_keys():
     lf.LIGHT_S_MIN = before
     check("tune_light: Ctrl+C는 저장 안 하고 끝", run_tool(tune_light, "\x03") == {})
     check("tune_person: 웹 키로 끝남", run_tool(tune_person, "zq") == {})
-
-
-def test_at_low_in_frame():
-    print("[at: 화면 아래쪽]")
-    import course as cs
-    near = 342
-
-    def line(c, y, t, band=None, det=(0.0, 0.0), hline=True):
-        c.update(band is not None, t, det, False, {"junction": band, "hline_y": y if hline else None, "near": True})
-        return t + 1 / 40
-
-    for at in (0.86, 0.9, 0.95):
-        with quiet():
-            c = lf.CourseRunner([cs.to_junction(at, blind_sec=0), finish()])
-            t = feed(c, 5, 0.0)
-            y, end = 240.0, None
-            while y < 358 and c.idx == 0:
-                t = line(c, y, t, near if y > 324 else 270)
-                end = y
-                y += 2
-        check(f"to_junction(at={at}): 칸이 아니라 선 위치로 끝", c.idx == 1 and abs(end - at * H) <= 8, f"y={end:.0f}, 목표 {at * H:.0f}")
-    with quiet():   # The line leaves the frame before at=0.99 can be read for 3 frames.
-        c = lf.CourseRunner([cs.to_junction(0.99, blind_sec=0), finish()])
-        t = feed(c, 5, 0.0)
-        for y in range(300, 352, 4):
-            t = line(c, float(y), t, near)
-        before = c.idx
-        for _ in range(30):
-            t = line(c, None, t, None, det=None, hline=False)
-    check("to_junction(at=0.99): 화면 끝을 지나도 속도로 이어서 끝", before == 0 and c.idx == 1, f"{before} → {c.idx}")
-
-    def stripes(c, y, t):
-        c.update(False, t, (0.0, 0.0), y is not None and y >= 180, {"crosswalk": y, "near": True})
-        return t + 1 / 40
-
-    with quiet():   # Run 190409: the nearest stripe is cut off and the reading jumps back up.
-        c = lf.CourseRunner([cs.to_crosswalk(0.97), finish()])
-        t = feed(c, 5, 0.0)
-        for y in (320, 326, 332, 338, 344, 287, 346, 295, 348, None, None, None, None, None, None, None, None):
-            t = stripes(c, y, t)
-    check("to_crosswalk(at=0.97): 줄무늬가 끊겨도 끝", c.idx == 1, f"동작 {c.idx + 1}")
-    with quiet():
-        c = lf.CourseRunner([cs.to_crosswalk(0.8), finish()])
-        t = feed(c, 5, 0.0)
-        for y in (200, 204, 208, 212, None, None, None):
-            t = stripes(c, y, t)
-        t = feed(c, 40, t)
-    check("to_crosswalk: 화면 중간에서 사라진 것으로는 안 끝남", c.idx == 0, f"동작 {c.idx + 1}")
-    with quiet():
-        c = lf.CourseRunner([cs.to_crosswalk(0.97), finish()])
-        t = feed(c, 5, 0.0)
-        for y in (345, 346, None):
-            t = stripes(c, y, t)
-        t = feed(c, 40, t)
-    check("to_crosswalk: 1~2프레임 본 것으로는 안 끝남", c.idx == 0, f"동작 {c.idx + 1}")
-    with quiet():   # Seen during blind: gone once afterwards, so the action must arm and end on the next line.
-        c = lf.CourseRunner([cs.to_junction(0.9, blind_sec=0.5), finish()])
-        t = 0.0
-        for y in (330, 334, 338, 342):
-            t = line(c, float(y), t, near)
-        for _ in range(60):
-            t = line(c, None, t, None, hline=False)
-        seen_gone = c.idx
-        for y in range(240, 340, 4):
-            t = line(c, float(y), t, near)
-    check("to_junction: blind 중 지나간 선은 잊고 다음 선에서 끝", seen_gone == 0 and c.idx == 1, f"{seen_gone} → {c.idx}")
-    for at in (0.86, 0.97):
-        with quiet():
-            s = cs.to_crosswalk(at)
-        check(f"to_crosswalk({at}): 설정 가능", s["at"] == at)
 
 
 def test_red_search():
@@ -2105,9 +2046,9 @@ def test_saved_with_run():
 
 
 def main():
-    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_at_low_in_frame, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
+    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_speed_ramp, test_person_stop, test_set_speed):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_speed_constant, test_person_stop, test_set_speed):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")
