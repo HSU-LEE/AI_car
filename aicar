@@ -172,7 +172,7 @@ ensure_mac_venv() {
         echo "맥에 분석용 파이썬 환경을 만드는 중 (처음 한 번)..."
         python3 -m venv "$ROOT/.venv" && "$ROOT/.venv/bin/pip" install -q numpy opencv-python flask || die "환경 설치 실패"
     fi
-    "$ROOT/.venv/bin/python" -c "import flask" 2>/dev/null || "$ROOT/.venv/bin/pip" install -q flask || die "환경 설치 실패"
+    "$ROOT/.venv/bin/python" -c "import flask, ai_edge_litert" 2>/dev/null || "$ROOT/.venv/bin/pip" install -q flask ai-edge-litert || die "환경 설치 실패"
 }
 
 cmd_replay() {

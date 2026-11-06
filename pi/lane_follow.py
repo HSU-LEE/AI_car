@@ -138,6 +138,8 @@ END_MIN_SPEED = 3.0     # cm=: a measured speed below this (cm/s), on a car that
 END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measured. About what the lowest motor command gives.
 END_SWITCH_FRAMES = 3   # cm=: before the end line is reached, this many readings in a row that agree with each other replace a reading they jump away from.
 END_FRESH_SEC = 0.15    # cm=: a reading older than this when the line is reached does not count as that line's position.
+AT_TRACK_NEAR = 0.8     # at=: a line read below this frame height, then gone, has left by the bottom of the frame. Its place is carried on from the measured speed.
+AT_TRACK_SEC = 1.0      # at=: and for at most this long after it was last read.
 END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is bounded because lost-lane back-up is off during it.
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
@@ -332,7 +334,8 @@ def draw_person(dbg, detector, at):
     if detector.found:
         f = detector.found
         cv2.rectangle(dbg, (f["x"], f["y"]), (f["x"] + f["w"], f["y"] + f["h"]), C_PERSON, 2, cv2.LINE_AA)
-        chip(dbg, f"PERSON c{f['score']:.2f} s{f['shape']:.2f}", f["x"], f["y"] - 22, C_PERSON, 0.38)
+        look = f"" if f.get("look") is None else f" L{f['look']:.2f}"     # L: how much it looks like the registered figure (EMBED_MIN).
+        chip(dbg, f"PERSON c{f['score']:.2f} s{f['shape']:.2f}{look}", f["x"], f["y"] - 22, C_PERSON, 0.38)
 
 
 class LaneDetector:
@@ -402,9 +405,9 @@ class LaneDetector:
         counts = np.bincount(bottom[bottom > 0], minlength=n)
         if counts.max() == 0:
             return None
-        pts = cv2.findNonZero((labels == counts.argmax()).astype(np.uint8))
+        outline, _ = cv2.findContours((labels == counts.argmax()).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)    # A hull needs only the outer edge, not every pixel.
         hull = np.zeros_like(small)
-        cv2.fillConvexPoly(hull, cv2.convexHull(pts), 255)
+        cv2.fillConvexPoly(hull, cv2.convexHull(np.concatenate(outline)), 255)
         hull = cv2.dilate(hull, np.ones((3, 3), np.uint8))
         return cv2.resize(hull, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -503,13 +506,17 @@ class LaneDetector:
         gray = cv2.GaussianBlur(cv2.cvtColor(frame[top:bot], cv2.COLOR_BGR2GRAY), (5, 5), 0)
         half = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
         mask = tophat_ellipse(half, TOPHAT_K) >= self.thr
+        counts = mask.sum(axis=1)
         hits = 0
         for r in range(mask.shape[0] - 1, -1, -1):      # From the bottom (the near side).
+            y = top + 2 * r
+            need = FAR_HLINE * LANE_WIDTH_PX * (y - HORIZON_Y) / (342 - HORIZON_Y)
+            if counts[r] * 2 < need:    # Too few line pixels in the row for any run of them to be long enough.
+                hits = 0
+                continue
             row = np.concatenate(([0], mask[r].astype(np.int8), [0]))
             edges = np.flatnonzero(np.diff(row))
             longest = (edges[1::2] - edges[::2]).max() * 2 if len(edges) else 0
-            y = top + 2 * r
-            need = FAR_HLINE * LANE_WIDTH_PX * (y - HORIZON_Y) / (342 - HORIZON_Y)
             hits = hits + 1 if longest >= need else 0
             if hits >= 2:                               # At least two rows in a row, so noise is excluded.
                 return y + 2
@@ -518,7 +525,9 @@ class LaneDetector:
     @staticmethod
     def find_lines(band):
         """One band: vertical-line x positions, a horizontal-line candidate (start, end) or None, and a crosswalk flag."""
-        cols = band.sum(axis=0).astype(np.float64)
+        cols = cv2.reduce(band, 0, cv2.REDUCE_SUM, dtype=cv2.CV_32S).ravel().astype(np.float64)
+        if not cols.any():      # Most bands of a straight lane are mostly empty columns, and some bands are wholly empty. Nothing to look at.
+            return [], None, False
         on = (cols > band.shape[0] * 0.2 * 255).astype(np.int8)
         edges = np.flatnonzero(np.diff(np.concatenate(([0], on, [0]))))
         runs, hline = [], None
@@ -540,7 +549,10 @@ class LaneDetector:
                 merged[-1][1] = b
             else:
                 merged.append([a, b])
-        lines = [float(np.average(np.arange(a, b), weights=cols[a:b] + 1e-6)) for a, b in merged]
+        lines = []
+        for a, b in merged:     # The weighted mean of the columns. np.average does the same with far more checks, and this runs for every line in every band.
+            weights = cols[a:b] + 1e-6
+            lines.append(float(np.multiply(np.arange(a, b), weights).sum() / weights.sum()))
         return lines, hline, False
 
     @staticmethod
@@ -1056,6 +1068,11 @@ def floor_cm(y):
     return CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(y - HORIZON_Y, 1.0)
 
 
+def floor_y(cm):
+    """Screen height of a floor point this far ahead of the camera. The inverse of floor_cm."""
+    return HORIZON_Y + CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(cm, 1.0)
+
+
 class EndRuler:
     """cm=: where the line this action ends on is, using the line itself as a ruler. It needs no floor texture and adds up no error.
 
@@ -1182,6 +1199,7 @@ class CourseRunner:
         self.ruler = EndRuler()     # cm=: where the end line is.
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
         self.run_start = None       # cm=: when the end line was reached.
+        self.at_reads = 0           # at=: frames the line this action ends on has been read.
         self.moving = True          # cm=: whether the motor is driving the car forward. Driver fills it every frame.
 
     def step(self):
@@ -1204,6 +1222,7 @@ class CourseRunner:
         self.red_hits, self.red_seen, self.red_box = 0, False, None
         self.red_boxes, self.local_light = [], None
         self.ruler, self.run_out, self.run_start = EndRuler(), False, None
+        self.at_reads = 0
         step = self.step()
         if step is None:
             print(f"\n[코스 끝] 이제부터 차선만 따라감")
@@ -1318,9 +1337,16 @@ class CourseRunner:
                 "aligned": det is not None and abs(det[0]) < ALIGN_OFFSET and abs(det[1]) < ALIGN_HEADING}
         if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] in ("gap", "end")):
             # gap / end with no at= end at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
-            y = ys.get(step["until"])
-            seen[step["until"]] = (y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1     # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
-                                   and (step["until"] != "junction" or det is not None))    # As above: a junction counts only with the lane in view.
+            until_ = step["until"]
+            y = ys.get(until_)
+            if until_ == "junction" and ys.get("hline_y") is not None:
+                y = ys["hline_y"]       # The exact line, not the center of its 36 px band: at=0.9 and 0.95 are different places.
+            end_y = (step.get("at") or JUNCTION_Y) * FRAME_H - 1    # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+            seen[until_] = (y is not None and y >= end_y
+                            and (until_ != "junction" or det is not None))    # As above: a junction counts only with the lane in view.
+            if until_ in ("junction", "crosswalk") and step.get("at") is not None and step.get("cm") is None \
+                    and self.track_at(until_, y if until_ != "junction" or det is not None else None, end_y, now):
+                seen[until_] = True
         until = step["until"] if step is not None else None
         # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
         # A line that flickers during that time does not end the action the moment the blind period finishes.
@@ -1340,6 +1366,26 @@ class CourseRunner:
             self.since[k] = (self.since[k] if self.since[k] is not None else now) if v else None
             if not v:
                 self.armed[k] = True
+
+    def track_at(self, kind, y, end_y, now):
+        """at=: whether the line has come down to end_y, even if it can no longer be read.
+
+        Near the frame bottom a stripe or line is cut off or flickers, and at 12 cm/s the last few percent of the frame pass in about 3 frames, too few to count.
+        So a line read several times is followed by the ruler: misreads are refused, and past the frame bottom it is carried on from its speed.
+        """
+        ruler = self.ruler
+        if y is not None:
+            ruler.feed(kind, y, now, moving=self.moving)
+            self.at_reads += 1
+        elif (self.at_reads < JUNCTION_FRAMES or ruler.kind != kind or ruler.read_t is None or now - ruler.read_t > AT_TRACK_SEC
+              or floor_y(ruler.z) < AT_TRACK_NEAR * FRAME_H):
+            ruler.reset(None)   # Gone from mid frame, or long ago: not a line leaving by the bottom. It counts as gone.
+            self.at_reads = 0
+            return False
+        else:
+            ruler.feed(kind, None, now, moving=self.moving)
+        return (self.at_reads >= JUNCTION_FRAMES and ruler.z is not None and ruler.read_t is not None
+                and now - ruler.read_t <= AT_TRACK_SEC and ruler.z <= floor_cm(end_y))
 
     def track_end(self, ys, now):
         """cm=: measure the end line every frame, before it is reached too, so the speed is known by the time it leaves the frame."""
@@ -1415,6 +1461,8 @@ class CourseRunner:
             elif (step["until"] is not None and elapsed >= step["min"]
                   and self.happened(step["until"], now, step.get("hold", 0.0))):
                 reason = self.EVENT_NAMES[step["until"]]
+                if step.get("cm") is None and self.ruler.guess:
+                    reason += f" (화면 {step['at']} 지점, 속도로 추정)"
                 if step["until"] not in self.STATE_EVENTS:
                     self.armed[step["until"]] = False   # Do not count the same line again in the next action.
                 self.count += 1
@@ -1422,6 +1470,7 @@ class CourseRunner:
                     # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
                     print(f"\n[{self.idx + 1}] {reason} {self.count}번째 지나감 ({step['nth']}번째에서 끝)")
                     self.ruler.reset(None)      # The next line is a new one.
+                    self.at_reads = 0
                     reason = None
                 elif step.get("cm") is not None:
                     self.start_run_out(step, ys or {}, now)
@@ -2318,7 +2367,8 @@ class Driver:
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
                        "near": detect.near_line,
-                       **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y} if step is not None and step.get("cm") is not None else {})},
+                       **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y} if step is not None and step.get("cm") is not None else
+                          {"hline_y": detect.hline_edge()} if step is not None and step["until"] == "junction" and step.get("at") is not None else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
         if course.done:
@@ -2442,6 +2492,8 @@ def load_person():
         print("레고 사람 인식 꺼짐 (course.py PERSON_ON)")
         return None
     detector = PersonDetector.load(HORIZON_Y)
+    if detector and detector.embeds is None:
+        print("[주의] 등록된 레고에 모습 정보가 없어 색과 윤곽만 봅니다. 다시 등록하면 켜집니다: aicar person")
     print(f"레고 사람 인식 켜짐 (시점 {len(detector.views)}개)" if detector
           else "[경고] 등록된 레고 사람이 없어 사람을 보고 멈추지 않습니다. 등록: aicar person")
     return detector

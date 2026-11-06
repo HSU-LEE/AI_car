@@ -11,11 +11,13 @@ Each frame then goes through:
   4. Colors in that blob compared with a registered view, overall and from top to bottom. A red box does not match a figure that is only
      partly red, and a figure with its shirt and trousers colors swapped does not match either.
   5. Outline compared with the same view. A box of the figure's color does not have a head, arms, and legs.
+  6. What it looks like, by a small image model (Embedder), only for a blob that passed the rest. It needs no training on the figure: the model turns a picture into numbers, and
+     pictures that look alike get similar numbers. Without the model or a view that holds these numbers, this check is skipped and the rest decide.
 Only a blob that passes all of these counts. Anything else may be a decoy, so a miss is preferred to a false match.
 
 While driving, only how close it is decides whether these steps apply. Feet above the near line (PERSON_AT) are too far to judge, so that figure is ignored until the car
 has come closer: at that size a real figure passes in one frame out of ten, and it stopped and started the car over and over. Feet below the line must never be missed, so only
-its colors are compared (NEAR_COLOR), and only something far bigger than a figure is left out (NEAR_BIG). Outline, brightness, and place in the frame change or get cut off up close, and none of them can reject it there.
+its colors are compared (NEAR_COLOR), and only something far bigger than a figure (NEAR_BIG), an outline nothing like one standing or lying (NEAR_SHAPE), or a blob running off a frame corner is left out. Outline, brightness, and place in the frame change or get cut off up close, and none of them can reject it there.
 
 Saved to person.json on the Pi. `aicar push` does not overwrite it.
 """
@@ -26,6 +28,7 @@ import cv2
 import numpy as np
 
 PERSON_FILE = Path(__file__).with_name("person.json")
+EMBED_MODEL = Path(__file__).with_name("mobilenet_v3_small.tflite")
 
 HUE_BINS = 18           # Colored pixels: this many hue steps. Brightness and saturation are compared separately (LAB_*), so no bin edge falls inside a lighting change.
 GRAY_LEVELS = 4         # Colorless pixels: this many brightness steps.
@@ -41,7 +44,12 @@ TRACK_ONLY = 0.1        # Colorless pixels count only when real colors cover les
 ALPHA = 2.0             # A color counts as the figure when its share of the figure is at least this times its share of the background.
 FIG_MIN = 0.01          # A color must cover at least this share of the figure. Smaller is noise from the cutout.
 NEAR_COLOR = 0.7        # Minimum color match past the near line. Real figure there, under other light than at registration, even lying down: 0.78-0.80.
-NEAR_BIG = 2.5          # Past the near line, a blob wider or taller than this times the registered figure at that place on the floor is not a figure, however close it is. Real figure: at most 1.5. A yellow block joined to the wooden edge beside the track, which also matches at 0.75: 3 and up.
+EMBED_MIN = 0.4         # Lowest likeness (0 to 1) to a registered view. Registered figure in other recordings: 0.86-0.99, or 0.33-0.49 for a small one from one view. Off-track things in its colors: 0.1-0.2. Another figure or a toy block: up to 0.5.
+EMBED_MARGIN = 0.25     # The picture compared is the blob's box and this much around it, as a share of its longer side.
+EMBED_MAX = 2           # At most this many blobs are looked at per frame. Each costs about 13 ms on the Pi.
+NEAR_SHAPE = 0.25       # Past the near line, the outline must overlap a view at least this much, standing or lying. A room object in the figure's colors: 0.14. Real figure, cut off or not: 0.43 and up.
+NEAR_SMALL = 0.5        # Past the near line, a blob shorter and narrower than this times the registered figure at that place on the floor is too small to be it. A small thing off to the side otherwise passes on color alone, being too small to look at.
+NEAR_BIG = 2.0          # Past the near line, a blob wider or taller than this times the registered figure at that place on the floor is not a figure, however close it is. Real figure: at most 1.5. A yellow block joined to the wooden edge beside the track, which also matches at 0.75: 3 and up.
 MATCH = 0.7             # Minimum color match with a registered view (0 to 1), until registration sets it (auto_tune).
 SHAPE_MATCH = 0.82      # Minimum outline overlap with the same view (0 to 1), until registration sets it (auto_tune). On the real figure: itself 0.88-1.0, an oval 0.78, a box 0.63.
 LAB_L = 18              # Largest difference from the view's mean lightness (Lab L, 0 to 100). Real figure at +-15% brightness: about 10.
@@ -82,12 +90,17 @@ CONFIRM_HITS = 3        # This many sightings in that time, in a row or not, mea
 HITS = 3                # Checked frames in a row before the figure counts as appeared or gone.
 
 
+_HUE_BIN = (np.arange(256) // 10).astype(np.uint8)
+_GRAY_BIN = (HUE_BINS + np.arange(256) // (256 // GRAY_LEVELS)).astype(np.uint8)
+
+
 def color_index(hsv):
-    """Color bin of every pixel of an HSV image."""
+    """Color bin of every pixel of an HSV image. Runs on every checked frame, so it works in small integer types and lookup tables."""
     h, s, v = cv2.split(hsv)
-    need = np.where((h >= WARM_H[0]) & (h <= WARM_H[1]), GRAY_C, GRAY_C_COOL)
-    colored = (s >= GRAY_S) & (v >= BLACK_V) & (s.astype(np.int32) * v >= need * 255)
-    return np.where(colored, h.astype(np.intp) // 10, HUE_BINS + v // (256 // GRAY_LEVELS))
+    warm = (h >= WARM_H[0]) & (h <= WARM_H[1])
+    need = np.where(warm, np.uint16(GRAY_C * 255), np.uint16(GRAY_C_COOL * 255))
+    colored = (s >= GRAY_S) & (v >= BLACK_V) & (s.astype(np.uint16) * v >= need)
+    return np.where(colored, cv2.LUT(h, _HUE_BIN), cv2.LUT(v, _GRAY_BIN))
 
 
 def normalized(hist):
@@ -136,6 +149,45 @@ def ring_colors(small, box):
     return q, ring, seen
 
 
+class Embedder:
+    """Numbers for what a picture looks like: the MediaPipe image embedder model, run by LiteRT, which the Pi has. Nothing is downloaded while running."""
+
+    def __init__(self, path=EMBED_MODEL):
+        from ai_edge_litert.interpreter import Interpreter
+        self.net = Interpreter(model_path=str(path), num_threads=2)
+        self.net.allocate_tensors()
+        self.input, self.output = self.net.get_input_details()[0], self.net.get_output_details()[0]
+        self.size = int(self.input["shape"][1])
+
+    def __call__(self, bgr):
+        picture = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), (self.size, self.size), interpolation=cv2.INTER_AREA).astype(np.float32) / 127.5 - 1
+        self.net.set_tensor(self.input["index"], picture[None])
+        self.net.invoke()
+        numbers = self.net.get_tensor(self.output["index"]).ravel().astype(np.float32)
+        return numbers / (np.linalg.norm(numbers) + 1e-9)
+
+
+_embedder, _embedder_tried = None, False
+
+
+def get_embedder():
+    """The embedder, or None with one message if it cannot run here (no model file, or no LiteRT, as on a Mac)."""
+    global _embedder, _embedder_tried
+    if not _embedder_tried:
+        _embedder_tried = True
+        try:
+            _embedder = Embedder()
+        except (ImportError, OSError, ValueError, RuntimeError) as e:
+            print(f"[주의] 레고 모양 확인(임베더)을 쓸 수 없어 색과 윤곽만 봅니다: {e}")
+    return _embedder
+
+
+def embed_crop(frame, x, y, w, h):
+    """The picture of a blob and what is around it. Full-frame px."""
+    m = int(EMBED_MARGIN * max(w, h))
+    return frame[max(y - m, 0):min(y + h + m, frame.shape[0]), max(x - m, 0):min(x + w + m, frame.shape[1])]
+
+
 class PersonDetector:
     """The registered figure. Call it with a frame to get the best match, or None."""
 
@@ -148,6 +200,7 @@ class PersonDetector:
         self.table = None               # Per color bin: whether it counts as the figure.
         self.sigs = []                  # Per view: the colors that count, for comparing with a blob.
         self.band_sigs = []             # Per view: the same, per slice from top to bottom.
+        self.embeds = None              # Per view that has them: numbers for what it looks like.
         self.upper_sigs = []            # Per view: the colors without the legs, for a figure so close that the frame cuts them off.
         self.found = None               # Last match: {"x", "y", "w", "h", "feet", "score"} in full-frame px.
         self.near = []                  # Blobs of plausible size that failed: [(x, y, w, h, color match, outline match)]. Shown while tuning.
@@ -235,6 +288,11 @@ class PersonDetector:
         if not self.table.any():
             self.undo()
             return False, "사람 색이 주변과 같아 구분할 수 없습니다. 색이 다른 곳에 세워 보세요"
+        embedder = get_embedder()
+        if embedder is not None:
+            bx, by = max(groups, key=lambda g: g[5])[:2] if groups else (x, y)     # The same blob detection will see.
+            view["embed"] = [round(float(n), 4) for n in embedder(embed_crop(frame, bx * 2, by * 2, view["w"], view["h"]))]
+            self.fit()
         if view["below"] > PART_ONLY:
             self.undo()
             return False, "사람의 일부만 색으로 잡혔습니다. 드래그로 사람 전체를 감싸 다시 찍으세요"
@@ -328,7 +386,7 @@ class PersonDetector:
     def fit(self):
         """Rebuild the color table and the per-view colors from the views and the background."""
         if not self.views:
-            self.table, self.sigs, self.band_sigs, self.upper_sigs = None, [], [], []
+            self.table, self.sigs, self.band_sigs, self.upper_sigs, self.embeds = None, [], [], [], None
             return
         hists = [np.array(v["hist"]) for v in self.views]
         fig = smooth(np.max(hists, axis=0))     # Largest over views, so a color seen from only one side still counts.
@@ -339,6 +397,8 @@ class PersonDetector:
         self.sigs = [smooth(normalized(h * self.table)) for h in hists]
         self.band_sigs = [np.array(v["bands"]) * self.table for v in self.views]
         self.upper_sigs = [smooth(normalized(b[:BANDS - 1].sum(axis=0))) for b in self.band_sigs]
+        embeds = [v["embed"] for v in self.views if v.get("embed")]
+        self.embeds = np.array(embeds, dtype=np.float32) if embeds else None
 
     # --- Detection ---
     @staticmethod
@@ -422,7 +482,8 @@ class PersonDetector:
     def _not_too_big(self, view, feet, w, h):
         """Whether a blob (half-size px) could be this view at this place on the floor. The expected size grows as it comes closer, so closeness alone never fails this."""
         size = (feet - self.horizon) / max(view["feet"] - self.horizon, 1)
-        return w * 2 <= NEAR_BIG * view["w"] * size and h * 2 <= NEAR_BIG * view["h"] * size
+        return (w * 2 <= NEAR_BIG * view["w"] * size and h * 2 <= NEAR_BIG * view["h"] * size
+                and max(w * 2 / (view["w"] * size), h * 2 / (view["h"] * size)) >= NEAR_SMALL)
 
     def _score_near(self, small, q, group, near_y):
         """(color match, outline match, real feet y) of a blob standing past near_y, or None if it is farther or is not on the floor.
@@ -442,14 +503,30 @@ class PersonDetector:
             return None
         sig = smooth(normalized(np.bincount(pixels, minlength=N_BINS).astype(np.float64)))
         cut = y + h >= small.shape[0]       # The frame ends at its legs.
-        outline = self._outline(inside)
+        corner = cut and (x <= 0 or x + w >= small.shape[1])     # Runs off two edges: something bigger than the view, not a figure in front of the car.
+        outlines = (self._outline(inside), self._outline(np.rot90(inside)))     # Standing, or lying on its side.
         best = None
         for i, feet in close:
             color = float(np.minimum(sig, self.sigs[i]).sum())
             if cut:
                 color = max(color, float(np.minimum(sig, self.upper_sigs[i]).sum()))
+            view = np.array(self.views[i]["outline"], dtype=bool)
+            shape = max(self._overlap(view, o) for o in outlines)
+            if corner or shape < NEAR_SHAPE:
+                color = 0.0
             if best is None or color > best[0]:
-                best = (color, self._overlap(np.array(self.views[i]["outline"], dtype=bool), outline), feet)
+                best = (color, shape, feet)
+        return best
+
+    def likeness(self, frame, x, y, w, h):
+        """How much this box looks like a registered view, 0 to 1, or None if that cannot be told. Standing or on its side."""
+        embedder = get_embedder() if self.embeds is not None else None
+        if embedder is None:
+            return None
+        crop = embed_crop(frame, x, y, w, h)
+        best = float((self.embeds @ embedder(crop)).max())
+        if w > h:       # Lying down. A blob can only be this wide if it does.
+            best = max(best, float((self.embeds @ embedder(np.rot90(crop).copy())).max()))
         return best
 
     def __call__(self, frame, x_range=(0.0, 1.0), near_y=None):
@@ -463,7 +540,7 @@ class PersonDetector:
         small = self._half(frame)
         q = color_index(cv2.cvtColor(small, cv2.COLOR_BGR2HSV))
         self.fg = cv2.morphologyEx(self.table[q].astype(np.uint8), cv2.MORPH_CLOSE, CLOSE)
-        best = 0.0
+        passed = []
         for group in self._groups(self.fg):
             x, y, w, h = group[:4]
             if not x_range[0] <= (x + w / 2) / small.shape[1] <= x_range[1]:
@@ -475,9 +552,18 @@ class PersonDetector:
             margin = min(color / self.match, shape / self.shape) if near_y is None else color / NEAR_COLOR
             if margin < 1:
                 self.near.append((x * 2, y * 2, w * 2, h * 2, color, shape))
-            elif margin > best:
-                best = margin
-                self.found = {"x": x * 2, "y": y * 2, "w": w * 2, "h": h * 2, "feet": int(feet), "score": color, "shape": shape}
+            else:
+                passed.append((margin, {"x": x * 2, "y": y * 2, "w": w * 2, "h": h * 2, "feet": int(feet), "score": color, "shape": shape}))
+        # Most figure-like first, by color and outline together: past the near line color alone passes, and things in the figure's colors can score higher on it
+        # than the figure does (1.00 for a chair leg against 0.99, outline 0.4 against 0.9), which would use up the looks before the figure's turn.
+        passed.sort(key=lambda p: -p[1]["score"] * p[1]["shape"])
+        for _, blob in passed[:EMBED_MAX]:      # The costly look only for what passed everything else.
+            look = self.likeness(frame, blob["x"], blob["y"], blob["w"], blob["h"])
+            blob["look"] = look
+            if look is None or look >= EMBED_MIN:
+                self.found = blob
+                break
+            self.near.append((blob["x"], blob["y"], blob["w"], blob["h"], blob["score"], blob["shape"]))
         return self.found
 
     # --- Saved File ---
@@ -603,7 +689,9 @@ class PersonWatch:
             self.check_hits += hit
             if hit and self.check_hits >= self.confirm:
                 self.checking = False
-                print(f"\n[사람] 정지 (발 위치 화면 {self.box['feet'] / self.frame_h:.2f}, 일치도 {self.box['score']:.2f})")
+                look = self.box.get("look")
+                print(f"\n[사람] 정지 (발 위치 화면 {self.box['feet'] / self.frame_h:.2f}, 일치도 {self.box['score']:.2f}"
+                      + (f", 모습 {look:.2f})" if look is not None else ")"))
             elif now - self.hold_since >= self.check_sec:
                 self.hold = self.checking = False
                 print(f"\n[사람] {self.check_sec:g}초 동안 {self.check_hits}번만 보여서 출발")

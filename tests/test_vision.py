@@ -1058,6 +1058,103 @@ def run_frames(d, frame, t0, sec):
     return t, cmds
 
 
+def test_person_near_decoys():
+    print("[사람: 근거리 오인식]")
+    from person import NEAR_SHAPE
+    back = lane_frame()
+    det = registered_figure(back=back)[0]
+    fig = minifig(back, 320, 300)
+    found = det(fig, (0, 1), 198)
+    check("근거리: 서 있는 레고는 인식", found is not None, found and round(found["shape"], 2))
+    x, y, w, h = found["x"], found["y"], found["w"], found["h"]
+    patch = fig[y:y + h, x:x + w]
+    lying = back.copy()
+    lying[H - w - 4:H - 4, 270:270 + h] = np.rot90(patch)
+    found = det(lying, (0, 1), 198)
+    check("근거리: 누운 레고도 인식", found is not None, found and round(found["shape"], 2))
+    # Same colors as the figure, stretched over shapes nothing like it: what the room shows in the screenshot.
+    corner = back.copy()
+    corner[H - 150:H, 0:90] = cv2.resize(patch, (90, 150), interpolation=cv2.INTER_NEAREST)
+    found = det(corner, (0, 1), 198)
+    check("근거리: 프레임 모서리로 이어진 덩어리는 사람 아님", found is None, found)
+    thin = back.copy()      # An L of two thin bars.
+    tall = cv2.resize(patch, (10, 100), interpolation=cv2.INTER_NEAREST)
+    thin[230:330, 200:210] = tall
+    thin[320:330, 200:300] = np.rot90(tall)
+    found = det(thin, (0, 1), 198)
+    check("근거리: 모양이 전혀 다른 같은 색 물체는 사람 아님", found is None, found and (round(found["score"], 2), round(found["shape"], 2)))
+    check("근거리: 모양 기준은 실제 레고(0.41 이상)보다 낮음", NEAR_SHAPE < 0.41)
+
+
+def test_person_look():
+    print("[사람: 모습 확인 (임베더)]")
+    import person as P
+
+    class Fake:
+        """Numbers from a picture's mean color, so tests choose what looks alike."""
+        calls = 0
+
+        def __call__(self, bgr):
+            Fake.calls += 1
+            v = bgr.reshape(-1, 3).mean(axis=0).astype(np.float32) + 1
+            return v / np.linalg.norm(v)
+
+    old = P._embedder, P._embedder_tried
+    P._embedder, P._embedder_tried = Fake(), True
+    try:
+        back = lane_frame()
+        det = registered_figure(back=back)[0]
+        check("등록하면 모습 정보를 저장", det.embeds is not None and det.embeds.shape == (1, 3), det.embeds is None or det.embeds.shape)
+        fig = minifig(back, 320, 300)
+        found = det(fig, (0, 1), 198)
+        check("닮은 후보는 통과", found is not None and found["look"] >= P.EMBED_MIN, found and found["look"])
+        # Two things in the figure's colors with a poor outline must not use up the looks before the figure's turn.
+        crowd = fig.copy()
+        for x0 in (40, 110):
+            crowd[230:330, x0:x0 + 10] = cv2.resize(fig[found["y"]:found["y"] + found["h"], found["x"]:found["x"] + found["w"]], (10, 100), interpolation=cv2.INTER_NEAREST)
+        Fake.calls = 0
+        again = det(crowd, (0, 1), 198)
+        check("가짜 후보가 여럿이어도 레고를 먼저 확인", again is not None and abs(again["x"] - found["x"]) < 10 and Fake.calls == 1, (again and again["x"], found["x"], Fake.calls))
+        det.embeds = -det.embeds        # Now nothing looks alike.
+        Fake.calls = 0
+        check("안 닮은 후보는 색과 윤곽이 맞아도 사람 아님", det(fig, (0, 1), 198) is None and bool(det.near))
+        check("후보가 있을 때만, 정해진 수까지만 계산", 1 <= Fake.calls <= P.EMBED_MAX, Fake.calls)
+        Fake.calls = 0
+        det(back, (0, 1), 198)
+        check("후보가 없으면 계산 안 함", Fake.calls == 0, Fake.calls)
+        det.fit()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "person.json"
+            det.save(path)
+            again = PersonDetector.load(lf.HORIZON_Y, path)
+        check("저장했다 읽어도 모습 정보 유지", again is not None and again.embeds is not None and np.allclose(again.embeds, det.embeds, atol=1e-3))
+        Fake.calls = 0
+        wide = det.likeness(np.zeros((360, 640, 3), np.uint8) + 50, 100, 100, 80, 40)
+        check("옆으로 긴 후보는 눕힌 모습까지 비교", Fake.calls == 2, Fake.calls)
+    finally:
+        P._embedder, P._embedder_tried = old
+    old = P._embedder, P._embedder_tried
+    P._embedder, P._embedder_tried = None, True
+    try:
+        back = lane_frame()
+        det = registered_figure(back=back)[0]
+        found = det(minifig(back, 320, 300), (0, 1), 198)
+        check("임베더를 못 쓰면 색과 윤곽으로 동작", det.embeds is None and found is not None and found["look"] is None)
+    finally:
+        P._embedder, P._embedder_tried = old
+    try:
+        real = P.Embedder()
+        v = real(np.full((60, 40, 3), 90, np.uint8))
+        check("실제 모델: 단위 벡터 1024개", v.shape == (1024,) and abs(float(np.linalg.norm(v)) - 1) < 1e-3, v.shape)
+        fig = minifig(lane_frame(), 320, 300)
+        d = PersonDetector(lf.HORIZON_Y)
+        d.add_view(fig)
+        found = d(fig, (0, 1), 198)
+        check("실제 모델: 등록한 그 사진은 거의 같음", found is not None and found["look"] > 0.9, found and found["look"])
+    except ImportError:
+        print("  (실제 모델 건너뜀: ai_edge_litert 없음)")
+
+
 def test_person_stop():
     print("\n[레고 사람: 정지 / 출발]")
     empty, person = lane_frame(), minifig(lane_frame(), 320, 240)
@@ -1626,6 +1723,76 @@ def test_tools_read_web_keys():
     check("tune_person: 웹 키로 끝남", run_tool(tune_person, "zq") == {})
 
 
+def test_at_low_in_frame():
+    print("[at: 화면 아래쪽]")
+    import course as cs
+    near = 342
+
+    def line(c, y, t, band=None, det=(0.0, 0.0), hline=True):
+        c.update(band is not None, t, det, False, {"junction": band, "hline_y": y if hline else None, "near": True})
+        return t + 1 / 40
+
+    for at in (0.86, 0.9, 0.95):
+        with quiet():
+            c = lf.CourseRunner([cs.to_junction(at, blind_sec=0), finish()])
+            t = feed(c, 5, 0.0)
+            y, end = 240.0, None
+            while y < 358 and c.idx == 0:
+                t = line(c, y, t, near if y > 324 else 270)
+                end = y
+                y += 2
+        check(f"to_junction(at={at}): 칸이 아니라 선 위치로 끝", c.idx == 1 and abs(end - at * H) <= 8, f"y={end:.0f}, 목표 {at * H:.0f}")
+    with quiet():   # The line leaves the frame before at=0.99 can be read for 3 frames.
+        c = lf.CourseRunner([cs.to_junction(0.99, blind_sec=0), finish()])
+        t = feed(c, 5, 0.0)
+        for y in range(300, 352, 4):
+            t = line(c, float(y), t, near)
+        before = c.idx
+        for _ in range(30):
+            t = line(c, None, t, None, det=None, hline=False)
+    check("to_junction(at=0.99): 화면 끝을 지나도 속도로 이어서 끝", before == 0 and c.idx == 1, f"{before} → {c.idx}")
+
+    def stripes(c, y, t):
+        c.update(False, t, (0.0, 0.0), y is not None and y >= 180, {"crosswalk": y, "near": True})
+        return t + 1 / 40
+
+    with quiet():   # Run 190409: the nearest stripe is cut off and the reading jumps back up.
+        c = lf.CourseRunner([cs.to_crosswalk(0.97), finish()])
+        t = feed(c, 5, 0.0)
+        for y in (320, 326, 332, 338, 344, 287, 346, 295, 348, None, None, None, None, None, None, None, None):
+            t = stripes(c, y, t)
+    check("to_crosswalk(at=0.97): 줄무늬가 끊겨도 끝", c.idx == 1, f"동작 {c.idx + 1}")
+    with quiet():
+        c = lf.CourseRunner([cs.to_crosswalk(0.8), finish()])
+        t = feed(c, 5, 0.0)
+        for y in (200, 204, 208, 212, None, None, None):
+            t = stripes(c, y, t)
+        t = feed(c, 40, t)
+    check("to_crosswalk: 화면 중간에서 사라진 것으로는 안 끝남", c.idx == 0, f"동작 {c.idx + 1}")
+    with quiet():
+        c = lf.CourseRunner([cs.to_crosswalk(0.97), finish()])
+        t = feed(c, 5, 0.0)
+        for y in (345, 346, None):
+            t = stripes(c, y, t)
+        t = feed(c, 40, t)
+    check("to_crosswalk: 1~2프레임 본 것으로는 안 끝남", c.idx == 0, f"동작 {c.idx + 1}")
+    with quiet():   # Seen during blind: gone once afterwards, so the action must arm and end on the next line.
+        c = lf.CourseRunner([cs.to_junction(0.9, blind_sec=0.5), finish()])
+        t = 0.0
+        for y in (330, 334, 338, 342):
+            t = line(c, float(y), t, near)
+        for _ in range(60):
+            t = line(c, None, t, None, hline=False)
+        seen_gone = c.idx
+        for y in range(240, 340, 4):
+            t = line(c, float(y), t, near)
+    check("to_junction: blind 중 지나간 선은 잊고 다음 선에서 끝", seen_gone == 0 and c.idx == 1, f"{seen_gone} → {c.idx}")
+    for at in (0.86, 0.97):
+        with quiet():
+            s = cs.to_crosswalk(at)
+        check(f"to_crosswalk({at}): 설정 가능", s["at"] == at)
+
+
 def test_red_search():
     print("[wait_green: 빨간불 찾기 후진]")
 
@@ -1794,9 +1961,9 @@ def test_saved_with_run():
 
 
 def main():
-    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
+    for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_at_low_in_frame, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_stop, test_set_speed):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_stop, test_set_speed):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")
