@@ -16,6 +16,7 @@ pi/runs/
 pi/calib.json
 pi/vision.json
 pi/person.json
+pi/person_photos/
 pi/web_key.json
 pi/drive.log
 pi/drive.pid

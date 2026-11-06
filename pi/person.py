@@ -22,12 +22,14 @@ its colors are compared (NEAR_COLOR), and only something far bigger than a figur
 Saved to person.json on the Pi. `aicar push` does not overwrite it.
 """
 import json
+import shutil
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 PERSON_FILE = Path(__file__).with_name("person.json")
+PHOTO_DIR = "person_photos"     # Beside person.json: the picture of each registered view.
 EMBED_MODEL = Path(__file__).with_name("mobilenet_v3_small.tflite")
 
 HUE_BINS = 18           # Colored pixels: this many hue steps. Brightness and saturation are compared separately (LAB_*), so no bin edge falls inside a lighting change.
@@ -43,9 +45,36 @@ TRACK_ONLY = 0.1        # Colorless pixels count only when real colors cover les
 
 ALPHA = 2.0             # A color counts as the figure when its share of the figure is at least this times its share of the background.
 FIG_MIN = 0.01          # A color must cover at least this share of the figure. Smaller is noise from the cutout.
+ANY_FILE = Path(__file__).with_name("lego_any.npy")     # Any figure: weights over the embedder's numbers, and last the offset. From photos of 14 other figures against 459 things in old recordings.
+ANY_MIN = 1.17          # Any figure: lowest score. Figures left out of the weights: 87% of real frames, 82% of composites. Things in other recordings: 1%, and no stops.
+ANY_MIN_EDGE = 1.7      # Same, for a blob cut off by the left or right edge of the frame. Blocks beside the track there: up to 1.04.
+ANY_MAX = 3             # Any figure: at most this many blobs are looked at per frame, each about 13 ms on the Pi.
+ANY_AT = 0.55           # Any figure: where the feet must come to when the course sets no PERSON_AT and nothing is registered.
+ANY_HEIGHT = 0.33       # A standing figure is this many px tall per px its feet are below the horizon. The real one: 48 px at feet 208, horizon 65.
+ANY_SIZE = (0.35, 1.7)  # The blob's longer side against that height. Low, since dark clothes do not count as color. High, for one lying down or cut off by the frame.
+ANY_THIN = 0.15         # Its shorter side must be at least this times that height.
+ANY_RATIO = 0.2         # And at least this times its longer side.
+ANY_S, ANY_V, ANY_C = 70, 45, 25    # A pixel has color above this saturation, value and strength (saturation x value / 255).
+ANY_JOIN = np.ones((9, 5), np.uint8)    # Joins a figure's colored parts across its dark ones. Taller than wide, half-size px.
+ANY_MIN_PX = 12         # Fewest colored half-size px in a blob.
 NEAR_COLOR = 0.7        # Minimum color match past the near line. Real figure there, under other light than at registration, even lying down: 0.78-0.80.
-EMBED_MIN = 0.4         # Lowest likeness (0 to 1) to a registered view. Registered figure in other recordings: 0.86-0.99, or 0.33-0.49 for a small one from one view. Off-track things in its colors: 0.1-0.2. Another figure or a toy block: up to 0.5.
-EMBED_MIN_EDGE = 0.6    # Same, for a blob cut off by the left or right edge of the frame, which is off the car's path anyway. Things beside the track there: 0.42-0.49. The real figure inside the frame, registered at two places: 0.74-0.95.
+EMBED_MIN = 0.6         # Lowest likeness (0 to 1) to a registered view. The figure registered at two places, seen elsewhere: 0.74-0.82. From one place only: 0.25-0.52, so register it at two. Another figure: 0.41-0.59. Off-track things: 0.42-0.49.
+EMBED_MIN_EDGE = 0.7    # Same, for a blob cut off by the left or right edge of the frame, which is off the car's path anyway.
+PHOTO_ON = True         # Compare with the photos taken at registration (person_photos). False, or views with no photo, uses EMBED_MIN and FOREIGN_MAX instead.
+PHOTO_MIN = 0.55        # Lowest overlap (0 to 1) between the colors of a whole figure and those of a photo. Things in the room can pass it, at 0.58-0.81 in recordings: wood and tape.
+PHOTO_MIN_EDGE = 0.65   # Same, for a blob cut off by the left or right edge of the frame, which is off the car's path anyway.
+PHOTO_FLOOR = 16        # A pixel is the floor within this Lab distance of the color of the picture's edges.
+PHOTO_PARTS = 2         # The figure is compared by this many parts, top and bottom. Own figure 0.56-0.78 on the live mat, others 0.22-0.49. 3 parts brought those closer: 0.59-0.69 against up to 0.51.
+PHOTO_WHOLE = 0.7       # Only photos within this ratio of the usual height for their place are used.
+PHOTO_REACH = 1.2       # How far above and below a blob its figure is looked for, in figure heights.
+PHOTO_COLUMN = 0.4      # Half the width of the column it is looked for in, in figure heights.
+PHOTO_FILL = 0.2        # A row or column of it has this share standing out from the floor.
+PHOTO_GAP = 3           # A gap of this many px is still the same figure.
+PHOTO_SIZE = 1.1        # At most this tall or wide against a figure at its place.
+PHOTO_SMALL = 0.6       # At least this long against a figure at its place.
+PHOTO_DARK = 0.3        # A figure whose colors end this far above its feet, as a share of the colored part, has dark clothes. Its colored part may lie anywhere in it.
+PHOTO_SLIDES = 5        # Then this many positions of the figure around the blob are tried.
+FOREIGN_MAX = 0.3       # A blob is not the figure when more than this share of the real colors at its place are ones no view has. A black figure matches anything dark by color, so a figure in yellow trousers is told apart by them. Real figure: 0.00.
 EMBED_MARGIN = 0.25     # The picture compared is the blob's box and this much around it, as a share of its longer side.
 EMBED_MAX = 2           # At most this many blobs are looked at per frame. Each costs about 13 ms on the Pi.
 NEAR_SHAPE = 0.25       # Past the near line, the outline must overlap a view at least this much, standing or lying. A room object in the figure's colors: 0.14. Real figure, cut off or not: 0.43 and up.
@@ -183,6 +212,38 @@ def get_embedder():
     return _embedder
 
 
+def photo_sig(bgr):
+    """Colors of a picture of a whole figure, by its upper and lower half: hue and saturation of its colored pixels, brightness of the others.
+
+    Without the floor, whose color is that of the picture's edges: two figures on one mat would otherwise match by the mat. By part, because white trousers and a brown cap say more in their place.
+    """
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+    edges = np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]])
+    figure = np.linalg.norm(lab - np.median(edges, axis=0), axis=2) >= PHOTO_FLOOR
+    if figure.mean() < 0.25:    # The edges are mostly the figure itself, as in a tight picture of one color: it is not known which part is the floor.
+        figure[:] = True
+    parts = []
+    rows = bgr.shape[0]
+    for i in range(PHOTO_PARTS):
+        y0, y1 = rows * i // PHOTO_PARTS, max(rows * (i + 1) // PHOTO_PARTS, rows * i // PHOTO_PARTS + 1)
+        part, inside = hsv[y0:y1], figure[y0:y1]
+        colored = (part[..., 1] >= 50) & (part[..., 2] >= 40) & inside
+        parts.append(cv2.calcHist([part], [0, 1], colored.astype(np.uint8), [12, 2], [0, 180, 50, 256]).ravel() * 2)
+        parts.append(cv2.calcHist([part], [2], (inside & ~colored).astype(np.uint8), [6], [0, 256]).ravel() * 0.25)
+    sig = np.concatenate(parts)
+    return sig / (sig.sum() + 1e-6)
+
+
+def figure_box(x, y, w, h, feet):
+    """The whole figure around a blob that holds only its colored part: down to its feet, and wide enough for a figure that tall. A wide blob is one lying down, with nothing below it."""
+    if w > h:
+        return x, y, w, h
+    tall = max(int(feet) - y, h)
+    wide = max(w, tall // 2)
+    return x - (wide - w) // 2, y, wide, tall
+
+
 def embed_crop(frame, x, y, w, h):
     """The picture of a blob and what is around it. Full-frame px."""
     m = int(EMBED_MARGIN * max(w, h))
@@ -208,6 +269,8 @@ class PersonDetector:
         self.fg = None                  # Last color mask at half size. Shown while tuning.
         self.last_box = None            # What the last view cut out, in full-frame px. Shown while tuning.
         self.box = GUIDE                # Guide box the next view looks in. Not saved.
+        self.photos = []                # Picture of the figure in each view, in the same order. None for a view saved before photos existed.
+        self.photo_sigs = None
         self.marked = False             # The box was dragged around the figure: all of it is taken as the figure, whatever its colors. Not saved.
         self.added = []                 # Background each view of this session added, so taking the view back takes that back too. Not saved.
 
@@ -265,6 +328,7 @@ class PersonDetector:
                 "lab": mean_lab(small[y:y + h, x:x + w], figure[y:y + h, x:x + w]).tolist(),
                 "bands": band_hists(q[y:y + h, x:x + w], figure[y:y + h, x:x + w]).tolist()}
         self.views.append(view)
+        self.photos.append(None)
         self.fit()
         # Measure the shape as the color mask sees it, the same way it is seen while driving: black legs on a black mat are not part of it.
         # Only inside the cutout's box: a same-colored thing behind the figure must not be joined to it and inflate its size.
@@ -283,6 +347,13 @@ class PersonDetector:
                         bands=band_hists(q[gy:gy + gh, gx:gx + gw], part).tolist(),
                         lab=mean_lab(small[gy:gy + gh, gx:gx + gw], part & self.table[q[gy:gy + gh, gx:gx + gw]]).tolist())
             self.fit()      # Those are what detection compares with, here as after saving.
+        # The photo holds both what was cut out and what the colors see, because either can miss a dark part of the figure.
+        px0, py0, px1, py1 = x, y, x + w, y + h
+        if groups:
+            px0, py0, px1, py1 = min(px0, gx), min(py0, gy), max(px1, gx + gw), max(py1, gy + gh)
+        self.photos[-1] = frame[py0 * 2:py1 * 2, px0 * 2:px1 * 2].copy()
+        view["photo_feet"] = py1 * 2
+        self.fit()
         if view["feet"] <= self.horizon:
             self.undo()
             return False, "발이 수평선보다 위에 있습니다. 사람을 바닥에 세우세요"
@@ -294,7 +365,7 @@ class PersonDetector:
             bx, by = max(groups, key=lambda g: g[5])[:2] if groups else (x, y)     # The same blob detection will see.
             view["embed"] = [round(float(n), 4) for n in embedder(embed_crop(frame, bx * 2, by * 2, view["w"], view["h"]))]
             self.fit()
-        if view["below"] > PART_ONLY:
+        if view["below"] > PART_ONLY and not PHOTO_ON:     # With photos the whole figure is compared, so dark clothes that the colors miss do no harm.
             self.undo()
             return False, "사람의 일부만 색으로 잡혔습니다. 드래그로 사람 전체를 감싸 다시 찍으세요"
         if view["h"] < MIN_H * 2:
@@ -324,13 +395,14 @@ class PersonDetector:
     def undo(self):
         if self.views:
             self.views.pop()
+            self.photos.pop()
             if self.added:
                 self.background -= self.added.pop()
             self.fit()
             self.auto_tune()
 
     def clear(self):
-        self.views, self.background, self.added = [], np.zeros(N_BINS), []
+        self.views, self.background, self.added, self.photos = [], np.zeros(N_BINS), [], []
         self.fit()
 
     def stop_at(self, frame_h):
@@ -387,9 +459,21 @@ class PersonDetector:
     def fit(self):
         """Rebuild the color table and the per-view colors from the views and the background."""
         if not self.views:
-            self.table, self.sigs, self.band_sigs, self.upper_sigs, self.embeds = None, [], [], [], None
+            self.table, self.sigs, self.band_sigs, self.upper_sigs, self.embeds, self.photo_sigs = None, [], [], [], None, None
             return
+        pics = [(p, p.shape[0] / max(v.get("photo_feet", v["feet"]) - self.horizon, 1)) for v, p in zip(self.views, self.photos) if p is not None and p.size]
+        self.photo_sigs = None
+        if pics:
+            usual = sorted(t for _, t in pics)[len(pics) // 2]     # One of them, so at least that photo stays.
+            pics = [(p, t) for p, t in pics if PHOTO_WHOLE * usual <= t <= usual / PHOTO_WHOLE]     # Much shorter than the others at its place holds only a part of the figure, whose colors other figures may share. Much taller holds a hand as well.
+            self.photo_sigs = np.array([photo_sig(p) for p, _ in pics])
+            self.photo_tall = float(np.median([t for _, t in pics]))
+            self.photo_wide = float(np.median([p.shape[1] / p.shape[0] for p, _ in pics]))
+            self.photo_dark = float(np.median([v["below"] for v in self.views])) >= PHOTO_DARK
         hists = [np.array(v["hist"]) for v in self.views]
+        seen = np.max(hists, axis=0)[:HUE_BINS] >= 0.02
+        self.seen_colors = seen | np.roll(seen, 1) | np.roll(seen, -1)      # A neighboring hue is the same color under other light.
+        self.tall = float(np.median([v["h"] * (1 + v["below"]) / max(v["feet"] - self.horizon, 1) for v in self.views]))    # Height of the figure per px its feet are below the horizon.
         fig = smooth(np.max(hists, axis=0))     # Largest over views, so a color seen from only one side still counts.
         back = smooth(normalized(self.background))
         self.table = (fig >= ALPHA * back) & (fig >= FIG_MIN)
@@ -519,6 +603,91 @@ class PersonDetector:
                 best = (color, shape, feet)
         return best
 
+    def foreign(self, q, x, y, w, h):
+        """Share of the real colors around this blob (half-size px) that no view of the figure has.
+
+        Looks a figure's height above and below it, since the blob may be only its head or only its legs. A wide blob is one lying down, and is all there is.
+        """
+        H, W = q.shape
+        if w <= h:
+            tall = max(h, int(self.tall * (y + h - self.horizon / 2)))
+            wide = max(w, tall // 2)
+            x, y, w, h = x - (wide - w) // 2, max(y + h - tall, int(self.horizon / 2)), wide, 2 * tall - h
+        crop = q[max(y, 0):min(y + h, H), max(x, 0):min(x + w, W)]
+        colored = crop[crop < HUE_BINS]
+        return float((~self.seen_colors[colored]).mean()) if len(colored) else 0.0
+
+    def figure_extent(self, frame, x, y, w, h):
+        """The box of what stands out from the floor in a figure-wide column through this blob, full-frame px. The blob may be only its head or its legs."""
+        if w > h:       # Lying down: the blob is all of it that can be told from the floor around it.
+            return x, y, w, h
+        tall = self.photo_tall * (y + h - self.horizon)
+        half = int(max(w / 2, PHOTO_COLUMN * tall))
+        center = x + w // 2
+        x0, x1 = max(center - half, 0), min(center + half, frame.shape[1])
+        y0, y1 = max(int(y - PHOTO_REACH * tall), 0), min(int(y + h + PHOTO_REACH * tall), frame.shape[0])
+        lab = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2LAB).astype(np.float32)
+        # The mat gets lighter with distance, so the floor is measured in each row, at both sides of the column.
+        rows = lab.shape[0]
+        left_floor = cv2.blur(lab[:, :3].mean(axis=1, keepdims=True), (1, 5)).reshape(rows, 1, 3)
+        right_floor = cv2.blur(lab[:, -3:].mean(axis=1, keepdims=True), (1, 5)).reshape(rows, 1, 3)
+        away_left, away_right = np.linalg.norm(lab - left_floor, axis=2), np.linalg.norm(lab - right_floor, axis=2)
+        if x0 == 0 or x1 == frame.shape[1]:     # Cut off by the frame: that side of the column is the figure itself.
+            mask = (away_right if x0 == 0 else away_left) >= PHOTO_FLOOR
+        else:
+            mask = np.minimum(away_left, away_right) >= PHOTO_FLOOR
+
+        def run(fill, start):
+            """The stretch through start where this much stands out, across gaps of a few px."""
+            lo = hi = start
+            while lo > 0 and fill[max(lo - PHOTO_GAP, 0):lo].any():
+                lo -= 1
+            while hi < len(fill) - 1 and fill[hi + 1:hi + 1 + PHOTO_GAP].any():
+                hi += 1
+            return lo, hi
+
+        top, bottom = run(mask.mean(axis=1) >= PHOTO_FILL, min(y + h // 2 - y0, mask.shape[0] - 1))
+        top, bottom = min(top, y - y0), max(bottom, y + h - 1 - y0)     # The blob is part of it, however dark.
+        # Its shadow and reflection on the mat stand out too, and always lie below it, so the top is what can be trusted. A figure whose top is there is this tall:
+        most = int(PHOTO_SIZE * self.photo_tall * (y0 + top - self.horizon) / max(1 - self.photo_tall, 0.1))
+        bottom = min(bottom, top + max(most, 1) - 1)
+        if bottom < y + h // 2 - y0:    # Something above it was taken for its top. The blob itself is the top then.
+            top = y - y0
+            bottom = min(top + int(PHOTO_SIZE * self.photo_tall * (y - self.horizon) / max(1 - self.photo_tall, 0.1)), mask.shape[0] - 1)
+        left, right = run(mask[top:bottom + 1].mean(axis=0) >= PHOTO_FILL, min(center - x0, mask.shape[1] - 1))
+        left, right = min(left, max(x - x0, 0)), max(right, min(x + w - 1 - x0, mask.shape[1] - 1))    # The blob is part of it here too.
+        wide = max(int(PHOTO_SIZE * self.photo_wide * (bottom - top + 1)), w)
+        if right - left + 1 > wide:     # A line beside it.
+            left = max(min(center - x0 - wide // 2, right - wide + 1), left)
+            right = left + wide - 1
+        return x0 + left, y0 + top, right - left + 1, bottom - top + 1
+
+    def photo_match(self, frame, x, y, w, h):
+        """(overlap with the closest photo, whole-figure box) for this blob, full-frame px."""
+        def score(box):
+            bx, by, bw, bh = box
+            crop = frame[by:by + bh, bx:bx + bw]
+            turns = (np.rot90(crop).copy(), np.rot90(crop, 3).copy()) if bw > bh else (crop,)   # Lying down: its head may be on either side.
+            return max(float(np.minimum(photo_sig(c), self.photo_sigs).sum(axis=1).max()) for c in turns), box
+
+        H, W = frame.shape[:2]
+        extent = self.figure_extent(frame, x, y, w, h)
+        whole = max(extent[2], extent[3]) >= PHOTO_SMALL * self.photo_tall * (extent[1] + extent[3] - self.horizon) and min(extent[2], extent[3]) >= 6
+        if w > h or (whole and not self.photo_dark):
+            return score(extent) if whole else (-1.0, extent)
+        # Dark clothes on a dark mat do not stand out, so where the blob lies in the figure is not known: its head, its middle or its legs. Each is tried, at the size a figure has there.
+        options = [extent] if whole else []
+        k = self.photo_tall
+        reach = int(k * (y + h - self.horizon) / max(1 - k, 0.1))
+        for i in range(PHOTO_SLIDES):
+            top = y - max(reach - h, 0) * i // max(PHOTO_SLIDES - 1, 1)
+            tall = max(int(k * (top - self.horizon) / max(1 - k, 0.1)), h)
+            wide = max(int(tall * self.photo_wide), w)
+            x0, y0, x1, y1 = max(x + (w - wide) // 2, 0), max(top, 0), min(x + (w + wide) // 2, W), min(top + tall, H)
+            if x1 - x0 >= 6 and y1 - y0 >= 6:
+                options.append((x0, y0, x1 - x0, y1 - y0))
+        return max((score(box) for box in options), key=lambda r: r[0], default=(-1.0, extent))
+
     def likeness(self, frame, x, y, w, h):
         """How much this box looks like a registered view, 0 to 1, or None if that cannot be told. Standing or on its side."""
         embedder = get_embedder() if self.embeds is not None else None
@@ -530,10 +699,11 @@ class PersonDetector:
             best = max(best, float((self.embeds @ embedder(np.rot90(crop).copy())).max()))
         return best
 
-    def __call__(self, frame, x_range=(0.0, 1.0), near_y=None):
+    def __call__(self, frame, x_range=(0.0, 1.0), near_y=None, photos=True):
         """Best match inside x_range (fractions of the frame width, by the blob's center), or None.
 
         near_y: feet height in px where the figure counts as close. Only blobs past it count, and only their colors are judged. None judges every blob by every check.
+        photos: compare with the registration photos. Auto capture asks only whether a side looks like one already taken.
         """
         self.found, self.near = None, []
         if self.table is None:
@@ -557,6 +727,26 @@ class PersonDetector:
                 passed.append((margin, {"x": x * 2, "y": y * 2, "w": w * 2, "h": h * 2, "feet": int(feet), "score": color, "shape": shape}))
         # Most figure-like first, by color and outline together: past the near line color alone passes, and things in the figure's colors can score higher on it
         # than the figure does (1.00 for a chair leg against 0.99, outline 0.4 against 0.9), which would use up the looks before the figure's turn.
+        if photos and PHOTO_ON and self.photo_sigs is not None:
+            passed.sort(key=lambda p: -p[1]["score"] * p[1]["shape"])
+            for _, blob in passed[:MAX_PARTS]:
+                look, box = self.photo_match(frame, blob["x"], blob["y"], blob["w"], blob["h"])
+                blob["look"] = look
+                edge = blob["x"] <= 0 or blob["x"] + blob["w"] >= frame.shape[1]
+                if look >= (PHOTO_MIN_EDGE if edge else PHOTO_MIN):
+                    blob.update(x=box[0], y=box[1], w=box[2], h=box[3], feet=box[1] + box[3])
+                    self.found = blob
+                    break
+                self.near.append((blob["x"], blob["y"], blob["w"], blob["h"], blob["score"], blob["shape"]))
+            return self.found
+        keep = []
+        for margin, blob in passed:
+            blob["foreign"] = self.foreign(q, blob["x"] // 2, blob["y"] // 2, blob["w"] // 2, blob["h"] // 2)
+            if blob["foreign"] > FOREIGN_MAX:
+                self.near.append((blob["x"], blob["y"], blob["w"], blob["h"], blob["score"], blob["shape"]))
+            else:
+                keep.append((margin, blob))
+        passed = keep
         passed.sort(key=lambda p: -p[1]["score"] * p[1]["shape"])
         for _, blob in passed[:EMBED_MAX]:      # The costly look only for what passed everything else.
             look = self.likeness(frame, blob["x"], blob["y"], blob["w"], blob["h"])
@@ -570,6 +760,14 @@ class PersonDetector:
 
     # --- Saved File ---
     def save(self, path=PERSON_FILE):
+        folder = Path(path).with_name(PHOTO_DIR)
+        shutil.rmtree(folder, ignore_errors=True)
+        folder.mkdir()
+        for i, (view, photo) in enumerate(zip(self.views, self.photos)):
+            view.pop("photo", None)
+            if photo is not None and photo.size:
+                view["photo"] = f"{i:03d}.jpg"
+                cv2.imwrite(str(folder / view["photo"]), photo, [cv2.IMWRITE_JPEG_QUALITY, 100, cv2.IMWRITE_JPEG_SAMPLING_FACTOR, cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444])
         Path(path).write_text(json.dumps({"rule": RULE, "match": self.match, "shape": self.shape, "views": self.views, "background": self.background.tolist()}))
 
     @classmethod
@@ -586,11 +784,80 @@ class PersonDetector:
             det.background = np.array(data["background"], dtype=np.float64)
             if not det.views or det.background.shape != (N_BINS,):
                 return None
+            det.photos = [cv2.imread(str(Path(path).with_name(PHOTO_DIR) / v["photo"])) if v.get("photo") else None for v in det.views]
         except (OSError, ValueError, KeyError):
             return None
         det.fit()
         det.auto_tune()
         return det
+
+
+class AnyFigure:
+    """Any LEGO figure, registered or not: the registered ones first, then anything colored of a figure's size on the floor that looks like a figure.
+
+    Finds with the same calls as PersonDetector, so PersonWatch and the views take either.
+    """
+
+    def __init__(self, horizon, weights, registered=None):
+        self.horizon, self.weights, self.registered = horizon, weights, registered
+        self.found, self.near, self.fg = None, [], None
+
+    @classmethod
+    def load(cls, horizon, registered=None, path=ANY_FILE):
+        """None if the weights or the embedder are missing, since color alone cannot tell a figure from a block."""
+        try:
+            weights = np.load(path)
+        except (OSError, ValueError):
+            print(f"[주의] {Path(path).name}이 없어 등록한 레고만 찾습니다")
+            return None
+        return cls(horizon, weights, registered) if get_embedder() is not None else None
+
+    @property
+    def views(self):
+        return self.registered.views if self.registered else []
+
+    def stop_at(self, frame_h):
+        return self.registered.stop_at(frame_h) if self.registered else ANY_AT
+
+    def blobs(self, frame, near_y):
+        """Boxes of a figure's size past near_y, largest first. Full-frame px."""
+        small = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2), interpolation=cv2.INTER_AREA)
+        _, s, v = cv2.split(cv2.cvtColor(small, cv2.COLOR_BGR2HSV))
+        colored = (s >= ANY_S) & (v >= ANY_V) & (s.astype(np.uint16) * v >= ANY_C * 255)
+        colored[:int(self.horizon / 2)] = False
+        self.fg = colored.astype(np.uint8)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(cv2.dilate(self.fg, ANY_JOIN), connectivity=8)
+        boxes = []
+        for i in range(1, count):
+            x, y, w, h = stats[i][:4]
+            ys, xs = np.nonzero(colored[y:y + h, x:x + w] & (labels[y:y + h, x:x + w] == i))
+            if len(ys) < ANY_MIN_PX:
+                continue
+            X, Y, W, H = int(x + xs.min()) * 2, int(y + ys.min()) * 2, int(xs.max() - xs.min() + 1) * 2, int(ys.max() - ys.min() + 1) * 2
+            feet, tall = Y + H, ANY_HEIGHT * (Y + H - self.horizon)
+            short, long = min(W, H), max(W, H)
+            if feet >= near_y and Y > self.horizon and ANY_SIZE[0] * tall <= long <= ANY_SIZE[1] * tall and short >= ANY_THIN * tall and short >= ANY_RATIO * long:
+                boxes.append((X, Y, W, H))
+        boxes.sort(key=lambda b: -b[2] * b[3])
+        return boxes
+
+    def __call__(self, frame, x_range=(0.0, 1.0), near_y=None):
+        self.found, self.near = None, []
+        if self.registered is not None:
+            self.found = self.registered(frame, x_range, near_y)
+            self.near = list(self.registered.near)
+            if self.found:
+                return self.found
+        near_y = ANY_AT * frame.shape[0] if near_y is None else near_y
+        boxes = [b for b in self.blobs(frame, near_y) if x_range[0] <= (b[0] + b[2] / 2) / frame.shape[1] <= x_range[1]]
+        for x, y, w, h in boxes[:ANY_MAX]:
+            score = float(self.weights[:-1] @ get_embedder()(embed_crop(frame, x, y, w, h)) - self.weights[-1])
+            edge = x <= 0 or x + w >= frame.shape[1]
+            if score >= (ANY_MIN_EDGE if edge else ANY_MIN):
+                self.found = {"x": x, "y": y, "w": w, "h": h, "feet": y + h, "score": score, "shape": 0.0, "look": None}
+                break
+            self.near.append((x, y, w, h, score, 0.0))
+        return self.found
 
 
 class AutoViews:
@@ -625,7 +892,7 @@ class AutoViews:
         q, ring, seen = ring_colors(small, self.detector.box)
         if self.around is not None and (~self.around[q[ring]]).mean() > AUTO_HAND:
             return "팔이나 손이 보여서 안 찍었습니다. 손을 빼면 찍습니다"
-        found = self.detector(frame)
+        found = self.detector(frame, photos=False)
         if found and found["score"] >= AUTO_SAME and found["shape"] >= AUTO_SAME:
             return "이미 등록된 면입니다. 사람을 더 돌리세요"
         added, message = self.detector.add_view(frame)

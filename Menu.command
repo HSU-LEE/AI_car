@@ -118,6 +118,7 @@ menu_settings() {
         '5|선 인식 맞추기 (브라우저 보며)|$A tune-white' \
         '6|신호등 인식 맞추기 (브라우저 보며)|$A tune-light' \
         'p|레고 사람 등록 / 인식 확인 (브라우저 보며)|$A person' \
+        'a|레고 사람 더 등록 (이미 등록한 레고는 유지)|$A person add' \
         '-' \
         '7|주행 설정 편집 (lane_follow.py)|$A set'
 }

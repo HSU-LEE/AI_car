@@ -2,13 +2,14 @@ from course_lib import *
 from course_lib import _flat, setup
 
 # --- 주행 ---
-SPEED = 0.4                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
+SPEED = 0.75                # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 
 # --- 신호등 ---
 RED_BACK_ON = True          # wait_green에서 빨간불을 못 찾으면 후진해서 다시 찾을지 (True / False)
 
 # --- 레고 사람 (등록: Tune Person.command) ---
 PERSON_ON = True            # 사람을 보고 멈출지
+PERSON_ANY = False          # 등록하지 않은 레고에도 멈출지 (True / False). False면 등록한 레고만 찾음. 여러 레고는 aicar person add로 추가 등록
 PERSON_AT = 0.55            # 이 선(화면 높이 0.4~0.95)보다 발이 아래로 와야 사람으로 봄. 0.55 = 약 40 cm, 0.5 = 약 46 cm. 위쪽(먼 곳)은 무시. 아래쪽은 색만 맞으면 크기, 윤곽, 위치와 상관없이 바로 정지. None = 등록한 위치
 PERSON_SLOW = 0.3           # 사람이 보일 때 줄일 속도. None = 안 줄임 (감지되면 바로 멈추므로 거의 쓰이지 않음)
 PERSON_STOP_DELAY = 0.0     # 지금은 안 씀 (감지되면 바로 멈춤)
@@ -102,32 +103,7 @@ setup(globals())
 
 COURSE = _flat([
     start_gate(2),
-    to_junction(cm=8),
-    straight(2),
-    tr(),
-    follow(4),
-    set_speed(0.35),
-    to_crosswalk(0.8),
-    follow(1.4),
-    wait_green(max_sec=20),
-    stop(1.5),
-    pass_crosswalk(),
-    to_junction(cm=8),
-    straight(2),
-    tr(),
-    set_speed(0.35),
-    to_junction(cm=4),
-    straight(2.5),
-    follow(4),
-    set_speed(0.4),
-    to_junction(),
-    follow(2.5),    
-    straight(2),
-    tr(),
-    set_speed(0.6),
-    to_junction(),
-    to_crosswalk(0.85),
-    straight(4),
+
     finish(),
 
  

@@ -40,7 +40,9 @@ import numpy as np
 
 from car import STEER_LIMIT
 from course import COURSE, RED_BACK_ON, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_SLOW, PERSON_X
-from person import PERSON_FILE, PersonDetector, PersonWatch
+import course as _course
+from person import AnyFigure, PERSON_FILE, PHOTO_DIR, PersonDetector, PersonWatch, figure_box
+PERSON_ANY = getattr(_course, "PERSON_ANY", False)      # A course saved with an older run has no such line, and looked only for the registered figure.
 
 # --- Settings ---
 FRAME_W, FRAME_H = 640, 360
@@ -100,7 +102,11 @@ STEER_RATE = 150        # Maximum change in steering angle per second, in deg/s.
 BASE_SPEED = 0.3        # Speed going straight, when an action sets none.
 MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of slow=, and while the lane is lost.
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
+HARD_STEER_OFF = 15     # It stays raised until the steering is back below this. One threshold made the command jump between 0.30 and 0.45 four times in 0.1 s (run 20261105-201406).
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
+SPEED_RAMP_ON = True    # Change the forward motor command gradually (True / False). Stopping and backing up are never delayed.
+SPEED_UP_RATE = 0.6     # Fastest rise of the motor command, per second. 0.3 to 0.5 takes 0.33 s. A car at a standstill always starts at the lowest command that moves it.
+SPEED_DOWN_RATE = 1.5   # Fastest fall of the motor command, per second. Faster than the rise, because slowing for a corner or a line must not come late.
 LOST_LIMIT = 15         # Old setting, unused. Lost-lane timing uses LOST_HOLD (seconds) instead of a frame count.
 LOST_HOLD = 1.0         # After the lane is lost, hold the last steering and creep for this many seconds, then back up (LOST_BACK_SEC), then stop.
 LOST_BACK_SEC = 1.5     # Then reverse for up to this long, replaying the recent steering backwards so the car retraces its path, until the lane comes back. 0 = just stop.
@@ -333,7 +339,8 @@ def draw_person(dbg, detector, at):
         chip(dbg, f"c{color:.2f} s{shape:.2f}", x, y - 18, C_DIM, 0.35)
     if detector.found:
         f = detector.found
-        cv2.rectangle(dbg, (f["x"], f["y"]), (f["x"] + f["w"], f["y"] + f["h"]), C_PERSON, 2, cv2.LINE_AA)
+        x, y, w, h = figure_box(f["x"], f["y"], f["w"], f["h"], f["feet"])      # The whole figure, though only its colored part was matched.
+        cv2.rectangle(dbg, (x, y), (x + w, y + h), C_PERSON, 2, cv2.LINE_AA)
         look = f"" if f.get("look") is None else f" L{f['look']:.2f}"     # L: how much it looks like the registered figure (EMBED_MIN).
         chip(dbg, f"PERSON c{f['score']:.2f} s{f['shape']:.2f}{look}", f["x"], f["y"] - 22, C_PERSON, 0.38)
 
@@ -1984,6 +1991,8 @@ class Recorder:
         self.dir.mkdir(parents=True)
         if PERSON_ON and PERSON_FILE.exists():      # Replaying this run later needs the figure registered on the day.
             shutil.copy(PERSON_FILE, self.dir / PERSON_FILE.name)
+            if PERSON_FILE.with_name(PHOTO_DIR).is_dir():
+                shutil.copytree(PERSON_FILE.with_name(PHOTO_DIR), self.dir / PHOTO_DIR)
         if VISION_FILE.exists():                    # And the calibration of the day: the Mac has none of its own.
             shutil.copy(VISION_FILE, self.dir / VISION_FILE.name)
         shutil.copy(Path(__file__).with_name("course.py"), self.dir / "course.py")      # And the course as it was.
@@ -2027,6 +2036,8 @@ class Driver:
             person, FRAME_H, PERSON_AT, PERSON_X, PERSON_RESUME_DELAY, PERSON_MIN_STOP, PERSON_MAX_WAIT, PERSON_EVERY)
         self.lost_since = None      # Time the lane was lost.
         self.yaw, self.yaw_idx = YawMeter(), -1     # Turn angle from the camera, reset at each turn action.
+        self.hard_steer = False     # Steering is past HARD_STEER, and not yet back below HARD_STEER_OFF.
+        self.last_cmd, self.ramp_t = 0.0, None      # Motor command last sent and when, for SPEED_UP_RATE and SPEED_DOWN_RATE.
         self.history = []           # Recent forward driving: (seconds, steering angle, speed). Replayed backwards when backing up.
         self.last_t = None
         self.back = None            # Back-up in progress: start, plan [(seconds, angle)], entries used, lost episode, action index.
@@ -2445,20 +2456,34 @@ class Driver:
             speed = speed_for(steering.angle, base)   # Slow for a large steer only while following the lane.
         else:
             speed = base        # Turn, straight, and curve keep the speed that was set.
-        if speed > 0 and self.lost_since is None and abs(steering.angle) > HARD_STEER:
+        self.hard_steer = abs(steering.angle) > (HARD_STEER_OFF if self.hard_steer else HARD_STEER)
+        if speed > 0 and self.lost_since is None and self.hard_steer:
             speed += HARD_STEER_BOOST   # A large steer drags the wheels and slows the car, so add this back. Skipped while the lane is lost.
         self.speed = speed
-        if speed > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
-            # The speed the motor really gets, so a retrace covers the distance really driven.
-            self.history.append((now - self.last_t, steering.angle, max(speed, motor_floor(steering.angle))))
-            while sum(h[0] for h in self.history) > LOST_BACK_MEMORY:
-                self.history.pop(0)
-        self.last_t = now
         cmd = speed
         if cmd > 0:
             # On the floor a motor command that is too low leaves the car stopped, especially at a large steer or on a weak battery, so raise it to the minimum.
             cmd = max(cmd, motor_floor(steering.angle))
+        cmd = self.ramp(cmd, now, steering.angle)
+        if cmd > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
+            # The speed the motor really gets, so a retrace covers the distance really driven.
+            self.history.append((now - self.last_t, steering.angle, cmd))
+            while sum(h[0] for h in self.history) > LOST_BACK_MEMORY:
+                self.history.pop(0)
+        self.last_t = now
         return steer, cmd, dbg
+
+    def ramp(self, cmd, now, angle):
+        """The motor command to send for this wanted one: forward driving changes it gradually, a stop or a back-up at once."""
+        dt = now - self.ramp_t if self.ramp_t is not None else 0.0
+        self.ramp_t = now
+        if SPEED_RAMP_ON and cmd > 0:
+            if self.last_cmd > 0:
+                cmd = float(np.clip(cmd, self.last_cmd - SPEED_DOWN_RATE * dt, self.last_cmd + SPEED_UP_RATE * dt))
+            else:
+                cmd = min(cmd, motor_floor(angle))      # From a standstill or from backing up: start at the lowest command that moves it.
+        self.last_cmd = cmd
+        return cmd
 
 
 def open_camera(locked=True):
@@ -2486,12 +2511,18 @@ def open_camera(locked=True):
     return cam
 
 
-def load_person():
-    """The LEGO figure registered on the day (aicar person). None turns the check off, with a warning if that was not asked for."""
+def load_person(path=PERSON_FILE):
+    """What finds the LEGO figure: the one registered on the day (aicar person), and any other if PERSON_ANY. None turns the check off, with a warning if that was not asked for."""
     if not PERSON_ON:
         print("레고 사람 인식 꺼짐 (course.py PERSON_ON)")
         return None
-    detector = PersonDetector.load(HORIZON_Y)
+    detector = PersonDetector.load(HORIZON_Y, path)
+    every = AnyFigure.load(HORIZON_Y, detector) if PERSON_ANY else None
+    if every:
+        print(f"레고 사람 인식 켜짐 (등록 안 한 레고도 찾음, 등록 시점 {len(every.views)}개)")
+        return every
+    if detector and detector.photo_sigs is None:
+        print("[주의] 등록 사진이 없어 사진 비교를 못 합니다. 다시 등록하면 켜집니다: aicar person")
     if detector and detector.embeds is None:
         print("[주의] 등록된 레고에 모습 정보가 없어 색과 윤곽만 봅니다. 다시 등록하면 켜집니다: aicar person")
     print(f"레고 사람 인식 켜짐 (시점 {len(detector.views)}개)" if detector

@@ -797,7 +797,7 @@ def test_person_detect():
     grown = empty.copy()
     grown_fig = cv2.resize(minifig(empty, 320, 240)[150:244, 290:350], None, fx=2.0, fy=1.0, interpolation=cv2.INTER_NEAREST)
     grown[220:220 + grown_fig.shape[0], 260:260 + grown_fig.shape[1]] = grown_fig
-    check("거리: 윤곽과 크기가 맞지 않아도 색이 맞으면 찾음", det(grown) is None and det(grown, (0.0, 1.0), near_y) is not None)
+    check("거리: 윤곽과 크기가 맞지 않아도 색이 맞으면 찾음", det(grown) is None and det(grown, (0.0, 1.0), near_y, photos=False) is not None)
     check("거리: 가까워도 사람 없는 차로는 없음", det(empty, (0.0, 1.0), near_y) is None and det(lane_frame(crosswalk=True), (0.0, 1.0), near_y) is None)
     check("거리: 가까워도 옷 색이 다른 사람은 아님", det(minifig(empty, 320, 300, torso=(60, 150, 50)), (0.0, 1.0), near_y) is None)
     block = minifig(empty, 320, 240)[150:244, 290:350]
@@ -1101,6 +1101,7 @@ def test_person_look():
 
     old = P._embedder, P._embedder_tried
     P._embedder, P._embedder_tried = Fake(), True
+    P.PHOTO_ON = False      # These are about the embedder, used when no photos are saved.
     try:
         back = lane_frame()
         det = registered_figure(back=back)[0]
@@ -1125,6 +1126,10 @@ def test_person_look():
         det.likeness = lambda *_: P.EMBED_MIN_EDGE
         cut = det(edge, (0, 1), 198)
         check("화면 가장자리에 잘린 후보도 많이 닮으면 사람", cut is not None and cut["x"] <= 0, cut)
+        det.likeness = lambda *_: 1.0
+        other = minifig(lane_frame(), 320, 300, torso=(40, 200, 40), legs=(40, 200, 40))
+        check("닮아 보여도 등록에 없는 색 옷을 입었으면 사람 아님", det(other, (0, 1), 198) is None and bool(det.near), det.near)
+        check("등록한 레고는 낯선 색 검사를 통과", det(fig, (0, 1), 198) is not None)
         del det.likeness
         det.embeds = -det.embeds        # Now nothing looks alike.
         Fake.calls = 0
@@ -1144,8 +1149,10 @@ def test_person_look():
         check("옆으로 긴 후보는 눕힌 모습까지 비교", Fake.calls == 2, Fake.calls)
     finally:
         P._embedder, P._embedder_tried = old
+        P.PHOTO_ON = True
     old = P._embedder, P._embedder_tried
     P._embedder, P._embedder_tried = None, True
+    P.PHOTO_ON = False
     try:
         back = lane_frame()
         det = registered_figure(back=back)[0]
@@ -1153,6 +1160,7 @@ def test_person_look():
         check("임베더를 못 쓰면 색과 윤곽으로 동작", det.embeds is None and found is not None and found["look"] is None)
     finally:
         P._embedder, P._embedder_tried = old
+        P.PHOTO_ON = True
     try:
         real = P.Embedder()
         v = real(np.full((60, 40, 3), 90, np.uint8))
@@ -1164,6 +1172,131 @@ def test_person_look():
         check("실제 모델: 등록한 그 사진은 거의 같음", found is not None and found["look"] > 0.9, found and found["look"])
     except ImportError:
         print("  (실제 모델 건너뜀: ai_edge_litert 없음)")
+
+
+def test_person_photos():
+    import person as P
+    print("\n[레고 사람: 등록 사진 비교]")
+    back = lane_frame()
+    det = registered_figure(back=back)[0]
+    check("등록하면 네모 칸 사진이 남음", len(det.photos) == len(det.views) and det.photo_sigs is not None)
+    fig = minifig(lane_frame(), 320, 300)
+    found = det(fig, (0, 1), 198)
+    check("등록한 레고는 사진과 맞음", found is not None and found["look"] >= P.PHOTO_MIN, found)
+    other = minifig(lane_frame(), 320, 300, torso=(40, 200, 40), legs=(200, 200, 40))
+    check("머리만 같은 다른 옷의 레고는 사진과 안 맞음", det(other, (0, 1), 198) is None, det.found)
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "person.json"
+        det.save(path)
+        check("사진 파일로 저장됨", len(list((Path(tmp) / P.PHOTO_DIR).glob("*.jpg"))) == len(det.views))
+        again = PersonDetector.load(lf.HORIZON_Y, path)
+        check("다시 읽어도 사진으로 비교", again.photo_sigs is not None and again(fig, (0, 1), 198) is not None)
+        (Path(tmp) / P.PHOTO_DIR / "000.jpg").unlink()
+        old = PersonDetector.load(lf.HORIZON_Y, path)
+        check("사진 파일이 없어져도 에러 없이 읽음", old is not None and old.photo_sigs is None)
+    count = len(det.views)
+    det.undo()
+    check("한 장 취소하면 사진도 취소", len(det.photos) == len(det.views) == count - 1)
+    det = registered_figure(back=back)[0]
+    tiny = det.photos[0][:4, :4].copy()
+    det.views.append(dict(det.views[0]))
+    det.photos.append(tiny)
+    before = len(det.photo_sigs)
+    det.fit()
+    check("일부만 담긴 작은 사진은 비교에서 뺌", len(det.photo_sigs) == before, (before, len(det.photo_sigs)))
+
+
+def test_person_any():
+    import person as P
+    print("\n[레고 사람: 등록 안 한 레고]")
+    check("색 부분이 작아도 발까지 레고 전체 크기로", P.figure_box(300, 100, 20, 40, 180) == (290, 100, 40, 80), P.figure_box(300, 100, 20, 40, 180))
+    check("누운 레고는 상자 그대로", P.figure_box(300, 100, 60, 30, 130) == (300, 100, 60, 30), P.figure_box(300, 100, 60, 30, 130))
+
+    class Seen:
+        near, found = [], {"x": 300, "y": 100, "w": 20, "h": 40, "feet": 180, "score": 0.9, "shape": 0.5, "look": 0.6}
+
+    dbg = np.zeros((360, 640, 3), np.uint8)
+    lf.draw_person(dbg, Seen, None)
+    check("화면의 PERSON 상자가 발까지 그려짐", dbg[180, 310].any() and not dbg[186, 310].any())
+
+    class Fake:     # Looks alike only when the picture holds much of the figure's red.
+        calls = 0
+        def __call__(self, bgr):
+            Fake.calls += 1
+            red = float((bgr[..., 2].astype(int) > bgr[..., 0].astype(int) + 60).mean())
+            return np.array([1.0, 0.0]) if red > 0.02 else np.array([0.0, 1.0])
+
+    old = P._embedder, P._embedder_tried
+    P._embedder, P._embedder_tried = Fake(), True
+    try:
+        weights = np.array([P.ANY_MIN + 1, 0, 0], dtype=np.float32)
+        det = P.AnyFigure(lf.HORIZON_Y, weights)
+        check("아무것도 등록 안 해도 멈출 위치가 있음", det.stop_at(360) == P.ANY_AT and det.views == [])
+        check("등록 안 한 레고를 찾음", det(minifig(lane_frame(), 320, 300), (0, 1), 198) is not None)
+        Fake.calls = 0
+        check("색 있는 게 없으면 못 찾고 계산도 안 함", det(lane_frame(), (0, 1), 198) is None and Fake.calls == 0, Fake.calls)
+        check("멈춤선보다 먼 레고는 무시", det(minifig(lane_frame(), 320, 150), (0, 1), 198) is None)
+        check("찾을 가로 범위 밖은 무시", det(minifig(lane_frame(), 320, 300), (0, 0.3), 198) is None)
+        blue = minifig(lane_frame(), 320, 300, torso=(200, 40, 40), legs=(200, 40, 40), head=(200, 40, 40))
+        check("레고처럼 안 보이면 후보로만 남음", det(blue, (0, 1), 198) is None and bool(det.near), det.near)
+        big = lane_frame()
+        big[150:360, 100:540] = (40, 40, 220)
+        check("레고보다 훨씬 큰 물체는 후보도 아님", det.blobs(big, 198) == [], det.blobs(big, 198))
+        cut = lane_frame()
+        fig = minifig(lane_frame(), 40, 300)
+        cut[:, :30] = fig[:, 30:60]
+        det.weights = np.array([(P.ANY_MIN + P.ANY_MIN_EDGE) / 2, 0, 0], dtype=np.float32)
+        check("화면 끝에 잘린 후보는 더 엄격", det(cut, (0, 1), 198) is None and det.near and det.near[0][0] <= 0, det.near)
+        check("안쪽 후보는 같은 점수로 통과", det(minifig(lane_frame(), 320, 300), (0, 1), 198) is not None)
+        reg = registered_figure(back=lane_frame())[0]
+        both = P.AnyFigure(lf.HORIZON_Y, weights, reg)
+        found = both(minifig(lane_frame(), 320, 300), (0, 1), 198)
+        check("등록한 레고는 등록 정보로 먼저 찾음", found is not None and found["shape"] > 0 and both.views == reg.views, found)
+        with tempfile.TemporaryDirectory() as tmp:
+            check("가중치 파일이 없으면 등록한 레고만", P.AnyFigure.load(lf.HORIZON_Y, reg, Path(tmp) / "none.npy") is None)
+        check("들어 있는 가중치 파일 크기가 모델과 맞음", np.load(P.ANY_FILE).shape == (1025,), np.load(P.ANY_FILE).shape)
+        d = person_driver([follow(2.0), finish()])
+        d.person.detector, d.person.at = det, 0.55
+        det.weights = weights
+        t, cmds = run_frames(d, minifig(lane_frame(), 320, 300), 0.0, 1.0)
+        check("주행 중 등록 안 한 레고를 보면 멈춤", cmds[-1] == 0 and d.person.hold, cmds[-1])
+    finally:
+        P._embedder, P._embedder_tried = old
+
+
+def test_speed_ramp():
+    print("\n[속도: 떨림 제거와 변화량 제한]")
+    d = person_driver([follow(2.0), finish()])
+    d.last_cmd, d.ramp_t = 0.0, 0.0
+    check("정지 상태에서는 최저 명령으로 출발", d.ramp(0.6, 0.0, 0) == lf.motor_floor(0), d.ramp(0.6, 0.0, 0))
+    d.last_cmd, d.ramp_t = 0.3, 0.0
+    up = d.ramp(0.6, 0.1, 0)
+    check("올릴 때는 초당 한도까지만", abs(up - (0.3 + lf.SPEED_UP_RATE * 0.1)) < 1e-6, up)
+    d.last_cmd, d.ramp_t = 0.6, 0.0
+    down = d.ramp(0.3, 0.1, 0)
+    check("내릴 때도 초당 한도까지만", abs(down - (0.6 - lf.SPEED_DOWN_RATE * 0.1)) < 1e-6, down)
+    check("내리는 한도가 올리는 한도보다 빠름", lf.SPEED_DOWN_RATE > lf.SPEED_UP_RATE)
+    d.last_cmd, d.ramp_t = 0.6, 0.0
+    check("정지는 바로 0", d.ramp(0.0, 0.01, 0) == 0.0)
+    d.last_cmd, d.ramp_t = 0.6, 0.0
+    check("후진은 바로", d.ramp(-0.5, 0.01, 0) == -0.5)
+    check("후진 다음 전진은 최저 명령으로 출발", d.ramp(0.6, 0.02, 0) == lf.motor_floor(0))
+    d.last_cmd, d.ramp_t = 0.31, 0.0
+    check("목표에 가까우면 목표 그대로", d.ramp(0.32, 1.0, 0) == 0.32)
+    old = lf.SPEED_RAMP_ON
+    lf.SPEED_RAMP_ON = False
+    d.last_cmd, d.ramp_t = 0.0, 0.0
+    check("SPEED_RAMP_ON=False: 명령 그대로", d.ramp(0.6, 0.01, 0) == 0.6)
+    lf.SPEED_RAMP_ON = old
+    # The steering boost: at a threshold, steering that wobbles must not flip the command.
+    d = person_driver([follow(30.0), finish()])
+    frame, t, cmds = lane_frame(), 0.0, []
+    for angle in [10] * 20 + [18.5, 17.5] * 20:
+        d.steering.angle = angle
+        cmds.append(d.tick(frame, t)[1])
+        t += 1 / 30
+    jumps = sum(abs(a - b) > 0.05 for a, b in zip(cmds, cmds[1:]))
+    check("조향이 18도 근처에서 흔들려도 명령이 안 튐", jumps == 0, jumps)
 
 
 def test_person_stop():
@@ -1974,7 +2107,7 @@ def test_saved_with_run():
 def main():
     for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_at_low_in_frame, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_stop, test_set_speed):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_speed_ramp, test_person_stop, test_set_speed):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")
