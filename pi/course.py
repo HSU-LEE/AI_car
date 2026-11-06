@@ -10,15 +10,15 @@ RED_BACK_ON = True          # wait_green에서 빨간불을 못 찾으면 후진
 # --- 레고 사람 (등록: Tune Person.command) ---
 PERSON_ON = True            # 사람을 보고 멈출지
 PERSON_AT = 0.55            # 이 선(화면 높이 0.4~0.95)보다 발이 아래로 와야 사람으로 봄. 0.55 = 약 40 cm, 0.5 = 약 46 cm. 위쪽(먼 곳)은 무시. 아래쪽은 색만 맞으면 크기, 윤곽, 위치와 상관없이 바로 정지. None = 등록한 위치
-PERSON_SLOW = 0.3           # 사람이 보일 때 줄일 속도. None = 안 줄임 (감지되면 바로 멈추므로 거의 쓰이지 않음)
-PERSON_STOP_DELAY = 0.0     # 지금은 안 씀 (감지되면 바로 멈춤)
 PERSON_RESUME_DELAY = 1.5   # 사람이 전혀 안 보인 뒤 출발까지 기다리는 시간 (초). 그 사이 한 번이라도 보이면 다시 기다림
 PERSON_MIN_STOP = 2.0       # 최소 정지 시간 (초)
 PERSON_MAX_WAIT = None      # 사람이 있어도 출발하는 시간 (초). None = 없어질 때까지 대기
 PERSON_X = (0.0, 1.0)       # 사람을 찾을 가로 범위: 왼쪽 0 ~ 오른쪽 1. 전체 = 화면에 잡히면 어디든
+PERSON_IN_LANE = True       # True = 발이 양쪽 차선 사이에 있어야 사람으로 봄. 차선이 하나도 안 보이면 구분할 수 없어 어디든 인정
+PERSON_ANY = False          # True = 등록한 레고 말고 다른 레고 사람도 찾음
 
 
-EVENTS = ("junction", "crosswalk", "lane", "gap", "end", "crossed", "green", "obstacle", "clear", "lost", "aligned", None)
+EVENTS = ("junction", "crosswalk", "lane", "gap", "end", "crossed", "green", "obstacle", "clear", "lost", "aligned", "enter", None)
 SIDES = ("left", "right", "center", None)
 STYLES = ("soft", "normal", "sharp", None)
 OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow", "blind_sec", "deg", "nth", "cm")
@@ -35,7 +35,7 @@ def _check_config():
         raise ValueError("PERSON_AT은 0.4 ~ 0.95 (클수록 가까이) 또는 None")
     if not 0 <= PERSON_X[0] < PERSON_X[1] <= 1:
         raise ValueError("PERSON_X는 (왼쪽, 오른쪽), 0 ~ 1")
-    for name, value in (("PERSON_STOP_DELAY", PERSON_STOP_DELAY), ("PERSON_RESUME_DELAY", PERSON_RESUME_DELAY),
+    for name, value in (("PERSON_RESUME_DELAY", PERSON_RESUME_DELAY),
                         ("PERSON_MIN_STOP", PERSON_MIN_STOP), ("PERSON_MAX_WAIT", PERSON_MAX_WAIT or 0)):
         if value < 0:
             raise ValueError(f"{name}는 0 이상의 초")
@@ -100,7 +100,7 @@ def set_speed(speed=None):
 
 def follow(sec=None, until="junction", speed=None, **opt):
     """차선을 따라가다가 until 조건이 되면 끝낸다."""
-    return _auto(_step("follow", 0.0, sec, until, speed=speed, **opt), speed, 0.425)
+    return _auto(_step("follow", 0.0, sec, until, speed=speed, **opt), speed, SPEED)
 
 
 def straight(sec=None, until=None, angle="hold", speed=None, **opt):
@@ -149,6 +149,11 @@ def wait_green(max_sec=10, min_sec=0.0, speed=0.0):
 def wait(sec=None, until="clear", min_sec=0.0, max_sec=None, hold_sec=0.0, speed=0.0):
     """선 채로 앞 장애물이 없어질 때까지 기다린다."""
     return _step("wait", 0.0, sec, until, min_sec=min_sec, max_sec=max_sec, speed=speed, hold_sec=hold_sec)
+
+
+def next():
+    """디버깅용. 선 채로 기다리다가 웹페이지에서 Enter를 누르면 다음 동작을 실행한다. 시간제한 없음."""
+    return _step("wait", 0.0, None, "enter", speed=0.0)
 
 
 def start_gate(hold_sec=1.0, speed=0.0):
@@ -285,7 +290,7 @@ def _flat(steps):
 def describe(step):
     names = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선", "gap": "차선 끊김", "end": "끝(교차로선/끊김)", "crossed": "횡단보도 지나감",
              "green": "초록불", "lost": "차선 놓침", "obstacle": "장애물", "clear": "장애물 없어짐",
-             "aligned": "정렬"}
+             "aligned": "정렬", "enter": "Enter"}
     do = {"follow": "차선 따라", "straight": "직진", "right": "우회전", "left": "좌회전", "curve": "곡선",
           "stop": "정지", "wait": "대기", "finish": "끝"}[step["do"]]
     parts = [do]
@@ -392,8 +397,8 @@ def describe(step):
 
 COURSE = _flat([
     start_gate(2),
-    to_junction(cm=8),
-    straight(2),
+    to_junction(cm=8,nth=2),
+    straight(2.5),
     tr(),
     follow(4),
     to_crosswalk(0.8),
@@ -402,15 +407,13 @@ COURSE = _flat([
     stop(1.5),
     pass_crosswalk(),
     to_junction(cm=8),
-    straight(2),
+    straight(2.5),
     tr(),
-    to_junction(cm=4),
+    to_junction(cm=8),
     straight(2.5),
     follow(4),
     set_speed(0.4),
-    to_junction(),
-    follow(2.5),    
-    straight(2),
+    to_junction(cm=8,nth=2),
     tr(),
     to_junction(),
     straight(4),

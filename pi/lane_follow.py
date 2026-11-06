@@ -194,7 +194,7 @@ LIGHT_LOCAL_V_MIN = 100  # Minimum value at that spot. A green LED tends to read
 LIGHT_NEAR = 4          # wait_green: green must lie within (red lamp size times this) of where the red lamp was.
                         # That allows the gap between lamps on the same light and ignores green objects elsewhere.
 
-LENS_POSITION = 4.5     # Manual focus in diopters (1/distance in m). 4.5 is about 22 cm, the near floor where the lane is read. None means autofocus.
+LENS_POSITION = 4.5     # Manual focus in diopters (1/distance in m). 4.5 is about 22 cm, the near floor where the lane is read. Always this value: a lens_position in vision.json is ignored. None means autofocus.
                         # calibrate.py measures sharpness over the lane region and saves it in vision.json.
 CAMERA_LOCK = None      # Locked exposure, gain, and white balance {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
                         # None leaves the camera automatic. calibrate.py measures the venue lighting and saves it in vision.json.
@@ -207,10 +207,10 @@ def load_vision(path=None):
 
     Track color (line_color), the white-line threshold (tune_white.py), traffic-light
     thresholds (tune_light.py), the camera center measured by calibrate.py (camera_x),
-    lane width and vanishing point, focus, and exposure / white balance.
+    lane width and vanishing point, and exposure / white balance. Focus stays at LENS_POSITION.
     """
     global LINE_COLOR, WHITE_THR, CAMERA_X, LIGHT_S_MIN, LIGHT_V_MIN, LIGHT_AREA_MIN
-    global LANE_WIDTH_PX, HORIZON_Y, LENS_POSITION, CAMERA_LOCK
+    global LANE_WIDTH_PX, HORIZON_Y, CAMERA_LOCK
     try:
         data = json.loads((path or VISION_FILE).read_text())
     except (OSError, ValueError):
@@ -223,7 +223,6 @@ def load_vision(path=None):
     LIGHT_AREA_MIN = data.get("light_area_min", LIGHT_AREA_MIN)
     LANE_WIDTH_PX = data.get("lane_width_px", LANE_WIDTH_PX)
     HORIZON_Y = data.get("horizon_y", HORIZON_Y)
-    LENS_POSITION = data.get("lens_position", LENS_POSITION)
     CAMERA_LOCK = data.get("camera_lock", CAMERA_LOCK)
 
 
@@ -1239,7 +1238,7 @@ class CourseRunner:
 
     EVENT_NAMES = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선",
                    "gap": "차선 끊김", "end": "끝 (교차로선 또는 차선 끊김)", "crossed": "횡단보도 지나감", "green": "초록불", "obstacle": "장애물 감지", "clear": "장애물 없어짐",
-                   "lost": "차선 놓침", "aligned": "정렬"}
+                   "lost": "차선 놓침", "aligned": "정렬", "enter": "Enter"}
     STATE_EVENTS = ("lane", "green", "clear", "aligned", "crossed")   # Judged as the current state: using one does not require it to count again. An obstacle counts again only after it goes away and comes back.
     AT_EVENTS = ("junction", "crosswalk", "gap", "end")    # Events that can use at= (how far down the frame the line must come).
     # end: a junction line or a lane gap, whichever comes first (to_end). Its y is the nearer of the two.
@@ -1259,9 +1258,9 @@ class CourseRunner:
         # Per event: consecutive detection frames, and whether it is armed. Something visible from the start (the start line) or just consumed must disappear once before it counts again.
         # Green, and obstacle present or clear, must be accepted even if that was already the state, so they stay armed.
         self.hits = {"junction": 0, "crosswalk": 0, "lane": 0, "gap": 0, "end": 0, "crossed": 0, "green": 0, "obstacle": 0, "clear": 0,
-                     "lost": 0, "aligned": 0}
+                     "lost": 0, "aligned": 0, "enter": 0}
         self.armed = {"junction": False, "crosswalk": False, "lane": True, "gap": False, "end": False, "crossed": True, "green": True,
-                      "obstacle": True, "clear": True, "lost": True, "aligned": True}
+                      "obstacle": True, "clear": True, "lost": True, "aligned": True, "enter": True}
         self.since = {k: None for k in self.hits}   # Per event: time the current state started (used for hold_sec).
         self.miss = {k: 0 for k in self.hits}      # Per event: consecutive frames it was not seen. Used to arm during blind_sec.
         self.turn_clear = 0     # Consecutive frames during a turn with no horizontal line. Used for the exit decision.
@@ -1272,6 +1271,15 @@ class CourseRunner:
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
         self.run_start = None       # cm=: when the end line was reached.
         self.moving = True          # cm=: whether the motor is driving the car forward. Driver fills it every frame.
+        self.entered = False        # next(): Enter was pressed during this action.
+
+    def waiting_enter(self):
+        step = self.step()
+        return step is not None and step["until"] == "enter"
+
+    def press_enter(self):
+        """Enter on the page. Counts only at a next(), so one pressed earlier cannot skip it."""
+        self.entered = self.waiting_enter()
 
     def step(self):
         step = self.course[self.idx] if self.idx < len(self.course) else None
@@ -1286,6 +1294,7 @@ class CourseRunner:
 
     def begin(self, now):
         self.step_start = now
+        self.entered = False    # next(): Enter counts only once this action is running.
         self.count = 0          # nth=: how many of this action's until events have passed so far.
         self.hits["lane"] = 0
         self.turn_clear = 0
@@ -1484,7 +1493,9 @@ class CourseRunner:
                 self.done = True
                 return
             elapsed = now - self.step_start
-            if step["sec"] is not None:
+            if step["until"] == "enter":
+                reason = "Enter" if self.entered else None
+            elif step["sec"] is not None:
                 reason = "시간" if elapsed >= step["sec"] else None
             elif step["max"] is not None and elapsed >= step["max"] and not (self.needs_light() and self.red_seen):
                 # wait_green: max_sec is for a red light that was never found. Once red is seen, the car waits for green, however long.
@@ -1614,7 +1625,7 @@ class CourseRunner:
         if step["do"] == "wait":
             if step["until"] == "green":
                 return "WAIT GREEN" if self.red_seen else "WAIT RED"
-            return {"obstacle": "WAIT OBSTACLE", "clear": "WAIT CLEAR"}.get(step["until"], "WAIT")
+            return {"obstacle": "WAIT OBSTACLE", "clear": "WAIT CLEAR", "enter": "WAIT ENTER"}.get(step["until"], "WAIT")
         if step["do"] == "straight" and step["angle"] == "hold":
             return "STRAIGHT HOLD"
         return step["do"].upper()
@@ -2211,7 +2222,7 @@ class Driver:
     PANEL_W = 240
     EVENT_EN = {"junction": "JUNCTION", "crosswalk": "CROSSWALK", "lane": "NEW LANE", "gap": "LANE ENDS", "end": "END (JUNCTION/GAP)", "crossed": "CROSSWALK PASSED",
                 "green": "GREEN LIGHT", "obstacle": "OBSTACLE", "clear": "CLEAR", "lost": "LANE LOST",
-                "aligned": "ALIGNED"}
+                "aligned": "ALIGNED", "enter": "ENTER"}
     DO_EN = {"follow": "FOLLOW LANE", "straight": "STRAIGHT", "right": "TURN RIGHT", "left": "TURN LEFT",
              "curve": "CURVE", "stop": "STOP", "wait": "WAIT", "finish": "FINISH"}
 
@@ -2276,7 +2287,7 @@ class Driver:
             banner = (("RED LIGHT - WAIT", (40, 40, 220)) if course.red_seen else
                       (("NO RED - BACKING UP", (200, 120, 0)) if backing_red else ("FINDING RED LIGHT", (120, 100, 80))))
         elif step["do"] == "wait":
-            banner = ({"clear": "WAIT: REMOVE OBSTACLE", "obstacle": "WAIT: OBSTACLE"}.get(step["until"], "WAIT"),
+            banner = ({"clear": "WAIT: REMOVE OBSTACLE", "obstacle": "WAIT: OBSTACLE", "enter": "PRESS ENTER ON PAGE"}.get(step["until"], "WAIT"),
                       (160, 120, 40))
         elif self.back is not None:
             banner = (f"BACKING UP - FINDING LANE {now - self.back['start']:.1f}s", (200, 120, 0))
@@ -2603,7 +2614,11 @@ def main():
         car.load_bias()     # Continue with the center trim learned on a previous run.
     cam = open_camera()
     driver = Driver(COURSE, args.start, args.speed, obs, load_person())
-    stream = None if args.no_stream else Stream(args.port, "AICAR 주행")
+    pauses = any(s["until"] == "enter" for s in driver.course.course)
+    if pauses and args.no_stream:
+        raise SystemExit("코스에 next()가 있으면 웹페이지가 필요합니다 (--no-stream 빼기)")
+    # Only a course with next() sends keys to the program, so other drives keep the page's own keys.
+    stream = None if args.no_stream else Stream(args.port, "AICAR 주행", "Enter 다음 동작 (next)" if pauses else None)
     rec = Recorder(args.speed, args.set) if args.record else None
     print("모터", "ON" if args.drive else "OFF (조향만)",
           f"| 코스 {len(COURSE)}단계, {args.start}번부터 | Ctrl+C로 정지")
@@ -2642,7 +2657,8 @@ def main():
             if show:
                 stream.update(driver.view(dbg, now, fps))
             if stream:
-                stream.keys.take()      # Driving reads no keys. Ctrl+C on the page stops the car, like in the terminal.
+                if "\n" in stream.keys.take():      # Enter is read only for next(). Ctrl+C on the page stops the car, like in the terminal.
+                    course.press_enter()
             if time.monotonic() - t0 >= 1:
                 fps = frames / (time.monotonic() - t0)
                 print(f"\r{fps:4.1f} fps  "

@@ -2,11 +2,11 @@
 
   python calibrate.py           measure, then save to vision.json (the previous file is kept as vision.json.bak)
   python calibrate.py --dry     measure only, do not save
-  python calibrate.py --focus-only   refit focus only
+  python calibrate.py --focus-only   only measure where focus would be sharpest. Saves nothing: focus stays at lf.LENS_POSITION
 
 Steps
   1. Track color     a bright floor is a white floor with a black line; a dark floor is a black floor with a white line
-  2. Focus           sweep the lens from near to far and lock the value that is sharpest on the lane region, weighted toward the near side
+  2. Focus           fixed at lf.LENS_POSITION (about 22 cm), not measured
   3. Exposure        settle auto exposure and white balance, then lock them. Shorten exposure so the white line does not blow out, and keep the exposure time at or below MAX_EXPOSURE_US so the line does not blur while driving. Gain makes up any missing brightness.
   4. Lane width and vanishing point   measure both line positions in each band and fit the perspective model (LANE_WIDTH_PX, HORIZON_Y)
   5. Camera center   assume the car is in the middle of the lane and record where the lane center falls at the bottom of the frame (CAMERA_X)
@@ -200,7 +200,7 @@ def annotate(dbg, lines):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true", help="측정만 하고 저장 안 함")
-    ap.add_argument("--focus-only", action="store_true", help="초점만 다시 맞춤 (차를 트랙 위에)")
+    ap.add_argument("--focus-only", action="store_true", help="가장 선명한 초점 측정만 함, 저장 안 함 (차를 트랙 위에)")
     args = ap.parse_args()
     from libcamera import controls
 
@@ -214,10 +214,7 @@ def main():
         if lens is None:
             print("초점: 측정 실패 (카메라 앞이 가려졌는지 확인) → 기존 값 유지")
             return
-        print(f"초점: 렌즈 {lf.LENS_POSITION} → {lens:.2f} (약 {100 / lens:.0f}cm에 초점)")
-        if not args.dry:
-            lf.save_vision(lens_position=round(lens, 2))
-            print(f"저장: {lf.VISION_FILE}")
+        print(f"초점: 가장 선명한 렌즈 {lens:.2f} (약 {100 / lens:.0f}cm). 저장 안 함, 주행은 렌즈 {lf.LENS_POSITION} (약 {100 / lf.LENS_POSITION:.0f}cm) 고정")
         return
 
     print(__doc__.split("\n\n")[0])
@@ -232,15 +229,8 @@ def main():
         print(f"      바닥 밝기 {med:.0f} → {'흰 바닥 위 검은 선' if color == 'black' else '검은 바닥 위 흰 선'}")
 
         print("[2/6] 초점 ...", flush=True)
-        lens = calibrate_focus(cam, controls)
-        if lens is not None and 0.5 <= lens <= 12:
-            saved["lens_position"] = round(lens, 2)
-            print(f"      렌즈 {lens:.2f} (약 {100 / lens:.0f}cm에 초점)")
-        else:
-            notes.append("초점: 측정 실패 → 기존 값 유지")
-            print(f"      실패 → 기존 값 {lf.LENS_POSITION} 유지")
-        cam.set_controls({"AfMode": controls.AfModeEnum.Manual,
-                          "LensPosition": saved.get("lens_position", lf.LENS_POSITION)})
+        cam.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": lf.LENS_POSITION})
+        print(f"      렌즈 {lf.LENS_POSITION} (약 {100 / lf.LENS_POSITION:.0f}cm에 고정)")
 
         print("[3/6] 조도 (노출 / 게인 / 화이트밸런스) ...", flush=True)
         lock, clipped = calibrate_exposure(cam)
@@ -275,7 +265,7 @@ def main():
         print("[6/6] 확인 ...", flush=True)
         for key, value in saved.items():        # Apply this run's values immediately and detect again.
             name = {"line_color": "LINE_COLOR", "lane_width_px": "LANE_WIDTH_PX", "horizon_y": "HORIZON_Y",
-                    "camera_x": "CAMERA_X", "white_thr": "WHITE_THR", "lens_position": "LENS_POSITION",
+                    "camera_x": "CAMERA_X", "white_thr": "WHITE_THR", 
                     "camera_lock": "CAMERA_LOCK"}[key]
             setattr(lf, name, value)
         frames = capture(cam, 20, settle=0.3)
@@ -289,7 +279,7 @@ def main():
                        f"track {color}  lane {saved.get('lane_width_px', lf.LANE_WIDTH_PX)}px  "
                        f"horizon {saved.get('horizon_y', lf.HORIZON_Y)}  cam_x {saved.get('camera_x', lf.CAMERA_X)}",
                        f"exp {lock['ExposureTime']}us  gain {lock['AnalogueGain']}  "
-                       f"lens {saved.get('lens_position', lf.LENS_POSITION)}"])
+                       f"lens {lf.LENS_POSITION}"])
         cv2.imwrite(str(VIEW_FILE), dbg)
     finally:
         cam.stop()

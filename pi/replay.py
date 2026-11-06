@@ -87,6 +87,8 @@ def main():
             continue
         now = float(row["t"])
         before = course.idx
+        if row.get("status") != "WAIT ENTER":       # next(): Enter goes on where the recording stopped waiting.
+            course.press_enter()
         _, _, dbg = driver.tick(frame, now, show=True)
         light, det = driver.light, driver.det
         junctions += course.idx != before

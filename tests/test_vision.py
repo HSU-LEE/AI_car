@@ -340,6 +340,12 @@ def test_calibration():
     table = {1.5: [349, 159, 92], 3.0: [506, 356, 216], 3.75: [495, 447, 319], 4.5: [408, 462, 418],
              5.25: [305, 388, 467], 6.0: [217, 292, 445], 7.5: [111, 133, 277]}
     check("초점: 차선 영역(가까운 쪽 비중) 기준으로 고름", cal.best_focus(table) == 4.5, cal.best_focus(table))
+    old_lens = lf.LENS_POSITION
+    with tempfile.TemporaryDirectory() as tmp:
+        saved = Path(tmp) / "vision.json"
+        saved.write_text(json.dumps({"lens_position": 7.5}))
+        lf.load_vision(saved)
+    check("초점: 저장값이 있어도 약 22cm 고정", lf.LENS_POSITION == old_lens and 21 <= 100 / lf.LENS_POSITION <= 23, lf.LENS_POSITION)
     check("선이 안 보이면 측정 안 하고 이유를 알려 줌",
           isinstance(cal.fit_geometry(cal.measure_lanes([np.full((H, W, 3), 30, np.uint8)] * 4)), str))
 
@@ -1266,6 +1272,7 @@ def test_person_any():
 
 def test_person_in_lane():
     print("\n[레고 사람: 차선 사이만]")
+    check("코스 설정이 차선 사이만 인정", lf.PERSON_IN_LANE is True)
     frame = lane_frame()
     lane = lf.LaneDetector()
     check("차선을 모르면 구분하지 않음", lane.lane_span(300) is None and lane.in_lane(10, 300))
@@ -1466,7 +1473,7 @@ def test_set_speed():
     check("right, curve는 그대로", spd[9] is None and spd[10] is None)
     tr_steps = cs._flat(cs.tr())
     check("tr(회전/정렬/천천히)은 그대로", spd[11:11 + len(tr_steps)] == [s["speed"] for s in tr_steps])
-    check("set_speed(): 기본값으로 되돌림", spd[-3] == cs.SPEED and spd[-2] == 0.425)
+    check("set_speed(): 기본값으로 되돌림", spd[-3] == cs.SPEED and spd[-2] == cs.SPEED)
     check("코스에 set_speed 동작이 남지 않음", all(s["do"] != "set_speed" for s in flat) and cs._flat(flat) == flat)
     bundles = cs._flat([cs.set_speed(0.33), cs.cross_gap(), cs.cross(), cs.traffic(), cs.corner("left"), cs.uturn("right"),
                         cs.cross(line="crosswalk"), cs.pass_crosswalk()])
@@ -1476,11 +1483,11 @@ def test_set_speed():
     check("묶음 동작: 안의 straight는 그대로", set(straights) == {cs.SPEED}, straights)
     defaults = cs._flat([cs.to_end(), cs.uturn("left"), cs.follow(1)])
     check("to_end: max_sec로 시간 제한", cs.to_end(max_sec=8)["max"] == 8 and cs.to_end()["max"] is None)
-    check("set_speed 없으면 기존 기본값 그대로", (defaults[0]["speed"], defaults[1]["speed"], defaults[-1]["speed"]) == (0.3, 0.4, 0.425))
+    check("set_speed 없으면 기존 기본값 그대로", (defaults[0]["speed"], defaults[1]["speed"], defaults[-1]["speed"]) == (0.3, 0.4, cs.SPEED))
     check("턴 뒤: SPEED로 돌아옴", cs._flat([cs.tr(), cs.follow(1)])[-1]["speed"] == cs.SPEED)
     check("턴 뒤: set_speed 값으로 돌아옴", cs._flat([cs.set_speed(0.33), cs.tl(), cs.follow(1)])[-1]["speed"] == 0.33)
     check("턴 뒤: 직접 준 speed=는 그대로", cs._flat([cs.tr(), cs.follow(1, speed=0.5)])[-1]["speed"] == 0.5)
-    check("speed= 준 턴 뒤에는 기본값 그대로", cs._flat([cs.tr(speed=0.5), cs.follow(1)])[-1]["speed"] == 0.425)
+    check("speed= 준 턴 뒤에는 기본값 그대로", cs._flat([cs.tr(speed=0.5), cs.follow(1)])[-1]["speed"] == cs.SPEED)
     resumed = cs._flat([cs.tr(), cs.follow(1)])
     check("턴 뒤 복귀: _flat을 다시 불러도 같음", cs._flat(resumed) == resumed and all("resume" not in s for s in resumed))
     d = lf.Driver([cs.set_speed(0.33), follow(9), finish()])
@@ -2058,6 +2065,34 @@ def test_key_inbox():
     check("키: 멈춘 뒤 Ctrl+C가 남지 않음", box.take() == "")
 
 
+def test_next():
+    print("[next(): 웹페이지 Enter로 다음 동작]")
+    from course import next as cs_next, describe
+    d = lf.Driver([stop(0.1), cs_next(), straight(1), finish()])
+    run = d.course
+    check("next: 설명에 Enter 표시", "Enter" in describe(cs_next()))
+    with quiet():
+        run.press_enter()
+        run.update(False, 0.0)
+        check("next: 도달 전에 누른 Enter는 무시", run.idx == 0 and not run.entered)
+        run.update(False, 0.2)
+        check("next: 도달하면 대기, 속도 0", run.idx == 1 and run.speed == 0 and run.status(0.2) == "WAIT ENTER")
+        run.update(False, 1000.0)
+        check("next: 시간이 지나도 안 넘어감", run.idx == 1)
+        run.press_enter()
+        run.update(False, 1000.1)
+        check("next: Enter를 누르면 다음 동작", run.idx == 2, run.idx)
+        run.update(False, 1000.2)
+        run.press_enter()
+        check("next: 지난 뒤 Enter는 영향 없음", run.idx == 2 and not run.entered)
+    frame = lane_frame()
+    d = lf.Driver([cs_next(), straight(1), finish()])
+    with quiet():
+        _, cmd, _ = d.tick(frame, 0.0, show=True)
+        d.view(d.tick(frame, 0.1, show=True)[2], 0.1)
+    check("next: 주행 루프에서 모터 정지, 화면 표시 오류 없음", cmd == 0, cmd)
+
+
 def test_saved_with_run():
     print("[녹화에 저장되는 설정 / 서보 중앙 / 사람 등록 취소]")
     import types
@@ -2088,7 +2123,7 @@ def test_saved_with_run():
 def main():
     for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_speed_constant, test_person_stop, test_end_watch, test_set_speed):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")
