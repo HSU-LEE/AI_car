@@ -32,3 +32,8 @@ __pycache__/
 track/tiles/
 track/*.pdf
 track/*.png
+
+# PCB 중간 산출물과 KiCad 자동 백업 (route_manual.sh 입력인 before-routing만 올림)
+cad/hardware/aicar-hat/out/*
+!cad/hardware/aicar-hat/out/before-routing.kicad_pcb
+cad/hardware/aicar-hat/.history/

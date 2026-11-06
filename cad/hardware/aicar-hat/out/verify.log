@@ -1,5 +1,0 @@
-tracks+vias 0 backup 693 footprints 89 nets 44 / 44
-moved parts []
-pad nets changed 0
-locked ['H1', 'H2', 'H3', 'H4', 'J1'] hidden ['H1', 'H2', 'H3', 'H4']
-zones [('GND', False), ('GND', False), ('PoE header: no through-hole pins', True)]
