@@ -1144,6 +1144,57 @@ class EndRuler:
             self.speed = max(0.0, -float(np.polyfit(np.array(ts) - ts[0], zs, 1)[0]))
 
 
+class EndWatch:
+    """Measurement only, changes no decision: where the line was when a to_junction / to_end action ended, and where it was once the car had stopped.
+
+    The stop is seen only if a stop or wait action follows. Each result is printed and kept in rows, which a recording saves as ends.csv.
+    """
+    SETTLE_SEC = 0.4    # The line moving less than SETTLE_CM over this long means the car has stopped.
+    SETTLE_CM = 0.3
+    MAX_SEC = 3.0       # A stop not seen by then is reported as not seen.
+    HEADER = "t,step,target_cm,how,end_z,end_y,speed,cmd,steer,offset,heading,stop_z,slid_cm,stop_sec"
+
+    def __init__(self):
+        self.rows, self.open, self.track = [], None, []
+
+    def ended(self, idx, step, ruler, y, cmd, steer, det, now, stops):
+        z = floor_cm(y) if y is not None else ruler.z       # Without a reading this frame, what the ruler carried on with.
+        how = "line" if y is not None else ("guess" if z is not None else "none")
+        row = {"t": now, "step": idx + 1, "target_cm": step.get("cm"), "how": how, "end_z": z, "end_y": y, "speed": ruler.speed, "cmd": cmd, "steer": steer,
+               "offset": det[0] if det else None, "heading": det[1] if det else None, "stop_z": None, "slid_cm": None, "stop_sec": None}
+        self.rows.append(row)
+        self.open = row if stops else None
+        self.track = []
+        fmt = lambda v, f=".1f": "-" if v is None else format(v, f)
+        print(f"\n[측정 {idx + 1}] 끝: 선까지 {fmt(z)}cm ({how}, 기준 {END_BASE_CM:g}cm에서 +{fmt(None if z is None else END_BASE_CM - z)}cm, 목표 {fmt(step.get('cm'), 'g')})"
+              f" 속도 {fmt(ruler.speed)}cm/s 명령 {cmd:.2f} 조향 {steer:+.1f} 위치 {fmt(row['offset'], '+.2f')} 방향 {fmt(row['heading'], '+.2f')}")
+
+    def watch(self, y, now):
+        row = self.open
+        if row is None:
+            return
+        if y is not None:
+            self.track = [p for p in self.track if now - p[0] <= self.SETTLE_SEC] + [(now, floor_cm(y))]
+            zs = [p[1] for p in self.track]
+            if now - self.track[0][0] >= self.SETTLE_SEC * 0.75 and max(zs) - min(zs) < self.SETTLE_CM:
+                row["stop_z"] = float(np.median(zs))
+                row["slid_cm"] = None if row["end_z"] is None else row["end_z"] - row["stop_z"]
+                row["stop_sec"] = self.track[0][0] - row["t"]
+                slid = "-" if row["slid_cm"] is None else f"{row['slid_cm']:.1f}"
+                print(f"\n[측정 {row['step']}] 멈춤: 선까지 {row['stop_z']:.1f}cm, 끝난 뒤 {slid}cm 밀림 ({row['stop_sec']:.2f}초)")
+                self.open = None
+                return
+        if now - row["t"] >= self.MAX_SEC:
+            print(f"\n[측정 {row['step']}] 멈춤 위치를 못 읽음 (선이 화면을 벗어남)")
+            self.open = None
+
+    def save(self, path):
+        with open(path, "w") as f:
+            f.write(self.HEADER + "\n")
+            for row in self.rows:
+                f.write(",".join("" if row[k] is None else (f"{row[k]:.3f}" if isinstance(row[k], float) else str(row[k])) for k in self.HEADER.split(",")) + "\n")
+
+
 class Steering:
     """Turn (position error, heading error) into a steering angle in degrees. Variable steering from P, filtered D, and a low-pass."""
 
@@ -2018,6 +2069,8 @@ class Driver:
             person.place = self.detect.in_lane if PERSON_IN_LANE else None
         self.person = None if person is None else PersonWatch(   # person is a PersonDetector. None drives without looking for the figure.
             person, FRAME_H, PERSON_AT, PERSON_X, PERSON_RESUME_DELAY, PERSON_MIN_STOP, PERSON_MAX_WAIT, PERSON_EVERY)
+        self.ends = EndWatch()      # Measurement only: where each to_junction / to_end really ended.
+        self.last_cmd = 0.0
         self.lost_since = None      # Time the lane was lost.
         self.yaw, self.yaw_idx = YawMeter(), -1     # Turn angle from the camera, reset at each turn action.
         self.approach = (0.0, -1.0, -1)    # slow=: (slowdown amount 0 to 1, time the line was last seen, action index).
@@ -2357,12 +2410,22 @@ class Driver:
         else:
             course.turned, self.yaw_idx = None, -1
         course.moving = self.speed > 0
+        idx_before, ruler_before = course.idx, course.ruler      # Starting the next action replaces the ruler.
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
                        "near": detect.near_line,
                        **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y} if step is not None and step.get("cm") is not None else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
+        watching = course.idx != idx_before and step is not None and step["until"] in ("junction", "end")
+        if watching or self.ends.open is not None:
+            line_y = detect.hline_edge()
+            if watching:
+                following = course.step()
+                self.ends.ended(idx_before, step, ruler_before, line_y, self.last_cmd, steering.angle, det, now,
+                                following is not None and following["do"] in ("stop", "wait"))
+            else:
+                self.ends.watch(line_y, now)
         if course.done:
             self.done = True
             return None, 0.0, dbg
@@ -2448,6 +2511,7 @@ class Driver:
         if cmd > 0:
             # On the floor a motor command that is too low leaves the car stopped, especially at a large steer or on a weak battery, so raise it to the minimum.
             cmd = max(cmd, motor_floor(steering.angle))
+        self.last_cmd = cmd
         return steer, cmd, dbg
 
 
@@ -2601,6 +2665,7 @@ def main():
             obs.close()
         if rec:
             rec.close()
+            driver.ends.save(rec.dir / "ends.csv")
             print(f"녹화 저장: {rec.dir} ({rec.n} 프레임)")
 
 

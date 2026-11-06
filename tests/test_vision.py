@@ -1309,6 +1309,46 @@ def test_speed_constant():
     check("차선을 잃으면 최저 속도로 기어감은 유지", lf.MIN_SPEED == 0.3)
 
 
+def test_end_watch():
+    print("\n[측정 로그: 끝 위치와 멈춘 위치]")
+    import course as cs
+    import tempfile
+    w = lf.EndWatch()
+    ruler = lf.EndRuler()
+    ruler.speed = 10.0
+    y_end, y_stop = 250.0, 262.0
+    with quiet():
+        w.ended(0, {"cm": 8}, ruler, y_end, 0.3, 1.0, (0.1, 0.0), 1.0, True)
+        t = 1.0
+        for _ in range(12):
+            t += 0.05
+            w.watch(y_stop, t)
+    row = w.rows[0]
+    check("끝난 뒤 밀린 거리 = 끝 거리 - 멈춘 거리", abs(row["slid_cm"] - (lf.floor_cm(y_end) - lf.floor_cm(y_stop))) < 1e-6 and w.open is None, row["slid_cm"])
+    with quiet():
+        w.ended(1, {"cm": None}, ruler, None, 0.3, 0.0, None, 10.0, True)
+        w.watch(None, 13.5)
+    check("선이 안 보이면 못 읽음으로 끝남", w.open is None and w.rows[1]["stop_z"] is None and w.rows[1]["how"] == "none")
+    with tempfile.TemporaryDirectory() as folder:
+        path = lf.Path(folder) / "ends.csv"
+        w.save(path)
+        lines = path.read_text().splitlines()
+    check("ends.csv: 머리줄과 동작마다 한 줄", len(lines) == 3 and lines[0] == w.HEADER and len(lines[1].split(",")) == len(lines[0].split(",")), lines)
+
+    line = lane_frame()
+    cv2.rectangle(line, (0, 225), (W, 235), (235,) * 3, -1)
+    d = lf.Driver([cs.to_junction(cm=0, blind_sec=0), cs.stop(3), finish()])
+    with quiet():
+        t = 0.0
+        for _ in range(5):
+            d.tick(lane_frame(), t)
+            t += 0.05
+        for _ in range(40):
+            d.tick(line, t)
+            t += 0.05
+    check("주행: to_junction이 끝나면 기록되고 stop 중 멈춘 위치까지 읽음", len(d.ends.rows) == 1 and d.ends.rows[0]["stop_z"] is not None, d.ends.rows)
+
+
 def test_person_stop():
     print("\n[레고 사람: 정지 / 출발]")
     empty, person = lane_frame(), minifig(lane_frame(), 320, 240)
@@ -2048,7 +2088,7 @@ def test_saved_with_run():
 def main():
     for t in (test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_speed_constant, test_person_stop, test_set_speed):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_speed_constant, test_person_stop, test_end_watch, test_set_speed):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} 통과")
