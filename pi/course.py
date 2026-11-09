@@ -217,7 +217,8 @@ def to_junction(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
         raise ValueError(f"to_junction(): nth must be an integer of 1 or more ({nth})")
     if cm is None and at is None:
         import lane_follow as _lf
-        cm = _lf.LANEEND_BASE_CM
+        if _lf.JUNCTION_REF == "laneend":
+            cm = _lf.LANEEND_BASE_CM
     return _auto(follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm), speed, SPEED)
 
 def co(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
@@ -227,7 +228,8 @@ def co(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
         raise ValueError(f"to_junction(): nth must be an integer of 1 or more ({nth})")
     if cm is None and at is None:
         import lane_follow as _lf
-        cm = _lf.LANEEND_BASE_CM
+        if _lf.JUNCTION_REF == "laneend":
+            cm = _lf.LANEEND_BASE_CM
     return _auto(follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm), speed, SPEED)
 
 
@@ -441,17 +443,6 @@ def describe(step):
 
 COURSE = _flat([
     start_gate(2),
-
-
-
-
-
-
-
-
-
-
-
 
     finish(),
 

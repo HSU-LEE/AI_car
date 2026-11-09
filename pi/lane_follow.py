@@ -144,31 +144,21 @@ END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measu
 END_SWITCH_FRAMES = 3   # cm=: before the end line is reached, this many readings in a row that agree with each other replace a reading they jump away from.
 END_FRESH_SEC = 0.15    # cm=: a reading older than this when the line is reached does not count as that line's position.
 JUNCTION_REF = "laneend" # to_junction(cm=): what it measures to. "laneend": where the lane's own line ends at the junction, the nearer side.
-                        # Every junction has one: an L on its inside, a T and a + on both sides. It lies straight ahead of the car (+-10 cm), so it stays in view
-                        # down to the frame bottom from either direction, unlike the corner's side branch, which leaves by the frame side at 20-25 cm.
-                        # "corner": the side branch of the inside corner leaving the view, then cm= further (2026-11-09, ended at different places by direction).
-                        # "line": the line across the lane (before 2026-11-09).
-                        # With "corner" and no branch in view, the line across the lane is used instead, and the log says so.
-LANEEND_BASE_CM = 30.0  # to_junction() with no cm=: ends with the line end this far ahead. to_junction(cm=25) ends at 25 cm: cm= is the LANE END distance shown on screen.
-LANEEND_OFFSET_CM = -14.5   # Added to every line-end distance, shown and acted on: real minus shown, in cm. -14.5 makes it the distance from the car front
-                        # (2026-11-09: shown 19.5 cm, tape 5 cm), since the camera sits about 15 cm behind it.
-LANEEND_MIN_CM = 19.0   # The car stops while the line end is still in view, so nothing is guessed: a cm= below this is held at this
-                        # (frame bottom 17 cm with the calibration of 2026-11-09, and room for the 2 frames the reading is old).
+                        # Every junction has one: an L on its inside, a T and a + on both sides. It lies straight ahead of the car (+-10 cm),
+                        # so it stays in view down to the frame bottom from either direction. "line": the line across the lane (before 2026-11-09).
+LANEEND_OFFSET_CM = -14.5   # Added to every line-end distance read from the camera: real minus read, in cm. -14.5 makes it the distance from
+                        # the car front (2026-11-09: read 19.5 cm, tape 5 cm), since the camera sits about 15 cm behind it.
+# The settings below are all distances from the car front, as shown on screen (LANE END) and written as cm=.
+LANEEND_BASE_CM = 25.0  # to_junction() with no cm=: ends with the line end this far ahead. to_junction(cm=20) ends at 20 cm.
+LANEEND_MIN_CM = 4.5    # The nearest it can still be read: the frame bottom is about 2.6 cm, plus room for the 2 frames a reading is old.
+LANEEND_MAX_CM = 28.0   # The farthest it can be read and still be confirmed: the top of the view is about 31 cm. A larger cm= would end on first sight.
+LANEEND_LINE_GAP = 20.0 # When no line end is found, it is taken this far before the line across (cm), unless the two were seen together and
+                        # the real gap measured. Recordings 20261109: 19-22 cm.
 LANEEND_FRAMES = 4      # The line end must be found this many frames in a row before it counts.
 LANEEND_GAP = 4         # Walking up along the lane line, this many empty rows in a row end it.
 LANEEND_TOL = 0.06      # The line is looked for this far either side of where it should be, in lane widths (at least 4 px).
 LANEEND_CURVE = 0.35    # Above its end, line pixels this close to where it would go on (in lane widths) mean it bends on: a curve, not an end.
-CORNER_GONE_FRAMES = 3  # cm= with the corner: the branch has left the view once it is missing this many frames in a row. The action then ends,
-                        # cm= further on. One or two missing frames are a flicker, and do not end it.
-CORNER_LEN = 0.5        # A branch reaches at least this far outward from its lane line, in lane widths at that height. A lane line alone reaches about 0.05.
-CORNER_LEN_EDGE = 0.15  # Or this far, if it runs off the frame side: near the car a branch leaves the view sideways long before it is that long on screen.
-CORNER_FROM, CORNER_TO = 0.2, 0.5   # Its height is read in the columns this far outward from the lane line, in lane widths: off the line itself and off the frame side, where the lens bends lines.
-CORNER_ABOVE = 0.15     # The lane line must end at the branch: it may not go on over this many lane widths (in rows) above it.
-CORNER_FOLLOW = 0.25    # Once found, the branch is followed into this share of a lane width at the frame side, after its lane line has left the view.
-CORNER_FRAMES = 4       # The branch must be found this many frames in a row before it is the ruler. On 38 recordings a real corner was found for
-                        # 30-150 frames in a row, while a hand, a thing at the mat side or the end of a curve was found for 1-2 (117 times) and rarely up to 6.
-CORNER_SLOPE = 0.15     # And it must lie this flat across them (rows per column). A curve leaves the lane line slanting.
-CORNER_MAX_SEC = 12.0   # cm= with the corner as the ruler: the last distance takes at most this long. It starts as far off as the line across is first seen.
+LANEEND_MAX_SEC = 12.0  # The last distance takes at most this long. It starts as soon as the line end is confirmed, as far off as that is.
 END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is bounded because lost-lane back-up is off during it.
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
@@ -225,7 +215,7 @@ LIGHT_LOCAL_V_MIN = 100  # Minimum value at that spot. A green LED tends to read
 LIGHT_NEAR = 4          # wait_green: green must lie within (red lamp size times this) of where the red lamp was.
                         # That allows the gap between lamps on the same light and ignores green objects elsewhere.
 
-LENS_POSITION = 6.67    # Manual focus in diopters (1/distance in m). 6.67 is about 15 cm, the near floor where the lane and the corner's branch are read. Always this value: a lens_position in vision.json is ignored. None means autofocus.
+LENS_POSITION = 6.67    # Manual focus in diopters (1/distance in m). 6.67 is about 15 cm, the near floor where the lane and its ends are read. Always this value: a lens_position in vision.json is ignored. None means autofocus.
                         # calibrate.py measures sharpness over the lane region and saves it in vision.json.
 CAMERA_LOCK = None      # Locked exposure, gain, and white balance {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
                         # None leaves the camera automatic. calibrate.py measures the venue lighting and saves it in vision.json.
@@ -404,9 +394,7 @@ class LaneDetector:
         self.mask = np.zeros((1, 1), np.uint8)  # Line mask this frame.
         self.hrun = None                # Nearest horizontal line this frame, in the mask: (first column, last column, center row).
         self.tip_y = None               # Where the lane lines that end ahead end (lane_tip).
-        self.corner_y = self.corner_side = self.corner_cols = None   # Inside corner of a junction ahead (find_corner): near-edge y, "left"/"right", columns read.
         self.end_y = self.end_side = None   # Where the lane's line ends ahead (lane_end): y of its top, "left"/"right".
-        self.corner_last = None         # Side of the branch found last. Kept across frames, so it can be followed to the frame side.
         self.tip_diff = None            # How far apart the two line tips are, while both are in view.
         self.gap_hits = 0               # Frames the band test saw a gap, while its line tips stayed in view.
         self.tip_lost = 0               # Frames in a row the line tips were not seen.
@@ -773,107 +761,6 @@ class LaneDetector:
             self.end_y, self.end_side = top + best[0], best[1]
         return self.end_y
 
-    def find_corner(self, expect_y=None):
-        """Inside corner of a junction ahead: where a lane line turns outward, away from the lane (the left line to the left, the right line to the right).
-
-        A line that turns inward and crosses the lane is the far side of the junction, not this. An L has the branch on one side, a + and a T on both,
-        and then the nearer one counts. The branch is square to the car, so its height on screen is its distance wherever it is seen.
-        Returns the y of its near edge, or None. It needs this frame's lane lines and blobs, so it runs after the detector.
-        expect_y: where the branch found before should be now. Close to the car its lane line leaves the view first, and only the end of
-        the branch is left at the frame side. It is followed there, about this height.
-        """
-        self.corner_y = self.corner_side = self.corner_cols = None
-        labels, stats = self.blobs
-        top = int(FRAME_H * ROI_TOP)
-        rows_n = labels.shape[0]
-        best = None
-        for side, xs, out in (("left", self.left, -1), ("right", self.right, 1)):
-            pts = [(self.band_y[i] - top, xs[i]) for i in range(SLICES) if xs[i] is not None]
-            if not pts:
-                continue
-            slope, base = np.polyfit([p[0] for p in pts], [p[1] for p in pts], 1) if len(pts) >= 2 else (0.0, pts[0][1])
-            ids = set()
-            for r, x in pts:        # The blobs the lane line is made of.
-                seg = labels[int(r), max(int(x) - 4, 0):int(x) + 5]
-                ids.update(int(v) for v in seg[seg > 0])
-            for k in ids:
-                x0, y0, w, h, _ = (int(v) for v in stats[k])
-                blob = labels[y0:y0 + h, x0:x0 + w] == k
-                rows = np.arange(y0, y0 + h)
-                filled = blob.any(axis=1)
-                line_x = slope * rows + base
-                lane_w = LANE_WIDTH_PX * (rows + top - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
-                if out < 0:
-                    far_x = x0 + np.argmax(blob, axis=1)
-                    reach, at_edge = line_x - far_x, far_x <= 0
-                else:
-                    far_x = x0 + w - 1 - np.argmax(blob[:, ::-1], axis=1)
-                    reach, at_edge = far_x - line_x, far_x >= FRAME_W - 1
-                branch = np.flatnonzero(filled & ((reach >= CORNER_LEN * lane_w) | (at_edge & (reach >= CORNER_LEN_EDGE * lane_w))))
-                if not len(branch):
-                    continue
-                low = branch[-1]        # The nearest stretch of branch rows, across gaps of 2.
-                start = low
-                while start > 0 and np.any(np.isin(np.arange(start - 3, start), branch)):
-                    start -= 1
-                r_top, r_bot = y0 + start, y0 + low
-                width = LANE_WIDTH_PX * (r_bot + top - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
-                xb = slope * r_bot + base
-                # At a corner the lane line turns: it does not go on above the branch. One that does is crossed by a line that only runs past it.
-                above = np.arange(max(r_top - 3 - int(CORNER_ABOVE * width), 0), max(r_top - 3, 0))
-                if len(above):
-                    near_line = [blob[r - y0, max(int(slope * r + base - 0.05 * width) - x0, 0):max(int(slope * r + base + 0.05 * width) - x0 + 1, 0)].any()
-                                 if y0 <= r < y0 + h else False for r in above]
-                    if np.mean(near_line) > 0.5:
-                        continue
-                edge_x = 0 if out < 0 else FRAME_W - 1
-                room = abs(edge_x - xb)
-                near_col = xb + out * min(CORNER_FROM * width, 0.5 * room)      # Close to the car the branch soon runs off the frame side: read what is left of it.
-                far_col = xb + out * min(CORNER_TO * width, room)
-                cols = np.arange(int(near_col), int(far_col), out)
-                cols = cols[(cols >= x0) & (cols < x0 + w)]
-                if len(cols) < 3:
-                    continue
-                win = blob[max(r_top - 3 - y0, 0):min(r_bot + 4 - y0, h), cols - x0]
-                has = win.any(axis=0)
-                if has.mean() < 0.6:
-                    continue
-                edge = max(r_top - 3 - y0, 0) + y0 + (win.shape[0] - 1 - np.argmax(win[::-1], axis=0))     # Lowest pixel per column: the near edge.
-                c, e = cols[has], edge[has]
-                if abs(np.polyfit(c, e, 1)[0]) > CORNER_SLOPE:
-                    continue
-                y = float(np.median(e))
-                if y >= rows_n - 2:     # Reached the frame bottom: from here it is carried on from the speed.
-                    continue
-                if best is None or y > best[0]:
-                    best = (y, side, (int(c.min()), int(c.max())))
-        if best is None and expect_y is not None and self.corner_last is not None:
-            best = self.follow_corner(expect_y - top, rows_n)
-        if best is not None:
-            self.corner_y, self.corner_side, self.corner_cols = top + best[0] + 1, best[1], best[2]
-            self.corner_last = best[1]
-        return self.corner_y
-
-    def follow_corner(self, row, rows_n):
-        """The end of the branch found before, at the frame side near this row (ROI px): (row, side, columns) or None."""
-        side = self.corner_last
-        if not 0 <= row < rows_n + 20:      # Expected well past the frame bottom: nothing to follow, it is carried on from the speed.
-            return None
-        lane_w = LANE_WIDTH_PX * (row + int(FRAME_H * ROI_TOP) - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
-        span = int(np.clip(CORNER_FOLLOW * lane_w, 6, FRAME_W // 3))
-        cols = np.arange(0, span) if side == "left" else np.arange(FRAME_W - span, FRAME_W)
-        r0, r1 = max(int(row) - 60, 0), min(int(row) + 30, rows_n)     # Wide above: the car may have gone slower than carried on.
-        win = self.mask[r0:r1, cols] > 0
-        has = win.any(axis=0)
-        if r1 <= r0 or has.sum() < 3:
-            return None
-        edge = r0 + (win.shape[0] - 1 - np.argmax(win[::-1], axis=0))
-        c, e = cols[has], edge[has]
-        if abs(np.polyfit(c, e, 1)[0]) > 2 * CORNER_SLOPE:      # A short piece: allow it a little more tilt.
-            return None
-        y = float(np.median(e))
-        return None if y >= rows_n - 2 else (y, side, (int(c.min()), int(c.max())))
-
     def lane_tip(self):
         """y where the lane ends ahead: halfway between the tips of the left and right lines. None if the lane does not end in view.
 
@@ -970,7 +857,6 @@ class LaneDetector:
         bands = []      # Per band: (y, line x list, horizontal line or crosswalk). Used for the lane-gap test.
         ref = self.center[0] if self.center[0] is not None else cx0
         self.hrun = None
-        self.corner_y = self.corner_side = self.corner_cols = None     # find_corner fills them only when an action needs them.
         self.end_y = self.end_side = None          # lane_end, likewise.
         for i in range(SLICES):     # Band 0 is the nearest. Tracking walks from the bottom upward.
             y1 = mask.shape[0] - (i + 1) * h
@@ -1352,7 +1238,7 @@ class EndWatch:
         how = "line" if y is not None else ("guess" if z is not None else "none")
         row = {"t": now, "step": idx + 1, "target_cm": step.get("cm"), "how": how, "end_z": z, "end_y": y, "speed": ruler.speed, "cmd": cmd, "steer": steer,
                "offset": det[0] if det else None, "heading": det[1] if det else None, "stop_z": None, "slid_cm": None, "stop_sec": None,
-               "ref": ruler.kind, "ref_z": ruler.z}     # What the action ended on, and where the ruler had it (for corner: the branch, past its leaving the view).
+               "ref": ruler.kind, "ref_z": None if ruler.z is None else ruler.z + (LANEEND_OFFSET_CM if ruler.kind == "laneend" else 0.0)}     # What it ended on, and where, as shown on screen for a lane end.
         self.rows.append(row)
         self.open = row if stops else None
         self.track = []
@@ -1445,9 +1331,10 @@ class CourseRunner:
         self.course = _flat(course)     # Expand even if groups (lists) are mixed in, so COURSE does not have to call _flat.
         if isinstance(start, bool) or not isinstance(start, int) or start < 1 or start > max(len(self.course), 1):
             raise ValueError(f"the start number must be 1 to {max(len(self.course), 1)} ({start})")
-        for n, step in enumerate(self.course, 1):      # cm= so large the line end would be out of view: it is held where it can still be read.
-            if JUNCTION_REF == "laneend" and step.get("until") == "junction" and step.get("cm") is not None and step["cm"] < LANEEND_MIN_CM + LANEEND_OFFSET_CM:
-                print(f"[warning] step {n} to_junction(cm={step['cm']:g}): a lane end nearer than {LANEEND_MIN_CM + LANEEND_OFFSET_CM:g}cm is out of view and would be guessed. It ends at {LANEEND_MIN_CM + LANEEND_OFFSET_CM:g}cm")
+        for n, step in enumerate(self.course, 1):      # A cm= the camera cannot read to is held at the nearest one it can.
+            if self.uses_laneend(step) and not LANEEND_MIN_CM <= step["cm"] <= LANEEND_MAX_CM:
+                print(f"[warning] step {n} to_junction(cm={step['cm']:g}): the lane end can be read only from {LANEEND_MIN_CM:g} to "
+                      f"{LANEEND_MAX_CM:g} cm ahead. It ends at {self.laneend_target(step):g}cm")
         self.idx = start - 1        # Index of the action running now (from 0).
         self.step_start = None
         self.done = False
@@ -1470,12 +1357,8 @@ class CourseRunner:
         self.turned = None      # Turn with deg=: px the view has swung in the turn direction (YawMeter). Driver fills it every frame.
         self.paused = False     # Standing still for the LEGO figure. Driver fills it every frame.
         self.ruler = EndRuler()     # cm=: where the end line is.
-        self.pace = EndRuler()      # cm=: the line across the lane, read only for the car's speed while the corner's branch is out of view.
-        self.corner_hits = 0        # cm=: frames in a row the corner's branch has been found (CORNER_FRAMES).
         self.end_hits = 0           # cm=: frames in a row the lane's line end has been found (LANEEND_FRAMES).
-        self.corner_misses = 0      # cm=: frames in a row it has been missing since it was the ruler (CORNER_GONE_FRAMES).
-        self.gone_z = None          # cm=: where the ruler had it when it left the view. The action ends cm= past this.
-        self.gone_at = None         # cm=: where it was when it first went missing.
+        self.line_gap = None        # cm=: the line across minus the lane end, when both were seen this action (LANEEND_LINE_GAP).
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
         self.run_start = None       # cm=: when the end line was reached.
         self.moving = True          # cm=: whether the motor is driving the car forward. Driver fills it every frame.
@@ -1515,8 +1398,7 @@ class CourseRunner:
         self.red_hits, self.red_seen, self.red_box = 0, False, None
         self.red_boxes, self.local_light = [], None
         self.ruler, self.run_out, self.run_start = EndRuler(), False, None
-        self.pace, self.corner_hits, self.corner_misses, self.gone_z = EndRuler(), 0, 0, None
-        self.gone_at = None
+        self.line_gap = None
         self.end_hits = 0
         step = self.step()
         if step is None:
@@ -1610,12 +1492,8 @@ class CourseRunner:
         self.turn_clear = self.turn_clear + 1 if turning and not junction else 0
         # While a corner horizontal line is still present, heading is judged strictly. Once it is gone, a slanted exit line is accepted.
         heading_limit = TURN_EXIT_HEADING if self.turn_clear >= TURN_EXIT_CLEAR else TURN_END_HEADING
-        # With the corner as the ruler, the line across the lane counts as soon as it is in view. It may lie 20 cm beyond the corner, and by the time
-        # it comes down to JUNCTION_Y the corner can be past its mark (run 20261109-185159). The corner then ends the action, as near as it should.
-        # Only once the branch is the ruler: without it the line is the ruler too, and must come down to JUNCTION_Y as before.
-        # The branch itself is enough: a + has no line across the lane at all, since the lane goes on beyond the road that crosses it.
-        early = step is not None and ((self.uses_corner(step) and self.ruler.kind == "corner")
-                                      or (self.uses_laneend(step) and self.ruler.kind == "laneend"))     # Every junction has a line end: a + has no line across.
+        # A confirmed lane end is the junction, wherever the line across is: a + has none, and in an L it may lie 20 cm beyond.
+        early = step is not None and self.uses_laneend(step) and self.ruler.kind == "laneend"
         # A cross line counts with the lane. Once this action has already seen it, a frame where the lane center
         # drops (the right-line point gone, or only a far one) still counts. A line that never had a lane is not one.
         junction_seen = ((junction or early) and det is not None) or (junction and self.hits["junction"] > 0)
@@ -1645,7 +1523,7 @@ class CourseRunner:
             y = ys.get(step["until"])
             near_enough = y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1     # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
             if step["until"] == "junction":
-                # at= must keep a + junction, which has no line across the lane. early is that lane end (or the corner's branch).
+                # at= must keep a + junction, which has no line across the lane. early is that lane end.
                 # A cross line that has reached at= counts even when the lane center drops after it was already seen.
                 seen["junction"] = (near_enough and det is not None) or (early and det is not None) or (
                     near_enough and self.hits["junction"] > 0)
@@ -1724,43 +1602,23 @@ class CourseRunner:
         step = self.step()
         if step is None or step.get("cm") is None:
             return
-        hline, tip, corner, lane_end = ys.get("hline_y"), ys.get("tip_y"), ys.get("corner_y"), ys.get("end_y")
+        hline, tip, lane_end = ys.get("hline_y"), ys.get("tip_y"), ys.get("end_y")
         if self.uses_laneend(step):
+            if lane_end is not None and hline is not None:      # Both in view: how far beyond the lane end the line across lies here.
+                gap = floor_cm(hline) - floor_cm(lane_end)
+                if 5.0 < gap < 40.0:
+                    self.line_gap = gap if self.line_gap is None else 0.8 * self.line_gap + 0.2 * gap
             self.end_hits = self.end_hits + 1 if lane_end is not None else 0
             if self.ruler.kind == "laneend" or self.end_hits >= LANEEND_FRAMES:
                 self.ruler.feed("laneend", lane_end, now, locked=self.run_out, moving=self.moving)
                 return
             # No line end yet: the line across the lane is measured as before, and stands in if no end is ever found.
-        if self.uses_corner(step):
-            if self.ruler.kind == "corner" and self.gone_z is None:
-                self.corner_misses = 0 if corner is not None else self.corner_misses + 1
-                if self.corner_misses == 1:
-                    self.gone_at = self.ruler.z      # Where it was last: the place it left the view, if it stays gone.
-                elif self.corner_misses >= CORNER_GONE_FRAMES:
-                    self.gone_z = self.gone_at
-            self.corner_hits = self.corner_hits + 1 if corner is not None else 0
-            if self.ruler.kind != "corner" and self.corner_hits < CORNER_FRAMES:
-                corner = None       # Not yet sure it is one.
-            self.pace.feed("line", hline, now, moving=self.moving)
-            # The branch out of view is carried on at the car's speed. Read it now off the line across the lane, which is still in view:
-            # the car slows on its way in, and the speed from when the branch was last seen would carry it on too far (run 20261109-185159).
-            if corner is None and self.pace.read_t is not None and now - self.pace.read_t <= END_FRESH_SEC and self.pace.speed is not None:
-                self.ruler.speed = self.pace.speed
         if self.run_out:
-            self.ruler.feed(self.ruler.kind, {"line": hline, "tip": tip, "corner": corner}.get(self.ruler.kind), now, locked=True, moving=self.moving)
-        elif self.uses_corner(step) and (corner is not None or self.ruler.kind == "corner"):
-            self.ruler.feed("corner", corner, now, moving=self.moving)      # Once the branch is seen it stays the ruler, carried on while out of view.
+            self.ruler.feed(self.ruler.kind, {"line": hline, "tip": tip}.get(self.ruler.kind), now, locked=True, moving=self.moving)
         elif hline is not None:
             self.ruler.feed("line", hline, now)
         elif step["until"] == "end" and ys.get("gap") is not None and tip is not None:
             self.ruler.feed("tip", tip, now)
-
-    def corner_expect(self):
-        """Where the branch measured so far should be on screen now, for following it to the frame side. None before it is found."""
-        ruler = self.ruler
-        if ruler.kind != "corner" or ruler.z is None:
-            return None
-        return HORIZON_Y + CAMERA_F * LANE_CM / LANE_WIDTH_PX * (max(342 - HORIZON_Y, 1.0)) / max(ruler.z, 1.0)
 
     @staticmethod
     def uses_laneend(step):
@@ -1770,12 +1628,7 @@ class CourseRunner:
     @staticmethod
     def laneend_target(step):
         """Distance of the line end where the action ends: in view, so it is read, not guessed."""
-        return max(step["cm"], LANEEND_MIN_CM + LANEEND_OFFSET_CM)     # Both as shown on screen.
-
-    @staticmethod
-    def uses_corner(step):
-        """to_junction(cm=) measured from the inside corner's branch (JUNCTION_REF)."""
-        return JUNCTION_REF == "corner" and step["until"] == "junction" and step.get("cm") is not None
+        return float(np.clip(step["cm"], LANEEND_MIN_CM, LANEEND_MAX_CM))
 
     def start_run_out(self, step, ys, now):
         """cm=: the end line was reached. Make sure the ruler is on that line, not on what it was reading before."""
@@ -1783,14 +1636,6 @@ class CourseRunner:
         ruler = self.ruler
         if self.uses_laneend(step) and ruler.kind == "laneend":
             return      # Already on the line end: track_end fed it this frame.
-        if self.uses_corner(step):
-            if ruler.kind == "corner" and ruler.z is not None and not ruler.jump:
-                return      # Already on the branch: track_end fed it this frame.
-            if ys.get("corner_y") is not None and self.corner_hits >= CORNER_FRAMES:
-                ruler.reset("corner")
-                ruler.feed("corner", ys["corner_y"], now, locked=True)
-                return
-            # No branch in view: the line across the lane stands in, from its own base.
         kind = "line" if step["until"] == "junction" or ys.get("junction") is not None else "tip"
         y = ys.get("hline_y") if kind == "line" else ys.get("tip_y")
         if kind != ruler.kind or ruler.jump or ruler.read_t is None or now - ruler.read_t > END_FRESH_SEC:
@@ -1809,11 +1654,13 @@ class CourseRunner:
         speed = self.ruler.speed if self.moving and self.ruler.speed else 0.0
         if self.ruler.kind == "laneend":
             return self.ruler.z + LANEEND_OFFSET_CM - speed * END_LEAD_SEC <= self.laneend_target(step)
-        if self.ruler.kind == "corner":     # The branch left the view, and the car has gone cm= further.
-            return self.gone_z is not None and self.ruler.z - speed * END_LEAD_SEC <= self.gone_z - step["cm"]
-        if self.uses_laneend(step):     # No line end was found: cm= is a line-end distance, so the line across ends it at its own base.
-            return self.ruler.z - speed * END_LEAD_SEC <= END_BASE_CM
+        if self.uses_laneend(step):     # No line end was found: where it would be, before the line across by the gap.
+            return self.ruler.z + LANEEND_OFFSET_CM - self.lane_gap() - speed * END_LEAD_SEC <= self.laneend_target(step)
         return self.ruler.z - speed * END_LEAD_SEC <= END_BASE_CM - step["cm"]
+
+    def lane_gap(self):
+        """How far beyond the lane end the line across lies: as measured this action, or LANEEND_LINE_GAP."""
+        return LANEEND_LINE_GAP if self.line_gap is None else self.line_gap
 
     def happened(self, event, now=0.0, hold=0.0):
         step = self.step()
@@ -1860,15 +1707,14 @@ class CourseRunner:
                 if self.end_reached(step):
                     reason = self.end_reason(step)
                 else:
-                    limit = CORNER_MAX_SEC if self.ruler.kind in ("corner", "laneend") else END_MAX_SEC
+                    limit = LANEEND_MAX_SEC if self.uses_laneend(step) else END_MAX_SEC
                     reason = (f"{self.EVENT_NAMES[step['until']]} +{step['cm']:g}cm not measured, {limit:g}s passed"
                               if now - self.run_start >= limit else None)
             elif step["max"] is None and step["until"] is not None and step["do"] != "wait" and elapsed >= STEP_MAX_SEC:
                 reason = f"safety time {STEP_MAX_SEC}s (the condition never came, set max_sec to change)"
             elif (step["until"] is not None and elapsed >= step["min"]
                   and (self.happened(step["until"], now, step.get("hold", 0.0)) or self.junction_lost())
-                  and not (self.uses_corner(step) and self.ruler.kind != "corner" and 0 < self.corner_hits < CORNER_FRAMES)
-                           and not (self.uses_laneend(step) and self.ruler.kind != "laneend" and 0 < self.end_hits < LANEEND_FRAMES)):    # A branch being confirmed: wait the few frames for it.
+                  and not (self.uses_laneend(step) and self.ruler.kind != "laneend" and 0 < self.end_hits < LANEEND_FRAMES)):    # A lane end being confirmed: wait the few frames for it.
                 lost = self.junction_lost()     # Cleared below, so read it first. A held line and a lost line never both match one frame.
                 reason = self.EVENT_NAMES[step["until"]]
                 self.clear_junction_latch()     # This line is used up. The next one has to be seen on its own.
@@ -1879,6 +1725,7 @@ class CourseRunner:
                     # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
                     print(f"\n[{self.idx + 1}] {reason} #{self.count} passed (ends at #{step['nth']})")
                     self.ruler.reset(None)      # The next line is a new one.
+                    self.end_hits, self.line_gap = 0, None
                     reason = None
                 elif step.get("cm") is not None:
                     self.start_run_out(step, ys or {}, now)
@@ -1900,9 +1747,11 @@ class CourseRunner:
         how = "guessed from speed" if self.ruler.guess else "measured on the line"
         if self.ruler.kind == "laneend":
             return f"{self.EVENT_NAMES[step['until']]} lane end at {z + LANEEND_OFFSET_CM:.1f}cm ({how}, target {self.laneend_target(step):g}cm)"
-        if self.ruler.kind == "corner" and self.gone_z is not None:
-            return f"{self.EVENT_NAMES[step['until']]} +{self.gone_z - z:.1f}cm after the corner branch left the view at {self.gone_z:.1f}cm (target {step['cm']:g}cm)"
-        ref = ", no branch seen, line across used" if self.uses_corner(step) else ", no lane end seen, line across used" if self.uses_laneend(step) else ""
+        if self.uses_laneend(step):
+            gap = self.lane_gap()
+            return (f"{self.EVENT_NAMES[step['until']]} lane end at about {z + LANEEND_OFFSET_CM - gap:.1f}cm ({how}, no lane end seen: "
+                    f"the line across minus {gap:.0f}cm, target {self.laneend_target(step):g}cm)")
+        ref = ""
         return f"{self.EVENT_NAMES[step['until']]} +{END_BASE_CM - z:.1f}cm ({how}{ref}, target {step['cm']:g}cm)"
 
     def lane_side(self, now):
@@ -2790,7 +2639,6 @@ class Driver:
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
                        "near": detect.near_line,
                        **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y,
-                           "corner_y": detect.find_corner(course.corner_expect()) if CourseRunner.uses_corner(step) else None,
                            "end_y": detect.lane_end() if CourseRunner.uses_laneend(step) else None} if step is not None and step.get("cm") is not None else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
@@ -2798,10 +2646,6 @@ class Driver:
             ey = int(detect.end_y)
             cv2.line(dbg, (0, ey), (FRAME_W - 1, ey), C_JUNC, 1, cv2.LINE_AA)
             chip(dbg, f"LANE END {floor_cm(detect.end_y) + LANEEND_OFFSET_CM:.1f}cm", 10 if detect.end_side == "left" else FRAME_W - 190, ey - 20, C_JUNC, 0.4)
-        if dbg is not None and detect.corner_y is not None:
-            cy = int(detect.corner_y)
-            cv2.line(dbg, (detect.corner_cols[0], cy), (detect.corner_cols[1], cy), C_JUNC, 3, cv2.LINE_AA)
-            chip(dbg, f"CORNER {floor_cm(detect.corner_y):.1f}cm", max(min(detect.corner_cols) - 10, 0), cy - 20, C_JUNC, 0.4)
         watching = course.idx != idx_before and step is not None and step["until"] in ("junction", "end")
         if watching or self.ends.open is not None:
             line_y = detect.hline_edge()

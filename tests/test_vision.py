@@ -1605,12 +1605,51 @@ def _test_laneend():
         check(f"to_junction(cm=25): ends at LANE END {target:g}cm on screen (read in view, speed {v:g}cm/s)", c.idx == 1 and abs(z - target) < 0.6 and not c.ruler.guess, f"{z:.2f}")
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), finish()])
-    check("cm= too small to be in view: warns and ends where still in view (19cm)", "warning" in out.getvalue() and c.laneend_target(c.step()) == lf.LANEEND_MIN_CM, out.getvalue()[:80])
+        c = lf.CourseRunner([cs.to_junction(cm=2, blind_sec=0), finish()])
+    check("cm= nearer than can be read: warns and ends at LANEEND_MIN_CM", "warning" in out.getvalue() and c.laneend_target(c.step()) == lf.LANEEND_MIN_CM, out.getvalue()[:80])
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        c = lf.CourseRunner([cs.to_junction(cm=40, blind_sec=0), finish()])
+    check("cm= farther than can be read: warns and ends at LANEEND_MAX_CM", "warning" in out.getvalue() and c.laneend_target(c.step()) == lf.LANEEND_MAX_CM, out.getvalue()[:80])
     with quiet():
         c = lf.CourseRunner([cs.to_junction(cm=25, blind_sec=0), finish()])
-        z = drive_line(c, 45.0, 0.0, 0.0)
-    check("no lane end seen: ends at the line across, at its base", c.idx == 1 and abs(z - lf.END_BASE_CM) < 0.6, f"{z:.2f}")
+        z = drive_line(c, 70.0, 0.0, 0.0)
+    want = 25.0 + lf.LANEEND_LINE_GAP
+    check("no lane end seen: cm= still counts, the line across standing in LANEEND_LINE_GAP beyond", c.idx == 1 and abs(z - want) < 0.8, f"{z:.2f}, want {want:g}")
+    with quiet():
+        c = lf.CourseRunner([cs.to_junction(cm=15, blind_sec=0), finish()])
+        z = drive_line(c, 70.0, 0.0, 0.0)
+    check("no lane end seen: a different cm= ends at a different place", c.idx == 1 and abs(z - (15.0 + lf.LANEEND_LINE_GAP)) < 0.8, f"{z:.2f}")
+    c = lf.CourseRunner([cs.to_junction(cm=20, blind_sec=0), finish()])
+    for z_end, z_line in ((40.0, 61.0), (39.0, 60.0)):
+        c.track_end({"end_y": y_at(z_end), "hline_y": y_at(z_line)}, 0.0)
+    check("the gap to the line across is measured when both are seen", c.line_gap is not None and abs(c.line_gap - 21.0) < 0.5, c.line_gap)
+    w = lf.EndWatch()
+    ruler = lf.EndRuler()
+    ruler.reset("laneend")
+    ruler.z = 30.0
+    old = lf.LANEEND_OFFSET_CM
+    lf.LANEEND_OFFSET_CM = -14.5
+    try:
+        with quiet():
+            w.ended(0, {"cm": 15}, ruler, None, 0.3, 0.0, None, 1.0, False)
+    finally:
+        lf.LANEEND_OFFSET_CM = old
+    check("ends.csv keeps the lane end as shown on screen (car front)", w.rows[0]["ref"] == "laneend" and abs(w.rows[0]["ref_z"] - 15.5) < 1e-6, w.rows[0]["ref_z"])
+    old_ref = lf.JUNCTION_REF
+    lf.JUNCTION_REF = "line"
+    try:
+        check("JUNCTION_REF=\"line\": to_junction() gets no cm= (stops as before)", cs.to_junction()["cm"] is None and cs.to_junction(cm=5)["cm"] == 5)
+    finally:
+        lf.JUNCTION_REF = old_ref
+    with quiet():
+        c = lf.CourseRunner([cs.to_junction(cm=20, blind_sec=0, nth=2), finish()])
+        t = feed(c, 5, 0.0)
+        for _ in range(8):
+            c.update(False, t, (0.0, 0.0), False, {"near": True, "end_y": y_at(30.0)})
+            t += 0.05
+        passed = c.count
+    check("nth=2: the lane end of the passed junction is not counted again at once", passed == 1 and c.end_hits < lf.LANEEND_FRAMES, (passed, c.end_hits))
     old = lf.LANEEND_OFFSET_CM
     lf.LANEEND_OFFSET_CM = 2.0
     try:
@@ -1625,112 +1664,6 @@ def _test_laneend():
         check("the offset (LANEEND_OFFSET_CM) moves the shown value and the stop together", c.idx == 1 and abs(z + 2.0 - 25.0) < 0.6, f"{z:.2f}")
     finally:
         lf.LANEEND_OFFSET_CM = old
-
-
-def corner_frame(*branches, thick=6):
-    """Lane with side branches: (side, y of the near edge, direction). direction "out" is an inside corner, "in" crosses the lane, "slant" is a curve."""
-    img = lane_frame()
-    for side, y, how in branches:
-        xl, xr = lane_x(y)
-        x = xl if side == "left" else xr
-        if how == "out":
-            end = 0 if side == "left" else W - 1
-            for yy in range(0, y - thick):      # At a corner the lane line turns: it ends at the branch.
-                xx = lane_x(yy)[0 if side == "left" else 1]
-                cv2.line(img, (int(xx) - 7, yy), (int(xx) + 7, yy), (30,) * 3, 1)
-            x0, x1 = (0, int(x) + 6) if side == "left" else (int(x) - 6, W - 1)     # Overlaps the lane line, as the tape does at the corner.
-            cv2.rectangle(img, (x0, y - thick), (x1, y), (235,) * 3, -1)
-        elif how == "in":
-            cv2.rectangle(img, (int(xl), y - thick), (int(xr), y), (235,) * 3, -1)
-        else:
-            end = 0 if side == "left" else W - 1
-            cv2.line(img, (int(x), y), (end, int(y - 0.6 * abs(x - end))), (235,) * 3, thick)
-    return img
-
-
-def drive_corner(c, corner, t, stop_z, line_ahead, v=10.0, fps=40, seen=True):
-    """The inside corner's branch comes closer at v cm/s; the line across the lane is line_ahead cm beyond it. Returns the branch's real distance when the action ends."""
-    t = feed(c, 5, t)
-    bottom = lf.floor_cm(H - 3)
-    while corner > stop_z:
-        line = corner + line_ahead
-        ys = {"junction": int(H * 0.6), "near": True, "hline_y": y_at(line) if line > 21.0 else None,
-              "corner_y": y_at(corner) if seen and corner > bottom else None}
-        c.update(True, t, (0.0, 0.0), False, ys)
-        if c.idx != 0:
-            break
-        corner -= v / fps
-        t += 1 / fps
-    return corner
-
-
-def test_corner():
-    print("[junction inside corner branch]")
-    import course as cs
-    old_ref = lf.JUNCTION_REF
-    lf.JUNCTION_REF = "corner"      # These are about that way of measuring.
-    try:
-        _test_corner(cs)
-    finally:
-        lf.JUNCTION_REF = old_ref
-
-
-def _test_corner(cs):
-    for side, y in (("left", 260), ("right", 300), ("left", 330)):
-        d, _ = run_detector(corner_frame((side, y, "out")))
-        got = d.find_corner()
-        check(f"measures the near edge of the inside branch ({side}, y={y})", got is not None and abs(got - (y + 1)) <= 3 and d.corner_side == side, (got, d.corner_side))
-    d, _ = run_detector(corner_frame(("left", 250, "out"), ("right", 300, "out")))
-    check("branches on both sides (+, T): the nearer one", d.find_corner() is not None and d.corner_side == "right" and abs(d.corner_y - 301) <= 3, (d.corner_y, d.corner_side))
-    d, _ = run_detector(corner_frame(("left", 260, "in")))
-    check("the line across the lane is not a branch", d.find_corner() is None, d.corner_y)
-    d, _ = run_detector(corner_frame(("left", 300, "slant")))
-    check("a slanted, bending line (curve) is not a branch", d.find_corner() is None, d.corner_y)
-    d, _ = run_detector(lane_frame())
-    check("None with no branch", d.find_corner() is None)
-    d, _ = run_detector(corner_frame(("right", H - 1, "out")))
-    check("None for a branch at the frame bottom (carried on from the speed)", d.find_corner() is None, d.corner_y)
-
-    target = lf.floor_cm(H - 3) - 5        # The branch leaves the view at the frame bottom, then 5 cm on.
-    ends = []
-    for ahead in (-3.0, 20.0):      # Run 20261109-185143: the line across was nearer than the corner. 185159: about 20 cm beyond it.
-        with quiet():
-            c = lf.CourseRunner([cs.to_junction(cm=5, blind_sec=0), finish()])
-            ends.append(drive_corner(c, 45.0, 0.0, 0.0, ahead))
-    check("to_junction(cm=5): ends at the same distance from the branch from either direction", all(abs(e - target) < 0.8 for e in ends), [round(e, 2) for e in ends])
-    with quiet():
-        c = lf.CourseRunner([cs.to_junction(cm=5, blind_sec=0), finish()])
-        drive_corner(c, 45.0, 0.0, 0.0, 10.0)
-    check("the branch stays what it ended on", c.ruler.kind == "corner" or c.idx == 1)
-    with quiet():
-        c = lf.CourseRunner([cs.to_junction(cm=5, blind_sec=0), finish()])
-        z = drive_line(c, 45.0, 0.0, 0.0)
-    check("no branch seen: ends on the line across", c.idx == 1 and abs(z - (lf.END_BASE_CM - 5)) < 0.6, f"{z:.2f}")
-    old = lf.JUNCTION_REF
-    lf.JUNCTION_REF = "line"
-    try:
-        with quiet():
-            c = lf.CourseRunner([cs.to_junction(cm=5, blind_sec=0), finish()])
-            line = drive_corner(c, 45.0, 0.0, 0.0, 10.0) + 10.0
-        check("JUNCTION_REF=\"line\": the line across, as before", c.idx == 1 and abs(line - (lf.END_BASE_CM - 5)) < 0.8, f"{line:.2f}")
-    finally:
-        lf.JUNCTION_REF = old
-    with quiet():   # A + has no line across the lane: the branch alone is the junction.
-        c = lf.CourseRunner([cs.to_junction(cm=5, blind_sec=0), finish()])
-        t = feed(c, 5, 0.0)
-        corner = 45.0
-        while corner > 0 and c.idx == 0:
-            c.update(False, t, (0.0, 0.0), False, {"near": True, "corner_y": y_at(corner) if corner > lf.floor_cm(H - 3) else None})
-            corner -= 10.0 / 40
-            t += 1 / 40
-    check("+ (no line across): the branch alone is the junction, and it ends", c.idx == 1 and abs(corner - target) < 0.8, f"{corner:.2f}")
-    w = lf.EndWatch()
-    ruler = lf.EndRuler()
-    ruler.reset("corner")
-    ruler.z = 12.0
-    with quiet():
-        w.ended(0, {"cm": 5}, ruler, 250.0, 0.3, 0.0, None, 1.0, False)
-    check("ends.csv says what it measured from", w.rows[0]["ref"] == "corner" and w.rows[0]["ref_z"] == 12.0, w.rows[0])
 
 
 def test_end_cm():
@@ -1825,7 +1758,11 @@ def _test_end_cm():
         except ValueError:
             ok = True
         check(f"cm=: error when {name}", ok)
-    check("to_junction(): without cm, the lane end (cm=0); with at=, as before", cs.to_junction()["cm"] == lf.LANEEND_BASE_CM and cs.to_junction(0.8)["cm"] is None and cs.to_end()["cm"] is None)
+    lf.JUNCTION_REF, ref = "laneend", lf.JUNCTION_REF
+    try:
+        check("to_junction(): without cm, LANEEND_BASE_CM; with at=, as before", cs.to_junction()["cm"] == lf.LANEEND_BASE_CM and cs.to_junction(0.8)["cm"] is None and cs.to_end()["cm"] is None)
+    finally:
+        lf.JUNCTION_REF = ref
     check("describe: shows cm", "+10cm" in cs.describe(cs.to_junction(cm=10)))
 
 
@@ -2594,7 +2531,7 @@ def test_junction_lost():
 
 
 def main():
-    for t in (test_corrections, test_junction_lost, test_laneend, test_corner, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
+    for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
               test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed):
         t()
