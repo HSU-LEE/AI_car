@@ -24,7 +24,7 @@ import lane_follow as lf
 def main():
     print(__doc__)
     cam = lf.open_camera()
-    stream = lf.Stream(8000, "AICAR 선 기준", "w/s ±2 · W/S ±10 · a 자동 · Enter 두 번 저장 · q 두 번 저장 안 하고 끝", confirm="\nq")
+    stream = lf.Stream(8000, "AICAR line threshold", "w/s ±2 · W/S ±10 · a auto · Enter twice save · q twice quit without saving", confirm="\nq")
     detect = lf.LaneDetector()
     steps = {"w": 2, "s": -2, "W": 10, "S": -10}
 
@@ -48,13 +48,13 @@ def main():
                     lf.WHITE_THR = None
                 elif key in ("\n", "\r"):
                     lf.save_vision(white_thr=lf.WHITE_THR)
-                    print(f"\n저장됨: {lf.VISION_FILE} (white_thr = {lf.WHITE_THR or '자동'})")
+                    print(f"\nSaved: {lf.VISION_FILE} (white_thr = {lf.WHITE_THR or 'auto'})")
                     return
                 elif key == "q":
-                    print("\n저장하지 않고 종료")
+                    print("\nQuit without saving")
                     return
     except KeyboardInterrupt:
-        print("\n저장하지 않고 종료")
+        print("\nQuit without saving")
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         cam.stop()

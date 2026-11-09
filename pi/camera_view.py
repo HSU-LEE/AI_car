@@ -26,7 +26,7 @@ def main():
     person = lf.load_person()
     if person:
         person.place = detect.in_lane if lf.PERSON_IN_LANE else None
-    print(f"브라우저: http://<파이 IP>:{args.port}  | Ctrl+C로 종료")
+    print(f"Browser: http://<Pi IP>:{args.port}  | Ctrl+C to quit")
 
     frames, t0, fps = 0, time.monotonic(), 0.0
     try:
@@ -65,7 +65,7 @@ def main():
                 fps, frames, t0 = frames / (now - t0), 0, now
                 print(f"\r{fps:4.1f} fps  {state}        ", end="", flush=True)
     except KeyboardInterrupt:
-        print("\n종료")
+        print("\nStopped")
     finally:
         cam.stop()
 

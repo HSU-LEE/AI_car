@@ -20,7 +20,7 @@ from car import STEER_LIMIT, Car
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--max-speed", type=float, default=0.6, help="최대 속도 (0 ~ 1)")
+    ap.add_argument("--max-speed", type=float, default=0.6, help="maximum speed (0 to 1)")
     args = ap.parse_args()
 
     print(__doc__)
@@ -32,7 +32,7 @@ def main():
     tty.setcbreak(fd)
     try:
         while True:
-            print(f"\r속도 {speed:+.1f}  조향 {angle:+3.0f}도   ", end="", flush=True)
+            print(f"\rspeed {speed:+.1f}  steer {angle:+3.0f} deg   ", end="", flush=True)
             if not select.select([sys.stdin], [], [], 0.1)[0]:
                 continue
             key = sys.stdin.read(1)
@@ -57,7 +57,7 @@ def main():
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         car.close()
-        print("\n정지")
+        print("\nStopped")
 
 
 if __name__ == "__main__":

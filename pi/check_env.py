@@ -15,6 +15,6 @@ for name in MODULES:
 
 try:
     from picamera2 import Picamera2
-    print("카메라:", Picamera2.global_camera_info() or "연결된 카메라 없음")
+    print("Camera:", Picamera2.global_camera_info() or "no camera connected")
 except Exception as e:
-    print("카메라 확인 실패:", e)
+    print("Camera check failed:", e)

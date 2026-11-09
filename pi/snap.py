@@ -19,7 +19,7 @@ def main():
         cv2.imwrite(out, cam.capture_array(), [cv2.IMWRITE_JPEG_QUALITY, 95])
     finally:
         cam.stop()
-    print(f"저장: {out}")
+    print(f"Saved: {out}")
 
 
 if __name__ == "__main__":

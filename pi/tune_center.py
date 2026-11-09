@@ -51,10 +51,10 @@ def main():
                 data.update(steer_trim=trim, steer_bias=0.0)
                 CALIB_FILE.write_text(json.dumps(data))
                 car.trim, car.bias = trim, 0.0
-                print(f"\n저장됨: {CALIB_FILE} (steer_trim = {trim:+.1f})")
+                print(f"\nSaved: {CALIB_FILE} (steer_trim = {trim:+.1f})")
                 break
             elif key in ("q", "\x03"):
-                print("\n저장하지 않고 종료")
+                print("\nQuit without saving")
                 break
     finally:
         car.close()

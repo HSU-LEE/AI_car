@@ -6,7 +6,7 @@
 
 Steps
   1. Track color     a bright floor is a white floor with a black line; a dark floor is a black floor with a white line
-  2. Focus           fixed at lf.LENS_POSITION (about 22 cm), not measured
+  2. Focus           fixed at lf.LENS_POSITION (about 15 cm), not measured
   3. Exposure        settle auto exposure and white balance, then lock them. Shorten exposure so the white line does not blow out, and keep the exposure time at or below MAX_EXPOSURE_US so the line does not blur while driving. Gain makes up any missing brightness.
   4. Lane width and vanishing point   measure both line positions in each band and fit the perspective model (LANE_WIDTH_PX, HORIZON_Y)
   5. Camera center   assume the car is in the middle of the lane and record where the lane center falls at the bottom of the frame (CAMERA_X)
@@ -90,13 +90,13 @@ def fit_geometry(bands):
         used.append(b)
     bands = used
     if len(bands) < 3:
-        return f"양쪽 선이 같이 보인 띠가 {len(bands)}개뿐 (3개 이상 필요). 차를 직선 차로 가운데에 놓았는지 확인"
+        return f"Only {len(bands)} bands showed both lines (3 or more needed). Check the car is in the middle of a straight lane"
     ys = np.array([b[0] for b in bands], float)
     widths = np.array([b[2] - b[1] for b in bands])
     centers = np.array([(b[1] + b[2]) / 2 for b in bands])
     a, b = np.polyfit(ys, widths, 1)        # Width = a*y + b. Perspective makes the lane wider toward the bottom.
     if a <= 0:
-        return "멀수록 차로가 좁아지지 않음 (선을 잘못 잡았을 수 있음). 차를 차로 방향으로 똑바로 놓기"
+        return "The lane does not narrow with distance (wrong lines may have been read). Point the car straight along the lane"
     horizon = -b / a
     width_342 = a * 342 + b
     resid = float(np.max(np.abs(np.polyval((a, b), ys) - widths)))
@@ -199,8 +199,8 @@ def annotate(dbg, lines):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry", action="store_true", help="측정만 하고 저장 안 함")
-    ap.add_argument("--focus-only", action="store_true", help="가장 선명한 초점 측정만 함, 저장 안 함 (차를 트랙 위에)")
+    ap.add_argument("--dry", action="store_true", help="measure only, save nothing")
+    ap.add_argument("--focus-only", action="store_true", help="only measure the sharpest focus, save nothing (car on the track)")
     args = ap.parse_args()
     from libcamera import controls
 
@@ -212,57 +212,57 @@ def main():
             cam.stop()
             cam.close()
         if lens is None:
-            print("초점: 측정 실패 (카메라 앞이 가려졌는지 확인) → 기존 값 유지")
+            print("Focus: measuring failed (check nothing blocks the camera) -> kept as it was")
             return
-        print(f"초점: 가장 선명한 렌즈 {lens:.2f} (약 {100 / lens:.0f}cm). 저장 안 함, 주행은 렌즈 {lf.LENS_POSITION} (약 {100 / lf.LENS_POSITION:.0f}cm) 고정")
+        print(f"Focus: sharpest at lens {lens:.2f} (about {100 / lens:.0f} cm). Not saved: driving stays at lens {lf.LENS_POSITION} (about {100 / lf.LENS_POSITION:.0f} cm)")
         return
 
     print(__doc__.split("\n\n")[0])
     cam = lf.open_camera(locked=False)
     saved, notes = {}, []
     try:
-        print("\n[1/6] 트랙 색 ...", flush=True)
+        print("\n[1/6] Track color ...", flush=True)
         frames = capture(cam, 5, settle=1.5)
         color, med = detect_track_color(frames)
         lf.LINE_COLOR = color
         saved["line_color"] = color
-        print(f"      바닥 밝기 {med:.0f} → {'흰 바닥 위 검은 선' if color == 'black' else '검은 바닥 위 흰 선'}")
+        print(f"      floor brightness {med:.0f} -> {'black lines on a white floor' if color == 'black' else 'white lines on a black floor'}")
 
-        print("[2/6] 초점 ...", flush=True)
+        print("[2/6] Focus ...", flush=True)
         cam.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": lf.LENS_POSITION})
-        print(f"      렌즈 {lf.LENS_POSITION} (약 {100 / lf.LENS_POSITION:.0f}cm에 고정)")
+        print(f"      lens {lf.LENS_POSITION} (fixed at about {100 / lf.LENS_POSITION:.0f} cm)")
 
-        print("[3/6] 조도 (노출 / 게인 / 화이트밸런스) ...", flush=True)
+        print("[3/6] Light (exposure / gain / white balance) ...", flush=True)
         lock, clipped = calibrate_exposure(cam)
         saved["camera_lock"] = lock
-        print(f"      노출 {lock['ExposureTime']}us  게인 {lock['AnalogueGain']}  "
-              f"화이트밸런스 R{lock['ColourGains'][0]} B{lock['ColourGains'][1]}  (날아간 픽셀 {clipped:.1%})")
+        print(f"      exposure {lock['ExposureTime']} us  gain {lock['AnalogueGain']}  "
+              f"white balance R{lock['ColourGains'][0]} B{lock['ColourGains'][1]}  (clipped pixels {clipped:.1%})")
 
-        print("[4/6] 차로 폭 / 소실점 ...", flush=True)
+        print("[4/6] Lane width / vanishing point ...", flush=True)
         frames = capture(cam, FRAMES, settle=0.3)
         geo = fit_geometry(measure_lanes(frames))
         geo_ok = not isinstance(geo, str)
         if not geo_ok:
-            notes.append("차로: " + geo)
+            notes.append("Lane: " + geo)
             print("      " + geo)
         else:
             saved["lane_width_px"], saved["horizon_y"] = geo["lane_width_px"], geo["horizon_y"]
-            print(f"      띠 {geo['bands']}개 측정  차로 폭 {lf.LANE_WIDTH_PX} → {geo['lane_width_px']}px (y=342)  "
-                  f"소실점 {lf.HORIZON_Y} → {geo['horizon_y']}  (오차 최대 {geo['fit_error_px']:.0f}px)")
+            print(f"      {geo['bands']} bands measured  lane width {lf.LANE_WIDTH_PX} -> {geo['lane_width_px']}px (y=342)  "
+                  f"vanishing point {lf.HORIZON_Y} -> {geo['horizon_y']}  (max error {geo['fit_error_px']:.0f}px)")
 
-            print("[5/6] 카메라 중앙 ...", flush=True)
+            print("[5/6] Camera center ...", flush=True)
             if abs(geo["tilt"]) > 0.25:
-                notes.append("카메라 중앙: 차가 차로와 비스듬해서 건너뜀 (차를 차로 방향으로 똑바로 놓고 다시)")
-                print("      차가 차로 방향과 비스듬함 → 건너뜀")
+                notes.append("Camera center: skipped, the car is at an angle to the lane (point it straight along the lane and run again)")
+                print("      the car is at an angle to the lane -> skipped")
             elif not 0.4 <= geo["camera_x"] <= 0.6:
-                notes.append(f"카메라 중앙: {geo['camera_x']}는 너무 치우침 (차를 차로 가운데에 놓고 다시)")
-                print(f"      {geo['camera_x']} → 너무 치우쳐서 건너뜀")
+                notes.append(f"Camera center: {geo['camera_x']} is too far off (put the car in the middle of the lane and run again)")
+                print(f"      {geo['camera_x']} -> too far off, skipped")
             else:
                 saved["camera_x"] = geo["camera_x"]
                 print(f"      {lf.CAMERA_X} → {geo['camera_x']}")
         saved["white_thr"] = None       # The white-line threshold stays automatic. Locked exposure keeps it stable.
 
-        print("[6/6] 확인 ...", flush=True)
+        print("[6/6] Check ...", flush=True)
         for key, value in saved.items():        # Apply this run's values immediately and detect again.
             name = {"line_color": "LINE_COLOR", "lane_width_px": "LANE_WIDTH_PX", "horizon_y": "HORIZON_Y",
                     "camera_x": "CAMERA_X", "white_thr": "WHITE_THR", 
@@ -272,9 +272,9 @@ def main():
         offset, both, dbg = check_result(frames)
         ok = geo_ok and offset is not None and both >= 0.8 and abs(offset) < 0.1
         off_txt = "-" if offset is None else f"{offset:+.3f}"
-        print(f"      양쪽 선 보인 비율 {both:.0%}  위치 오차 {off_txt}  → {'정상' if ok else '확인 필요'}")
+        print(f"      both lines seen {both:.0%}  position error {off_txt}  -> {'OK' if ok else 'check'}")
         if not ok:
-            notes.append("확인: 인식이 불안정 → calib_view.jpg를 보고 차 위치/조명 확인")
+            notes.append("Check: detection is unsteady -> see calib_view.jpg and check the car position and light")
         annotate(dbg, [f"CALIBRATION {'OK' if ok else 'CHECK'}  both lines {both:.0%}  offset {off_txt}",
                        f"track {color}  lane {saved.get('lane_width_px', lf.LANE_WIDTH_PX)}px  "
                        f"horizon {saved.get('horizon_y', lf.HORIZON_Y)}  cam_x {saved.get('camera_x', lf.CAMERA_X)}",
@@ -286,16 +286,16 @@ def main():
         cam.close()
 
     if args.dry:
-        print("\n--dry: 저장 안 함")
+        print("\n--dry: nothing saved")
     else:
         if lf.VISION_FILE.exists():
             shutil.copy(lf.VISION_FILE, lf.VISION_FILE.with_suffix(".json.bak"))
         lf.save_vision(**saved)
-        print(f"\n저장: {lf.VISION_FILE}  (이전 값: vision.json.bak)")
+        print(f"\nSaved: {lf.VISION_FILE}  (previous: vision.json.bak)")
     print(json.dumps(saved, ensure_ascii=False))
     for n in notes:
-        print("[주의] " + n)
-    print("자동으로 못 하는 것: 서보 중앙(Tune Center), 신호등(Tune Traffic Light)")
+        print("[warning] " + n)
+    print("Not done automatically: servo center (Tune Center), traffic light (Tune Traffic Light)")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ def main():
     cam = lf.open_camera()
     det = lf.LaneDetector()
     rows, t0 = [], time.monotonic()
-    print(f"{secs:.0f}초 동안 기록합니다. 차를 끊긴 구간 쪽으로 천천히 밀어 주세요.", flush=True)
+    print(f"Recording for {secs:.0f} s. Push the car slowly toward the lane gap.", flush=True)
     try:
         while (now := time.monotonic()) - t0 < secs:
             d, _, _ = det(cam.capture_array(), draw=False)
@@ -33,11 +33,11 @@ def main():
         w.writerows(rows)
     gaps = Counter(r[1] for r in rows if r[1] is not None)
     whys = Counter(r[2] for r in rows if r[1] is None)
-    print(f"프레임 {len(rows)}개 중 끊김 감지 {sum(gaps.values())}개")
-    print("  감지된 위치(화면 비율 → at= 값과 비교):", dict(sorted(gaps.items())))
-    print("  감지 안 된 이유:", dict(whys.most_common(6)))
+    print(f"Gap found in {sum(gaps.values())} of {len(rows)} frames")
+    print("  Where it was found (frame height, compare with at=):", dict(sorted(gaps.items())))
+    print("  Why it was not found:", dict(whys.most_common(6)))
     # How the detected position moved, sampled across the recording.
-    print("  시간별:", "  ".join(
+    print("  Over time:", "  ".join(
         f"{t:.1f}s:{p if p is not None else '-'}" for t, p, _, _ in rows[::max(1, len(rows) // 40)]))
 
 

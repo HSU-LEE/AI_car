@@ -11,7 +11,7 @@ find_pids() {
 
 pids=$(find_pids)
 if [ -z "$pids" ]; then
-    echo "실행 중인 주행 없음"
+    echo "No drive running"
 else
     kill -TERM $pids 2>/dev/null
     for _ in $(seq 25); do      # Wait up to 5s for a clean exit (motor off, recording saved).
@@ -22,15 +22,15 @@ else
     if [ -n "$left" ]; then
         kill -KILL $left 2>/dev/null
         sleep 0.3
-        echo "응답이 없어 강제 종료"
+        echo "No response: killed"
     fi
-    echo "주행 프로그램 종료"
+    echo "Drive program stopped"
 fi
 
 # If the process was killed, grab the motor pins again and stop them.
 if venv/bin/python car.py center >/dev/null 2>&1; then
-    echo "모터 정지, 조향 중앙"
+    echo "Motor stopped, steering centered"
 else
-    echo "모터 정지 확인 실패. 차 전원을 직접 끄세요."
+    echo "Could not confirm the motor stopped. Switch the car off by hand."
     exit 1
 fi

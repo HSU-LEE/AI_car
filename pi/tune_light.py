@@ -42,7 +42,7 @@ def lamp_hsv(frame):
 def main():
     print(__doc__)
     cam = lf.open_camera()
-    stream = lf.Stream(8000, "AICAR 신호등", "w/s 채도 · e/d 밝기 · r/f 크기 · Enter 두 번 저장 · q 두 번 저장 안 하고 끝", confirm="\nq")
+    stream = lf.Stream(8000, "AICAR traffic light", "w/s saturation · e/d brightness · r/f size · Enter twice save · q twice quit without saving", confirm="\nq")
     traffic = lf.TrafficLight()
     traffic.keep_mask = True
     steps = {"w": ("LIGHT_S_MIN", 5), "s": ("LIGHT_S_MIN", -5),
@@ -74,13 +74,13 @@ def main():
                 elif key in ("\n", "\r"):
                     lf.save_vision(light_s_min=lf.LIGHT_S_MIN, light_v_min=lf.LIGHT_V_MIN,
                                    light_area_min=lf.LIGHT_AREA_MIN)
-                    print(f"\n저장됨: {lf.VISION_FILE}")
+                    print(f"\nSaved: {lf.VISION_FILE}")
                     return
                 elif key == "q":
-                    print("\n저장하지 않고 종료")
+                    print("\nQuit without saving")
                     return
     except KeyboardInterrupt:
-        print("\n저장하지 않고 종료")
+        print("\nQuit without saving")
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         cam.stop()

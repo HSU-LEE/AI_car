@@ -31,15 +31,15 @@ MOVES = {"w": (0, -1), "s": (0, 1), "a": (-1, 0), "d": (1, 0)}
 # The same physical keys while the keyboard is in Korean mode.
 HANGUL = dict(zip("ㅈㅁㄴㅇㅋㅌㅅㅕㅂ", "wasdzxtuq"))
 HELP = """
-  레고를 노란 네모 안에 세우세요. 레고 전체가 들어오게. 발 위치가 정지 위치가 됩니다.
-  레고를 돌리고 손을 빼면 저절로 찍힙니다. 앞, 옆, 뒤를 찍고 엔터를 누르세요.
-  잘 안 잡히면 웹페이지 카메라 화면에서 레고를 드래그해 감싸세요. 바로 한 장 찍고, 다음 사진도 그 네모로 찍습니다.
+  Stand the LEGO figure inside the yellow box, all of it. Its feet set where the car stops.
+  Turn the figure and take your hand away: a view is taken by itself. Take front, side and back, then press Enter.
+  If it is not found, drag around the figure on the web page camera view. That takes a view at once, and later ones use that box.
 
-    엔터       저장하고 끝내기
-    w a s d    네모 옮기기          z / x    네모 작게 / 크게
-    스페이스   지금 한 장 찍기      t        자동 촬영 끄기 / 켜기
-    u          마지막 한 장 취소    (인식 기준은 찍을 때마다 자동으로 정해집니다)
-    q          저장하지 않고 끝내기
+    Enter      save and quit
+    w a s d    move the box         z / x    box smaller / larger
+    Space      take a view now      t        auto capture off / on
+    u          undo the last view   (thresholds are set automatically with each view)
+    q          quit without saving
 """
 
 
@@ -80,20 +80,20 @@ def read_keys(fd):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--add", action="store_true", help="저장된 사람에 시점을 더함")
+    ap.add_argument("--add", action="store_true", help="add views to the saved figure")
     args = ap.parse_args()
 
     detector = PersonDetector.load(lf.HORIZON_Y) if args.add else None
     if args.add:
-        print(f"\n  추가 등록: 저장된 시점 {len(detector.views)}개에 더합니다." if detector else "\n  저장된 사람이 없어 새로 등록합니다.")
+        print(f"\n  Adding: to the {len(detector.views)} saved views." if detector else "\n  No saved figure: registering a new one.")
     else:
-        print("\n  재등록: 엔터로 저장할 때 기존 사람이 지워집니다. q로 나가면 그대로입니다.")
+        print("\n  New registration: saving with Enter replaces the saved figure. q leaves it as it is.")
     detector = detector or PersonDetector(lf.HORIZON_Y)
     print(HELP)
     if lf.CAMERA_LOCK is None:
-        print("  [주의] 노출이 고정되어 있지 않습니다. 먼저 aicar calibrate 를 하면 더 안정적입니다.\n")
+        print("  [warning] Exposure is not locked. Run aicar calibrate first for steadier results.\n")
     cam = lf.open_camera()
-    stream = lf.Stream(8000, "AICAR 레고 사람", "드래그 레고 지정 · Enter 두 번 저장 · wasd 네모 이동 · z/x 크기 · Space 찍기 · t 자동 촬영 · u 취소 · q 두 번 저장 안 하고 끝", confirm="\nq", drag_share=0.5)
+    stream = lf.Stream(8000, "AICAR LEGO figure", "drag the figure · Enter twice save · wasd move box · z/x size · Space take · t auto · u undo · q twice quit without saving", confirm="\nq", drag_share=0.5)
     auto = AutoViews(detector)
 
     fd = sys.stdin.fileno()
@@ -120,8 +120,8 @@ def main():
             if detector.fg is not None:
                 mask[cv2.resize(detector.fg, (lf.FRAME_W, lf.FRAME_H), interpolation=cv2.INTER_NEAREST) > 0] = (60, 220, 60)
             stream.update(np.hstack([view, mask]))
-            print(f"\r  찍은 장수 {len(detector.views)}  |  자동 촬영 {'켜짐' if auto else '꺼짐'}  |  "
-                  f"{'인식됨' if found else '인식 안 됨'}      ", end="", flush=True)
+            print(f"\r  views {len(detector.views)}  |  auto capture {'on' if auto else 'off'}  |  "
+                  f"{'found' if found else 'not found'}      ", end="", flush=True)
             note = auto.update(frame, time.monotonic()) if auto else None
 
             dragged = stream.read_box()
@@ -143,23 +143,23 @@ def main():
                     auto = None if auto else AutoViews(detector)
                 elif key == "u":
                     detector.undo()
-                    note = f"마지막 한 장을 취소했습니다 (남은 장수 {len(detector.views)})"
+                    note = f"Last view undone ({len(detector.views)} left)"
                 elif key in ("\n", "\r"):
                     if detector.views:
                         detector.save()
-                        print(f"\n\n  저장했습니다: {len(detector.views)}장. 다음 주행부터 적용됩니다.")
+                        print(f"\n\n  Saved: {len(detector.views)} views. Used from the next drive.")
                         done = True
                     else:
-                        note = "아직 찍은 사진이 없어 저장할 수 없습니다"
+                        note = "No views yet, nothing to save"
                 elif key == "q":
-                    print("\n\n  저장하지 않고 끝냅니다.")
+                    print("\n\n  Quit without saving.")
                     done = True
                 if done:
                     break
             if note and not done:
                 print(f"\n  {note}")
     except KeyboardInterrupt:
-        print("\n\n  저장하지 않고 끝냅니다.")
+        print("\n\n  Quit without saving.")
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         cam.stop()

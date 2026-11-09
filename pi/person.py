@@ -208,7 +208,7 @@ def get_embedder():
         try:
             _embedder = Embedder()
         except (ImportError, OSError, ValueError, RuntimeError) as e:
-            print(f"[주의] 레고 모양 확인(임베더)을 쓸 수 없어 색과 윤곽만 봅니다: {e}")
+            print(f"[warning] The LEGO look check (embedder) cannot run, so only color and outline are used: {e}")
     return _embedder
 
 
@@ -285,12 +285,12 @@ class PersonDetector:
     def add_view(self, frame):
         """Add one view of the figure standing in the guide box. Returns (added, message)."""
         if len(self.views) >= MAX_VIEWS:
-            return False, f"이미 {MAX_VIEWS}장입니다. 더 찍지 말고 엔터로 저장하세요 (앞, 옆, 뒤면 충분합니다)"
+            return False, f"Already {MAX_VIEWS} views. Stop and press Enter to save (front, side and back are enough)"
         small = self._half(frame)
         if self.marked:
             figure = self._marked_cutout(small, self.box)
             if figure.sum() < MIN_AREA:      # Smaller than VIEW_AREA is fine here: someone pointed at it, so a far figure can be taken too.
-                return False, "드래그한 네모에서 레고를 찾지 못했습니다. 레고 전체를 조금 여유 있게 감싸 보세요"
+                return False, "No LEGO found in the dragged box. Drag around the whole figure with a little room"
             ys, xs = np.nonzero(figure)
             x, y, w, h = int(xs.min()), int(ys.min()), int(xs.max() - xs.min()) + 1, int(ys.max() - ys.min()) + 1
             return self._add_figure(frame, small, figure, x, y, w, h, guide_px(small.shape, self.box))
@@ -302,14 +302,14 @@ class PersonDetector:
         inside = [i for i in parts if stats[i, 0] > x0 and stats[i, 1] > y0
                   and stats[i, 0] + stats[i, 2] < x1 and stats[i, 1] + stats[i, 3] < y1]
         if not inside:
-            return False, ("사람이 네모 테두리에 걸렸습니다. 사람 전체가 네모 안에 들어오게 세우고 손을 빼세요" if parts
-                           else "네모 안에 사람이 안 보입니다. 네모 안에 세우세요 (주변과 색이 같으면 구분하지 못합니다)")
+            return False, ("The figure touches the box edge. Stand all of it inside the box and take your hand away" if parts
+                           else "No figure in the box. Stand it inside (a figure the color of its surroundings cannot be told apart)")
         upright = [i for i in inside if stats[i, 3] >= UPRIGHT * stats[i, 2]]
         if not upright:
-            return False, "서 있는 사람 모양이 안 보입니다. 사람을 세우고, 네모 안의 다른 물건은 치우세요"
+            return False, "No standing figure shape. Stand the figure up and clear other things out of the box"
         best = max(upright, key=lambda i: stats[i, 4])
         if stats[best, 4] > BOX_FILL * (x1 - x0) * (y1 - y0):
-            return False, "네모를 거의 채우는 물체라 사람이 아닙니다"
+            return False, "It almost fills the box, so it is not a figure"
         return self._add_figure(frame, small, labels == best, *(int(v) for v in stats[best, :4]))
 
     def _add_figure(self, frame, small, figure, x, y, w, h, marked=None):
@@ -357,10 +357,10 @@ class PersonDetector:
         self.fit()
         if view["feet"] <= self.horizon:
             self.undo()
-            return False, "발이 수평선보다 위에 있습니다. 사람을 바닥에 세우세요"
+            return False, "The feet are above the horizon. Stand the figure on the floor"
         if not self.table.any():
             self.undo()
-            return False, "사람 색이 주변과 같아 구분할 수 없습니다. 색이 다른 곳에 세워 보세요"
+            return False, "The figure is the color of its surroundings. Stand it somewhere of another color"
         embedder = get_embedder()
         if embedder is not None:
             bx, by = max(groups, key=lambda g: g[5])[:2] if groups else (x, y)     # The same blob detection will see.
@@ -368,14 +368,14 @@ class PersonDetector:
             self.fit()
         if view["below"] > PART_ONLY and not PHOTO_ON:     # With photos the whole figure is compared, so dark clothes that the colors miss do no harm.
             self.undo()
-            return False, "사람의 일부만 색으로 잡혔습니다. 드래그로 사람 전체를 감싸 다시 찍으세요"
+            return False, "Only part of the figure was found by color. Drag around the whole figure and take it again"
         if view["h"] < MIN_H * 2:
             self.undo()     # Detection ignores a blob this small, so this view could never be found.
-            return False, "사람 색으로 잡힌 부분이 너무 작아 인식할 수 없습니다. 차에 더 가까이 세우세요"
+            return False, "The colored part is too small to find. Stand the figure closer to the car"
         self.auto_tune()
-        message = f"등록 {len(self.views)}번 ({view['w']}x{view['h']}px, 발 위치 {view['feet'] / frame.shape[0]:.2f}, 자동 기준 색 {self.match:.2f} 윤곽 {self.shape:.2f})"
+        message = f"View {len(self.views)} ({view['w']}x{view['h']}px, feet at {view['feet'] / frame.shape[0]:.2f}, auto color {self.match:.2f} outline {self.shape:.2f})"
         if self.table[HUE_BINS:].any():
-            message += " [주의] 사람이 거의 검정/흰색이라 차선을 사람으로 착각할 수 있습니다"
+            message += " [warning] The figure is almost black/white, so lane lines may be taken for it"
         return True, message
 
     def auto_tune(self):
@@ -820,7 +820,7 @@ class AnyFigure:
         try:
             weights = np.load(path)
         except (OSError, ValueError):
-            print(f"[주의] {Path(path).name}이 없어 등록한 레고만 찾습니다")
+            print(f"[warning] No {Path(path).name}: only the registered figure is looked for")
             return None
         return cls(horizon, weights, registered) if get_embedder() is not None else None
 
@@ -902,13 +902,13 @@ class AutoViews:
             return None
         self.ready = False
         if len(self.detector.views) >= AUTO_MAX:
-            return f"시점 {AUTO_MAX}개를 다 찍었습니다. 엔터로 저장하세요"
+            return f"All {AUTO_MAX} views taken. Press Enter to save"
         q, ring, seen = ring_colors(small, self.detector.box)
         if self.around is not None and (~self.around[q[ring]]).mean() > AUTO_HAND:
-            return "팔이나 손이 보여서 안 찍었습니다. 손을 빼면 찍습니다"
+            return "Not taken: an arm or hand is in view. It is taken once the hand is away"
         found = self.detector(frame, photos=False)
         if found and found["score"] >= AUTO_SAME and found["shape"] >= AUTO_SAME:
-            return "이미 등록된 면입니다. 사람을 더 돌리세요"
+            return "This side is already registered. Turn the figure further"
         added, message = self.detector.add_view(frame)
         if added and self.around is None:
             self.around = seen
@@ -969,15 +969,15 @@ class PersonWatch:
             if hit and self.check_hits >= self.confirm:
                 self.checking = False
                 look = self.box.get("look")
-                print(f"\n[사람] 정지 (발 위치 화면 {self.box['feet'] / self.frame_h:.2f}, 일치도 {self.box['score']:.2f}"
-                      + (f", 모습 {look:.2f})" if look is not None else ")"))
+                print(f"\n[person] stop (feet at {self.box['feet'] / self.frame_h:.2f}, match {self.box['score']:.2f}"
+                      + (f", look {look:.2f})" if look is not None else ")"))
             elif now - self.hold_since >= self.check_sec:
                 self.hold = self.checking = False
-                print(f"\n[사람] {self.check_sec:g}초 동안 {self.check_hits}번만 보여서 출발")
+                print(f"\n[person] seen only {self.check_hits} times in {self.check_sec:g} s: go")
         else:
             timed_out = self.max_wait is not None and now - self.hold_since >= self.max_wait
             if timed_out or (gone and now - self.hold_since >= self.min_stop):
                 self.hold = False
                 self.ignored = not gone
-                print("\n[사람] " + ("최대 대기 시간이 지나 출발" if not gone else "없어져서 출발"))
+                print("\n[person] " + ("max wait passed: go" if not gone else "gone: go"))
         return self.hold

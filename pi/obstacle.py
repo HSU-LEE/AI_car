@@ -70,10 +70,10 @@ def main():
         while True:
             now = time.monotonic()
             if obs.near != last:
-                print(f"{'물체 있음' if obs.near else '없음':6s}  (켜짐 비율 {obs.ratio:.2f})", flush=True)
+                print(f"{'object' if obs.near else 'clear':6s}  (on share {obs.ratio:.2f})", flush=True)
                 last = obs.near
             elif now - t_print >= 0.5:
-                print(f"         켜짐 비율 {obs.ratio:.2f}", flush=True)
+                print(f"         on share {obs.ratio:.2f}", flush=True)
                 t_print = now
             time.sleep(0.05)
     except KeyboardInterrupt:

@@ -23,9 +23,9 @@ import lane_follow as lf
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run")
-    ap.add_argument("--set", nargs="*", default=[], help="KEY=VALUE 로 lane_follow 설정 덮어쓰기")
-    ap.add_argument("--frames", help="예: 100-250")
-    ap.add_argument("--out", help="출력 영상 경로 (기본: <run>/replay.mp4)")
+    ap.add_argument("--set", nargs="*", default=[], help="override lane_follow settings with KEY=VALUE")
+    ap.add_argument("--frames", help="for example 100-250")
+    ap.add_argument("--out", help="output video path (default: <run>/replay.mp4)")
     args = ap.parse_args()
 
     run = Path(args.run)
@@ -33,7 +33,7 @@ def main():
     if (run / lf.VISION_FILE.name).exists():
         lf.load_vision(run / lf.VISION_FILE.name)
     else:
-        print(f"[주의] 이 녹화에 {lf.VISION_FILE.name}이 없어 현재 설정으로 분석합니다 (선 색 {lf.LINE_COLOR}). 다르면 --set LINE_COLOR=black 등으로 지정")
+        print(f"[warning] This recording has no {lf.VISION_FILE.name}: analysed with the current settings (line color {lf.LINE_COLOR}). If wrong, set --set LINE_COLOR=black etc.")
     course_list = lf.COURSE
     if (run / "course.py").exists():
         spec = importlib.util.spec_from_file_location("run_course", run / "course.py")
@@ -41,14 +41,14 @@ def main():
         spec.loader.exec_module(module)
         course_list = module.COURSE
     else:
-        print("[주의] 이 녹화에 course.py가 없어 현재 코스로 판단합니다")
+        print("[warning] This recording has no course.py: the current course is used")
     if (run / "course.py").exists():
         for name in dir(module):        # The figure's settings are read from the course file too.
             if name.startswith("PERSON_") or name == "RED_BACK_ON":
                 setattr(lf, name, getattr(module, name))
     saved = json.loads((run / "run.json").read_text()) if (run / "run.json").exists() else {}
     if saved.get("lane_follow_md5") not in (None, hashlib.md5(Path(lf.__file__).read_bytes()).hexdigest()):
-        print("[주의] 녹화 때와 lane_follow.py가 달라 판단이 다를 수 있습니다")
+        print("[warning] lane_follow.py differs from the one recorded with, so decisions may differ")
     args.set = list(saved.get("set", [])) + args.set     # Settings of that run first. Yours win.
 
     for kv in args.set:
@@ -64,7 +64,7 @@ def main():
     if (run / "log.csv").exists():
         rows = list(csv.DictReader(open(run / "log.csv")))
     else:   # Frames only: assume 20 fps.
-        print("log.csv 없음 -> 프레임만으로 재생 (20fps 가정)")
+        print("No log.csv -> replaying frames only (20 fps assumed)")
         rows = [{"frame": p.stem, "t": int(p.stem) / 20, "steer": "nan"}
                 for p in sorted(run.glob("[0-9]*.jpg"))]
     if args.frames:
@@ -106,13 +106,13 @@ def main():
     writer.release()
 
     s = np.array(steers)
-    print(f"\n프레임 {len(rows)}  LOST {lost} ({100 * lost / max(len(rows), 1):.0f}%)  교차로 {junctions}회")
-    print(f"차선 끊김(GAP) 보인 프레임 {gaps}  신호등 빨강 {lights['red']} / 초록 {lights['green']} 프레임")
-    print(f"조향 평균 {s.mean():+.1f}  표준편차 {s.std():.1f}  "
-          f"프레임간 변화량 평균 {np.abs(np.diff(s)).mean() if len(s) > 1 else 0:.2f}도 (클수록 지그재그)")
+    print(f"\nframes {len(rows)}  LOST {lost} ({100 * lost / max(len(rows), 1):.0f}%)  junctions {junctions}")
+    print(f"frames with a lane gap {gaps}  traffic light red {lights['red']} / green {lights['green']} frames")
+    print(f"steering mean {s.mean():+.1f}  std {s.std():.1f}  "
+          f"mean change per frame {np.abs(np.diff(s)).mean() if len(s) > 1 else 0:.2f} deg (larger is more zigzag)")
     if not np.isnan(diffs).all():
-        print(f"녹화 당시 조향과 차이 평균 {np.nanmean(np.abs(diffs)):.1f}도")
-    print(f"영상: {out}")
+        print(f"mean difference from the recorded steering {np.nanmean(np.abs(diffs)):.1f} deg")
+    print(f"Video: {out}")
 
 
 if __name__ == "__main__":

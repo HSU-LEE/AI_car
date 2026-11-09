@@ -122,6 +122,7 @@ FAR_BOT = 0.6           # A far line that is still thin can sit below ROI_TOP be
 FAR_HLINE = 0.8         # A far horizontal line counts only if connected white pixels on one row cover at least this times the lane width at that height.
                         # A thin far line shows only its middle in the mask (1.2 missed the T-junction line in runs 20261103-1939/1940 until it was at 0.5).
                         # Used only to slow down, not for the junction decision (until), so a curve mistaken for a line only slows the car briefly.
+APPROACH_MIN = 0.4      # slow= never slows the car below this, whatever slow= asks. A speed set lower with speed= or set_speed() is kept.
 APPROACH_HOLD = 0.5     # slow=: keep slowing for this many seconds after the line disappears, so one or two false frames do not react.
 MOTOR_MIN = 0.3         # Lowest forward motor command. Every lower command is raised to this, whatever speed= or slow= asks for.
 MOTOR_MIN_TURN = 0.3    # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
@@ -142,11 +143,41 @@ END_MIN_SPEED = 3.0     # cm=: a measured speed below this (cm/s), on a car that
 END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measured. About what the lowest motor command gives.
 END_SWITCH_FRAMES = 3   # cm=: before the end line is reached, this many readings in a row that agree with each other replace a reading they jump away from.
 END_FRESH_SEC = 0.15    # cm=: a reading older than this when the line is reached does not count as that line's position.
+JUNCTION_REF = "laneend" # to_junction(cm=): what it measures to. "laneend": where the lane's own line ends at the junction, the nearer side.
+                        # Every junction has one: an L on its inside, a T and a + on both sides. It lies straight ahead of the car (+-10 cm), so it stays in view
+                        # down to the frame bottom from either direction, unlike the corner's side branch, which leaves by the frame side at 20-25 cm.
+                        # "corner": the side branch of the inside corner leaving the view, then cm= further (2026-11-09, ended at different places by direction).
+                        # "line": the line across the lane (before 2026-11-09).
+                        # With "corner" and no branch in view, the line across the lane is used instead, and the log says so.
+LANEEND_BASE_CM = 30.0  # to_junction() with no cm=: ends with the line end this far ahead. to_junction(cm=25) ends at 25 cm: cm= is the LANE END distance shown on screen.
+LANEEND_OFFSET_CM = -14.5   # Added to every line-end distance, shown and acted on: real minus shown, in cm. -14.5 makes it the distance from the car front
+                        # (2026-11-09: shown 19.5 cm, tape 5 cm), since the camera sits about 15 cm behind it.
+LANEEND_MIN_CM = 19.0   # The car stops while the line end is still in view, so nothing is guessed: a cm= below this is held at this
+                        # (frame bottom 17 cm with the calibration of 2026-11-09, and room for the 2 frames the reading is old).
+LANEEND_FRAMES = 4      # The line end must be found this many frames in a row before it counts.
+LANEEND_GAP = 4         # Walking up along the lane line, this many empty rows in a row end it.
+LANEEND_TOL = 0.06      # The line is looked for this far either side of where it should be, in lane widths (at least 4 px).
+LANEEND_CURVE = 0.35    # Above its end, line pixels this close to where it would go on (in lane widths) mean it bends on: a curve, not an end.
+CORNER_GONE_FRAMES = 3  # cm= with the corner: the branch has left the view once it is missing this many frames in a row. The action then ends,
+                        # cm= further on. One or two missing frames are a flicker, and do not end it.
+CORNER_LEN = 0.5        # A branch reaches at least this far outward from its lane line, in lane widths at that height. A lane line alone reaches about 0.05.
+CORNER_LEN_EDGE = 0.15  # Or this far, if it runs off the frame side: near the car a branch leaves the view sideways long before it is that long on screen.
+CORNER_FROM, CORNER_TO = 0.2, 0.5   # Its height is read in the columns this far outward from the lane line, in lane widths: off the line itself and off the frame side, where the lens bends lines.
+CORNER_ABOVE = 0.15     # The lane line must end at the branch: it may not go on over this many lane widths (in rows) above it.
+CORNER_FOLLOW = 0.25    # Once found, the branch is followed into this share of a lane width at the frame side, after its lane line has left the view.
+CORNER_FRAMES = 4       # The branch must be found this many frames in a row before it is the ruler. On 38 recordings a real corner was found for
+                        # 30-150 frames in a row, while a hand, a thing at the mat side or the end of a curve was found for 1-2 (117 times) and rarely up to 6.
+CORNER_SLOPE = 0.15     # And it must lie this flat across them (rows per column). A curve leaves the lane line slanting.
+CORNER_MAX_SEC = 12.0   # cm= with the corner as the ruler: the last distance takes at most this long. It starts as far off as the line across is first seen.
 END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is bounded because lost-lane back-up is off during it.
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
 JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a junction (a fork).
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
+JUNCTION_LATCH_FRAMES = 2   # A junction line seen this many frames in a row, low in the frame, is remembered.
+JUNCTION_GONE_FRAMES = 2    # Remembered, then missing this many frames: it went under the car, so it counts the same as JUNCTION_FRAMES.
+                            # One missing frame is a flicker. The count resets if the line comes back.
+JUNCTION_LOST_Y = 0.8       # The remembered line must have reached this far down the frame. A line that disappears higher up was a false line.
 BLIND_REARM_FRAMES = 5  # blind_sec: a line gone for this many frames in a row during the blind period arms its event, so it can end the action once blind is over.
 GAP_MAX_HEADING = 0.5   # Skip the gap test when heading error is larger than this, because the car is badly misaligned with the lane.
 GAP_TIP_LOST = 5        # A confirmed gap is followed by its line tips until they are gone for this many frames in a row.
@@ -194,7 +225,7 @@ LIGHT_LOCAL_V_MIN = 100  # Minimum value at that spot. A green LED tends to read
 LIGHT_NEAR = 4          # wait_green: green must lie within (red lamp size times this) of where the red lamp was.
                         # That allows the gap between lamps on the same light and ignores green objects elsewhere.
 
-LENS_POSITION = 4.5     # Manual focus in diopters (1/distance in m). 4.5 is about 22 cm, the near floor where the lane is read. Always this value: a lens_position in vision.json is ignored. None means autofocus.
+LENS_POSITION = 6.67    # Manual focus in diopters (1/distance in m). 6.67 is about 15 cm, the near floor where the lane and the corner's branch are read. Always this value: a lens_position in vision.json is ignored. None means autofocus.
                         # calibrate.py measures sharpness over the lane region and saves it in vision.json.
 CAMERA_LOCK = None      # Locked exposure, gain, and white balance {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
                         # None leaves the camera automatic. calibrate.py measures the venue lighting and saves it in vision.json.
@@ -215,15 +246,23 @@ def load_vision(path=None):
         data = json.loads((path or VISION_FILE).read_text())
     except (OSError, ValueError):
         return
-    LINE_COLOR = data.get("line_color", LINE_COLOR)
-    WHITE_THR = data.get("white_thr", WHITE_THR)
-    CAMERA_X = data.get("camera_x", CAMERA_X)
-    LIGHT_S_MIN = data.get("light_s_min", LIGHT_S_MIN)
-    LIGHT_V_MIN = data.get("light_v_min", LIGHT_V_MIN)
-    LIGHT_AREA_MIN = data.get("light_area_min", LIGHT_AREA_MIN)
-    LANE_WIDTH_PX = data.get("lane_width_px", LANE_WIDTH_PX)
-    HORIZON_Y = data.get("horizon_y", HORIZON_Y)
-    CAMERA_LOCK = data.get("camera_lock", CAMERA_LOCK)
+
+    def pick(key, default, kind):
+        """Keep the current value when the file omits the key, stores null, or stores the wrong type."""
+        value = data.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, kind):
+            return default
+        return value
+
+    LINE_COLOR = pick("line_color", LINE_COLOR, str)
+    WHITE_THR = pick("white_thr", WHITE_THR, (int, float))
+    CAMERA_X = pick("camera_x", CAMERA_X, (int, float))
+    LIGHT_S_MIN = pick("light_s_min", LIGHT_S_MIN, (int, float))
+    LIGHT_V_MIN = pick("light_v_min", LIGHT_V_MIN, (int, float))
+    LIGHT_AREA_MIN = pick("light_area_min", LIGHT_AREA_MIN, (int, float))
+    LANE_WIDTH_PX = pick("lane_width_px", LANE_WIDTH_PX, (int, float))
+    HORIZON_Y = pick("horizon_y", HORIZON_Y, (int, float))
+    CAMERA_LOCK = pick("camera_lock", CAMERA_LOCK, dict)
 
 
 def motor_floor(angle):
@@ -259,7 +298,7 @@ def ellipse_rects(size):
         reach = {}      # Half-width to the greatest distance from the center of a row with that half-width.
         for r in range(size):
             cols = np.flatnonzero(k[r])
-            assert cols[0] + cols[-1] == 2 * c, "타원 커널이 좌우 대칭이 아님"
+            assert cols[0] + cols[-1] == 2 * c, "the ellipse kernel is not symmetric"
             hw = c - cols[0]
             reach[hw] = max(reach.get(hw, 0), abs(r - c))
         _ELLIPSE_RECTS[size] = [np.ones((2 * hh + 1, 2 * hw + 1), np.uint8) for hw, hh in reach.items()]
@@ -320,6 +359,7 @@ def chip(img, text, x, y, color, scale=0.42, dark=None):
 
 
 def dashed_hline(img, y, color, x0=0, x1=None, dash=10, gap=6, thick=1):
+    y = int(min(max(y, 0), img.shape[0] - 1))
     x1 = img.shape[1] if x1 is None else x1
     for x in range(x0, x1, dash + gap):
         cv2.line(img, (x, y), (min(x + dash, x1), y), color, thick, cv2.LINE_AA)
@@ -364,6 +404,9 @@ class LaneDetector:
         self.mask = np.zeros((1, 1), np.uint8)  # Line mask this frame.
         self.hrun = None                # Nearest horizontal line this frame, in the mask: (first column, last column, center row).
         self.tip_y = None               # Where the lane lines that end ahead end (lane_tip).
+        self.corner_y = self.corner_side = self.corner_cols = None   # Inside corner of a junction ahead (find_corner): near-edge y, "left"/"right", columns read.
+        self.end_y = self.end_side = None   # Where the lane's line ends ahead (lane_end): y of its top, "left"/"right".
+        self.corner_last = None         # Side of the branch found last. Kept across frames, so it can be followed to the frame side.
         self.tip_diff = None            # How far apart the two line tips are, while both are in view.
         self.gap_hits = 0               # Frames the band test saw a gap, while its line tips stayed in view.
         self.tip_lost = 0               # Frames in a row the line tips were not seen.
@@ -406,7 +449,7 @@ class LaneDetector:
 
     def model_width(self, i):
         """Perspective model: lane width is 0 at the vanishing point (HORIZON_Y) and widens linearly downward."""
-        return LANE_WIDTH_PX * (self.band_y[i] - HORIZON_Y) / (342 - HORIZON_Y)
+        return LANE_WIDTH_PX * (self.band_y[i] - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
 
     def lane_width(self, i):
         return self.width[i] or self.model_width(i)
@@ -460,7 +503,7 @@ class LaneDetector:
             if area < STRIPE_MIN_AREA:
                 continue
             cy = top + float(cents[i][1])
-            lane_w = LANE_WIDTH_PX * (cy - HORIZON_Y) / (342 - HORIZON_Y)
+            lane_w = LANE_WIDTH_PX * (cy - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
             # Cut off by an ROI edge: the end of a lane line (before a gap, at the ROI top, at a side), not a whole stripe.
             cut = y <= 0 or x <= 0 or x + w >= shape[1] or y + h >= shape[0]
             if not cut and lane_w > 0 and max(w, h) < STRIPE_MAX * lane_w:
@@ -493,7 +536,7 @@ class LaneDetector:
         y1 = labels.shape[0] - (i + 1) * self.band_h
         col = labels[max(0, y1):y1 + self.band_h, int(np.clip(x, 0, labels.shape[1] - 1))]
         ids = col[col > 0]
-        return int(stats[ids.max(), 3]) if len(ids) else 0
+        return int(stats[ids, 3].max()) if len(ids) else 0
 
     def line_mask(self, roi):
         gray = cv2.GaussianBlur(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (5, 5), 0)
@@ -546,7 +589,7 @@ class LaneDetector:
             edges = np.flatnonzero(np.diff(row))
             longest = (edges[1::2] - edges[::2]).max() * 2 if len(edges) else 0
             y = top + 2 * r
-            need = FAR_HLINE * LANE_WIDTH_PX * (y - HORIZON_Y) / (342 - HORIZON_Y)
+            need = FAR_HLINE * LANE_WIDTH_PX * (y - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
             hits = hits + 1 if longest >= need else 0
             if hits >= 2:                               # At least two rows in a row, so noise is excluded.
                 return y + 2
@@ -690,6 +733,147 @@ class LaneDetector:
         y = r0 + float(np.median(low[cols]))
         return None if y >= strip.shape[0] - 2 else int(FRAME_H * ROI_TOP) + y + 1
 
+    def lane_end(self):
+        """Where the lane's own line ends ahead, at a junction: the y of its top, of the nearer side if both end. None if neither ends in view.
+
+        Each lane line is walked up from the near bands along where it runs, until it stops. At an inside corner it stops where it turns off
+        sideways; on the outside of an L it goes on to the line across, farther, so the nearer end is the junction's near edge either way.
+        A line that bends on (a curve) is not an end: its pixels go on above, near where it would be.
+        """
+        self.end_y = self.end_side = None
+        mask = self.mask > 0
+        top = int(FRAME_H * ROI_TOP)
+        rows_n, cols_n = mask.shape
+        best = None
+        for side, xs in (("left", self.left), ("right", self.right)):
+            pts = [(self.band_y[i] - top, xs[i]) for i in range(SLICES) if xs[i] is not None]
+            if len(pts) < 2:
+                continue
+            slope, base = np.polyfit([p[0] for p in pts], [p[1] for p in pts], 1)
+            width = lambda r: LANE_WIDTH_PX * (r + top - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
+            last, miss = None, 0
+            for row in range(int(max(p[0] for p in pts)), -1, -1):
+                x, tol = slope * row + base, max(4.0, LANEEND_TOL * width(row))
+                if 0 <= x < cols_n and mask[row, max(int(x - tol), 0):int(x + tol) + 1].any():
+                    last, miss = row, 0
+                else:
+                    miss += 1
+                    if miss > LANEEND_GAP:
+                        break
+            if last is None or last <= LANEEND_GAP or last >= rows_n - 2:
+                continue        # Runs on to the top of the view, or has already left by the bottom.
+            above = range(max(last - 30, 0), max(last - LANEEND_GAP, 0))
+            bends = [mask[r, max(int(slope * r + base - LANEEND_CURVE * width(r)), 0):max(int(slope * r + base + LANEEND_CURVE * width(r)) + 1, 0)].any()
+                     for r in above]
+            if bends and np.mean(bends) > 0.3:
+                continue
+            if best is None or last > best[0]:
+                best = (last, side)
+        if best is not None:
+            self.end_y, self.end_side = top + best[0], best[1]
+        return self.end_y
+
+    def find_corner(self, expect_y=None):
+        """Inside corner of a junction ahead: where a lane line turns outward, away from the lane (the left line to the left, the right line to the right).
+
+        A line that turns inward and crosses the lane is the far side of the junction, not this. An L has the branch on one side, a + and a T on both,
+        and then the nearer one counts. The branch is square to the car, so its height on screen is its distance wherever it is seen.
+        Returns the y of its near edge, or None. It needs this frame's lane lines and blobs, so it runs after the detector.
+        expect_y: where the branch found before should be now. Close to the car its lane line leaves the view first, and only the end of
+        the branch is left at the frame side. It is followed there, about this height.
+        """
+        self.corner_y = self.corner_side = self.corner_cols = None
+        labels, stats = self.blobs
+        top = int(FRAME_H * ROI_TOP)
+        rows_n = labels.shape[0]
+        best = None
+        for side, xs, out in (("left", self.left, -1), ("right", self.right, 1)):
+            pts = [(self.band_y[i] - top, xs[i]) for i in range(SLICES) if xs[i] is not None]
+            if not pts:
+                continue
+            slope, base = np.polyfit([p[0] for p in pts], [p[1] for p in pts], 1) if len(pts) >= 2 else (0.0, pts[0][1])
+            ids = set()
+            for r, x in pts:        # The blobs the lane line is made of.
+                seg = labels[int(r), max(int(x) - 4, 0):int(x) + 5]
+                ids.update(int(v) for v in seg[seg > 0])
+            for k in ids:
+                x0, y0, w, h, _ = (int(v) for v in stats[k])
+                blob = labels[y0:y0 + h, x0:x0 + w] == k
+                rows = np.arange(y0, y0 + h)
+                filled = blob.any(axis=1)
+                line_x = slope * rows + base
+                lane_w = LANE_WIDTH_PX * (rows + top - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
+                if out < 0:
+                    far_x = x0 + np.argmax(blob, axis=1)
+                    reach, at_edge = line_x - far_x, far_x <= 0
+                else:
+                    far_x = x0 + w - 1 - np.argmax(blob[:, ::-1], axis=1)
+                    reach, at_edge = far_x - line_x, far_x >= FRAME_W - 1
+                branch = np.flatnonzero(filled & ((reach >= CORNER_LEN * lane_w) | (at_edge & (reach >= CORNER_LEN_EDGE * lane_w))))
+                if not len(branch):
+                    continue
+                low = branch[-1]        # The nearest stretch of branch rows, across gaps of 2.
+                start = low
+                while start > 0 and np.any(np.isin(np.arange(start - 3, start), branch)):
+                    start -= 1
+                r_top, r_bot = y0 + start, y0 + low
+                width = LANE_WIDTH_PX * (r_bot + top - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
+                xb = slope * r_bot + base
+                # At a corner the lane line turns: it does not go on above the branch. One that does is crossed by a line that only runs past it.
+                above = np.arange(max(r_top - 3 - int(CORNER_ABOVE * width), 0), max(r_top - 3, 0))
+                if len(above):
+                    near_line = [blob[r - y0, max(int(slope * r + base - 0.05 * width) - x0, 0):max(int(slope * r + base + 0.05 * width) - x0 + 1, 0)].any()
+                                 if y0 <= r < y0 + h else False for r in above]
+                    if np.mean(near_line) > 0.5:
+                        continue
+                edge_x = 0 if out < 0 else FRAME_W - 1
+                room = abs(edge_x - xb)
+                near_col = xb + out * min(CORNER_FROM * width, 0.5 * room)      # Close to the car the branch soon runs off the frame side: read what is left of it.
+                far_col = xb + out * min(CORNER_TO * width, room)
+                cols = np.arange(int(near_col), int(far_col), out)
+                cols = cols[(cols >= x0) & (cols < x0 + w)]
+                if len(cols) < 3:
+                    continue
+                win = blob[max(r_top - 3 - y0, 0):min(r_bot + 4 - y0, h), cols - x0]
+                has = win.any(axis=0)
+                if has.mean() < 0.6:
+                    continue
+                edge = max(r_top - 3 - y0, 0) + y0 + (win.shape[0] - 1 - np.argmax(win[::-1], axis=0))     # Lowest pixel per column: the near edge.
+                c, e = cols[has], edge[has]
+                if abs(np.polyfit(c, e, 1)[0]) > CORNER_SLOPE:
+                    continue
+                y = float(np.median(e))
+                if y >= rows_n - 2:     # Reached the frame bottom: from here it is carried on from the speed.
+                    continue
+                if best is None or y > best[0]:
+                    best = (y, side, (int(c.min()), int(c.max())))
+        if best is None and expect_y is not None and self.corner_last is not None:
+            best = self.follow_corner(expect_y - top, rows_n)
+        if best is not None:
+            self.corner_y, self.corner_side, self.corner_cols = top + best[0] + 1, best[1], best[2]
+            self.corner_last = best[1]
+        return self.corner_y
+
+    def follow_corner(self, row, rows_n):
+        """The end of the branch found before, at the frame side near this row (ROI px): (row, side, columns) or None."""
+        side = self.corner_last
+        if not 0 <= row < rows_n + 20:      # Expected well past the frame bottom: nothing to follow, it is carried on from the speed.
+            return None
+        lane_w = LANE_WIDTH_PX * (row + int(FRAME_H * ROI_TOP) - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
+        span = int(np.clip(CORNER_FOLLOW * lane_w, 6, FRAME_W // 3))
+        cols = np.arange(0, span) if side == "left" else np.arange(FRAME_W - span, FRAME_W)
+        r0, r1 = max(int(row) - 60, 0), min(int(row) + 30, rows_n)     # Wide above: the car may have gone slower than carried on.
+        win = self.mask[r0:r1, cols] > 0
+        has = win.any(axis=0)
+        if r1 <= r0 or has.sum() < 3:
+            return None
+        edge = r0 + (win.shape[0] - 1 - np.argmax(win[::-1], axis=0))
+        c, e = cols[has], edge[has]
+        if abs(np.polyfit(c, e, 1)[0]) > 2 * CORNER_SLOPE:      # A short piece: allow it a little more tilt.
+            return None
+        y = float(np.median(e))
+        return None if y >= rows_n - 2 else (y, side, (int(c.min()), int(c.max())))
+
     def lane_tip(self):
         """y where the lane ends ahead: halfway between the tips of the left and right lines. None if the lane does not end in view.
 
@@ -710,7 +894,7 @@ class LaneDetector:
             if not len(top):
                 continue
             tip_x = float(top.mean())
-            lane_w = LANE_WIDTH_PX * (top_row + y - HORIZON_Y) / (342 - HORIZON_Y)
+            lane_w = LANE_WIDTH_PX * (top_row + y - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
             # At the frame side, it is a line leaving by the side (a curve), not one that ends.
             if 0.08 * FRAME_W <= tip_x <= 0.92 * FRAME_W and 0.2 * lane_w <= abs(tip_x - cx0) <= 0.85 * lane_w:
                 side = tip_x < cx0
@@ -786,6 +970,8 @@ class LaneDetector:
         bands = []      # Per band: (y, line x list, horizontal line or crosswalk). Used for the lane-gap test.
         ref = self.center[0] if self.center[0] is not None else cx0
         self.hrun = None
+        self.corner_y = self.corner_side = self.corner_cols = None     # find_corner fills them only when an action needs them.
+        self.end_y = self.end_side = None          # lane_end, likewise.
         for i in range(SLICES):     # Band 0 is the nearest. Tracking walks from the bottom upward.
             y1 = mask.shape[0] - (i + 1) * h
             cy = top + y1 + h // 2
@@ -820,7 +1006,10 @@ class LaneDetector:
             ys.append(cy)
             ls.append(l)
             rs.append(r)
-            if l is not None and r is not None:
+            if LINE_MODE == "line":
+                if l is not None:
+                    ref = l          # Stay on the one line. Shifting by half a lane would chase the other side.
+            elif l is not None and r is not None:
                 ref = (l + r) / 2   # The next (higher) band judges left and right from this band's center.
             elif l is not None or r is not None:
                 w = self.lane_width(i) / 2
@@ -918,7 +1107,9 @@ class LaneDetector:
         heading = float(np.clip((x_far - x_near) / half, -1, 1))
         if self.gap_y is not None and abs(heading) > GAP_MAX_HEADING:
             # If the car is badly misaligned with the lane, the lines leave the side of the frame and look like a gap, so this is not treated as a gap.
+            # Also drop a confirmation built up during that misalignment, or it would end the action once the car straightens.
             self.gap_y, self.gap_why = None, "car not aligned with lane"
+            self.gap_hits, self.gap_held = 0, False
         if draw:
             self.draw_marks(dbg, marks)
         return (offset, heading), junction, dbg
@@ -1090,7 +1281,7 @@ class YawMeter:
 
 def floor_cm(y):
     """Floor distance ahead of the camera for a point at height y on screen: the lane is LANE_CM wide, and narrows to nothing at the horizon."""
-    return CAMERA_F * LANE_CM / LANE_WIDTH_PX * (342 - HORIZON_Y) / max(y - HORIZON_Y, 1.0)
+    return CAMERA_F * LANE_CM / LANE_WIDTH_PX * (max(342 - HORIZON_Y, 1.0)) / max(y - HORIZON_Y, 1.0)
 
 
 class EndRuler:
@@ -1151,7 +1342,7 @@ class EndWatch:
     SETTLE_SEC = 0.4    # The line moving less than SETTLE_CM over this long means the car has stopped.
     SETTLE_CM = 0.3
     MAX_SEC = 3.0       # A stop not seen by then is reported as not seen.
-    HEADER = "t,step,target_cm,how,end_z,end_y,speed,cmd,steer,offset,heading,stop_z,slid_cm,stop_sec"
+    HEADER = "t,step,target_cm,how,end_z,end_y,speed,cmd,steer,offset,heading,stop_z,slid_cm,stop_sec,ref,ref_z"
 
     def __init__(self):
         self.rows, self.open, self.track = [], None, []
@@ -1160,13 +1351,14 @@ class EndWatch:
         z = floor_cm(y) if y is not None else ruler.z       # Without a reading this frame, what the ruler carried on with.
         how = "line" if y is not None else ("guess" if z is not None else "none")
         row = {"t": now, "step": idx + 1, "target_cm": step.get("cm"), "how": how, "end_z": z, "end_y": y, "speed": ruler.speed, "cmd": cmd, "steer": steer,
-               "offset": det[0] if det else None, "heading": det[1] if det else None, "stop_z": None, "slid_cm": None, "stop_sec": None}
+               "offset": det[0] if det else None, "heading": det[1] if det else None, "stop_z": None, "slid_cm": None, "stop_sec": None,
+               "ref": ruler.kind, "ref_z": ruler.z}     # What the action ended on, and where the ruler had it (for corner: the branch, past its leaving the view).
         self.rows.append(row)
         self.open = row if stops else None
         self.track = []
         fmt = lambda v, f=".1f": "-" if v is None else format(v, f)
-        print(f"\n[측정 {idx + 1}] 끝: 선까지 {fmt(z)}cm ({how}, 기준 {END_BASE_CM:g}cm에서 +{fmt(None if z is None else END_BASE_CM - z)}cm, 목표 {fmt(step.get('cm'), 'g')})"
-              f" 속도 {fmt(ruler.speed)}cm/s 명령 {cmd:.2f} 조향 {steer:+.1f} 위치 {fmt(row['offset'], '+.2f')} 방향 {fmt(row['heading'], '+.2f')}")
+        print(f"\n[measure {idx + 1}] end: line at {fmt(z)}cm ({how}, +{fmt(None if z is None else END_BASE_CM - z)}cm past the {END_BASE_CM:g}cm base, target {fmt(step.get('cm'), 'g')})"
+              f" speed {fmt(ruler.speed)}cm/s command {cmd:.2f} steer {steer:+.1f} offset {fmt(row['offset'], '+.2f')} heading {fmt(row['heading'], '+.2f')}")
 
     def watch(self, y, now):
         row = self.open
@@ -1180,11 +1372,11 @@ class EndWatch:
                 row["slid_cm"] = None if row["end_z"] is None else row["end_z"] - row["stop_z"]
                 row["stop_sec"] = self.track[0][0] - row["t"]
                 slid = "-" if row["slid_cm"] is None else f"{row['slid_cm']:.1f}"
-                print(f"\n[측정 {row['step']}] 멈춤: 선까지 {row['stop_z']:.1f}cm, 끝난 뒤 {slid}cm 밀림 ({row['stop_sec']:.2f}초)")
+                print(f"\n[measure {row['step']}] stopped: line at {row['stop_z']:.1f}cm, slid {slid}cm after the end ({row['stop_sec']:.2f}s)")
                 self.open = None
                 return
         if now - row["t"] >= self.MAX_SEC:
-            print(f"\n[측정 {row['step']}] 멈춤 위치를 못 읽음 (선이 화면을 벗어남)")
+            print(f"\n[measure {row['step']}] stop position not read (the line left the view)")
             self.open = None
 
     def save(self, path):
@@ -1217,7 +1409,12 @@ class Steering:
 
     def output(self, target, now, smooth=None):
         """Turn a target angle into the actual steering angle, smoothed and rate-limited. Every course action goes through this."""
-        dt = now - self.out_t if self.out_t is not None and now > self.out_t else 1 / 30
+        if self.out_t is None:
+            dt = 1 / 30
+        elif now > self.out_t:
+            dt = min(now - self.out_t, 0.1)    # A stall, or a second of holding the last angle while the lane is lost,
+        else:                                  # must not be spent as one snap when the next command arrives.
+            dt = 0.0
         self.out_t = now
         smooth = SMOOTH if smooth is None else smooth
         target = smooth * self.angle + (1 - smooth) * target
@@ -1236,9 +1433,9 @@ class CourseRunner:
     and stays inside min_sec to max_sec. speed applies only during that action.
     """
 
-    EVENT_NAMES = {"junction": "교차로", "crosswalk": "횡단보도", "lane": "새 차선",
-                   "gap": "차선 끊김", "end": "끝 (교차로선 또는 차선 끊김)", "crossed": "횡단보도 지나감", "green": "초록불", "obstacle": "장애물 감지", "clear": "장애물 없어짐",
-                   "lost": "차선 놓침", "aligned": "정렬", "enter": "Enter"}
+    EVENT_NAMES = {"junction": "junction", "crosswalk": "crosswalk", "lane": "new lane",
+                   "gap": "lane gap", "end": "end (junction line or lane gap)", "crossed": "crosswalk passed", "green": "green light", "obstacle": "obstacle", "clear": "obstacle cleared",
+                   "lost": "lane lost", "aligned": "aligned", "enter": "Enter"}
     STATE_EVENTS = ("lane", "green", "clear", "aligned", "crossed")   # Judged as the current state: using one does not require it to count again. An obstacle counts again only after it goes away and comes back.
     AT_EVENTS = ("junction", "crosswalk", "gap", "end")    # Events that can use at= (how far down the frame the line must come).
     # end: a junction line or a lane gap, whichever comes first (to_end). Its y is the nearer of the two.
@@ -1246,6 +1443,11 @@ class CourseRunner:
     def __init__(self, course, start=1):
         from course import _flat
         self.course = _flat(course)     # Expand even if groups (lists) are mixed in, so COURSE does not have to call _flat.
+        if isinstance(start, bool) or not isinstance(start, int) or start < 1 or start > max(len(self.course), 1):
+            raise ValueError(f"the start number must be 1 to {max(len(self.course), 1)} ({start})")
+        for n, step in enumerate(self.course, 1):      # cm= so large the line end would be out of view: it is held where it can still be read.
+            if JUNCTION_REF == "laneend" and step.get("until") == "junction" and step.get("cm") is not None and step["cm"] < LANEEND_MIN_CM + LANEEND_OFFSET_CM:
+                print(f"[warning] step {n} to_junction(cm={step['cm']:g}): a lane end nearer than {LANEEND_MIN_CM + LANEEND_OFFSET_CM:g}cm is out of view and would be guessed. It ends at {LANEEND_MIN_CM + LANEEND_OFFSET_CM:g}cm")
         self.idx = start - 1        # Index of the action running now (from 0).
         self.step_start = None
         self.done = False
@@ -1268,9 +1470,19 @@ class CourseRunner:
         self.turned = None      # Turn with deg=: px the view has swung in the turn direction (YawMeter). Driver fills it every frame.
         self.paused = False     # Standing still for the LEGO figure. Driver fills it every frame.
         self.ruler = EndRuler()     # cm=: where the end line is.
+        self.pace = EndRuler()      # cm=: the line across the lane, read only for the car's speed while the corner's branch is out of view.
+        self.corner_hits = 0        # cm=: frames in a row the corner's branch has been found (CORNER_FRAMES).
+        self.end_hits = 0           # cm=: frames in a row the lane's line end has been found (LANEEND_FRAMES).
+        self.corner_misses = 0      # cm=: frames in a row it has been missing since it was the ruler (CORNER_GONE_FRAMES).
+        self.gone_z = None          # cm=: where the ruler had it when it left the view. The action ends cm= past this.
+        self.gone_at = None         # cm=: where it was when it first went missing.
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
         self.run_start = None       # cm=: when the end line was reached.
         self.moving = True          # cm=: whether the motor is driving the car forward. Driver fills it every frame.
+        self.junc_latch = False     # until=junction: the cross line was seen low enough (JUNCTION_LATCH_FRAMES) to remember.
+        self.junc_seen_y = None     # Last y of that line. It has to have reached JUNCTION_LOST_Y before a loss counts.
+        self.junc_gone = 0          # Frames in a row it has been absent since, with the lane still visible.
+        self.junc_hold = 0          # Frames in a row the low cross line has been seen. A gap starts this over.
         self.entered = False        # next(): Enter was pressed during this action.
 
     def waiting_enter(self):
@@ -1294,6 +1506,7 @@ class CourseRunner:
 
     def begin(self, now):
         self.step_start = now
+        self.clear_junction_latch()
         self.entered = False    # next(): Enter counts only once this action is running.
         self.count = 0          # nth=: how many of this action's until events have passed so far.
         self.hits["lane"] = 0
@@ -1302,9 +1515,12 @@ class CourseRunner:
         self.red_hits, self.red_seen, self.red_box = 0, False, None
         self.red_boxes, self.local_light = [], None
         self.ruler, self.run_out, self.run_start = EndRuler(), False, None
+        self.pace, self.corner_hits, self.corner_misses, self.gone_z = EndRuler(), 0, 0, None
+        self.gone_at = None
+        self.end_hits = 0
         step = self.step()
         if step is None:
-            print(f"\n[코스 끝] 이제부터 차선만 따라감")
+            print("\n[course end] following the lane from here on")
             return
         if step["do"] in ("straight", "left", "right") and step["until"] == "lane":
             # Straight through a gap, or a turn: the lane visible at the start (before the gap, before the turn) must disappear once and be found again, so the action does not end immediately.
@@ -1318,28 +1534,28 @@ class CourseRunner:
             self.since[step["until"]] = None
             self.miss[step["until"]] = 0
         if step["sec"] is not None:
-            how = f"{step['sec']}초"
+            how = f"{step['sec']}s"
         else:
-            how = f"{self.EVENT_NAMES[step['until']]}까지" if step["until"] else ""
+            how = f"until {self.EVENT_NAMES[step['until']]}" if step["until"] else ""
             if step.get("at") is not None:
-                how += f" (화면 {step['at']} 지점)"
+                how += f" (at screen {step['at']})"
             if step.get("cm") is not None:
                 how += f" +{step['cm']:g}cm"
             if step.get("hold"):
-                how += f" {step['hold']}초 유지"
+                how += f" held {step['hold']}s"
             if step["min"]:
-                how += f" 최소 {step['min']}초"
+                how += f" at least {step['min']}s"
             if step.get("blind"):
-                how += f" 시작 {step['blind']:g}초 감지 안 함"
+                how += f" ignore first {step['blind']:g}s"
             if step["max"] is not None:
-                how += f" 최대 {step['max']}초"
+                how += f" at most {step['max']}s"
         if step["do"] in ("left", "right", "curve"):
-            angle = f" {step['angle']:+.0f}도"
+            angle = f" {step['angle']:+.0f} deg"
         elif step["do"] == "straight" and step["angle"] != 0:
-            angle = " 시작 각도 유지" if step["angle"] == "hold" else f" {step['angle']:+.0f}도"
+            angle = " hold start angle" if step["angle"] == "hold" else f" {step['angle']:+.0f} deg"
         else:
             angle = ""
-        speed = f" 속도 {step['speed']}" if step["speed"] is not None else ""
+        speed = f" speed {step['speed']}" if step["speed"] is not None else ""
         print(f"\n[{self.idx + 1}/{len(self.course)}] {step['do']}{angle} {how}{speed}")
 
     def shift_clock(self, dt):
@@ -1394,10 +1610,20 @@ class CourseRunner:
         self.turn_clear = self.turn_clear + 1 if turning and not junction else 0
         # While a corner horizontal line is still present, heading is judged strictly. Once it is gone, a slanted exit line is accepted.
         heading_limit = TURN_EXIT_HEADING if self.turn_clear >= TURN_EXIT_CLEAR else TURN_END_HEADING
-        seen = {"junction": junction and det is not None, "crosswalk": crosswalk,
+        # With the corner as the ruler, the line across the lane counts as soon as it is in view. It may lie 20 cm beyond the corner, and by the time
+        # it comes down to JUNCTION_Y the corner can be past its mark (run 20261109-185159). The corner then ends the action, as near as it should.
+        # Only once the branch is the ruler: without it the line is the ruler too, and must come down to JUNCTION_Y as before.
+        # The branch itself is enough: a + has no line across the lane at all, since the lane goes on beyond the road that crosses it.
+        early = step is not None and ((self.uses_corner(step) and self.ruler.kind == "corner")
+                                      or (self.uses_laneend(step) and self.ruler.kind == "laneend"))     # Every junction has a line end: a + has no line across.
+        # A cross line counts with the lane. Once this action has already seen it, a frame where the lane center
+        # drops (the right-line point gone, or only a far one) still counts. A line that never had a lane is not one.
+        junction_seen = ((junction or early) and det is not None) or (junction and self.hits["junction"] > 0)
+        seen = {"junction": junction_seen, "crosswalk": crosswalk,
                 # New lane: a line is visible just in front of the car and the lane roughly matches. No line just ahead, as when sitting over a gap, counts as gone.
                 # The lane beyond a gap may stay visible higher up, but straight(until="lane") ends only after the line just ahead disappears and comes back.
-                # A junction counts only while the lane is visible with it. A floor edge seen after the lane is lost is not a junction.
+                # A cross line already in the stop zone is the junction even if the right-line point (the red dot) is missing or only far, so the lane center drops.
+                # A + junction has no cross line: that one still needs the lane. A line with no lane at all is handled below.
                 # Or the car is already pointed along a lane but sits off to one side (TURN_END_*_WIDE): alignment fixes the offset,
                 # while turning on would swing past the exit (run 20261103-200649: heading 0.1, offset 0.5-0.6 for 0.4 s, turn ran to max).
                 "lane": (det is not None and ys.get("near", True)
@@ -1417,8 +1643,14 @@ class CourseRunner:
         if step is not None and step["until"] in self.AT_EVENTS and (step.get("at") is not None or step["until"] in ("gap", "end")):
             # gap / end with no at= end at JUNCTION_Y like junction and crosswalk, not on a gap seen anywhere in the frame.
             y = ys.get(step["until"])
-            seen[step["until"]] = (y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1     # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
-                                   and (step["until"] != "junction" or det is not None))    # As above: a junction counts only with the lane in view.
+            near_enough = y is not None and y >= (step.get("at") or JUNCTION_Y) * FRAME_H - 1     # -1 absorbs float error such as 0.55*360 = 198.00000000000003.
+            if step["until"] == "junction":
+                # at= must keep a + junction, which has no line across the lane. early is that lane end (or the corner's branch).
+                # A cross line that has reached at= counts even when the lane center drops after it was already seen.
+                seen["junction"] = (near_enough and det is not None) or (early and det is not None) or (
+                    near_enough and self.hits["junction"] > 0)
+            else:
+                seen[step["until"]] = near_enough
         until = step["until"] if step is not None else None
         # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
         # A line that flickers during that time does not end the action the moment the blind period finishes.
@@ -1438,24 +1670,127 @@ class CourseRunner:
             self.since[k] = (self.since[k] if self.since[k] is not None else now) if v else None
             if not v:
                 self.armed[k] = True
+            elif k == "junction" and until == "junction" and self.count == 0:
+                # The line in front is the one this action is driving to. It often stays in view the whole way,
+                # so waiting for it to vanish once meant it never counted and the car drove through it.
+                # nth= has already passed a line when count > 0: that line must still disappear before the next one counts.
+                self.armed[k] = True
+        self.note_junction(ys.get("junction"), det, blind)
+
+    def clear_junction_latch(self):
+        """Forget a junction line remembered because it reached the bottom of the frame."""
+        self.junc_latch, self.junc_seen_y, self.junc_gone, self.junc_hold = False, None, 0, 0
+
+    def note_junction(self, line_y, det, blind):
+        """Remember a cross line that has come down the frame, and count the frames it has since been gone.
+
+        Holding the line for JUNCTION_FRAMES still ends the action on its own. A line that then slips under the car
+        often misses that count, because one gap resets it. Seen low for JUNCTION_LATCH_FRAMES, then gone for
+        JUNCTION_GONE_FRAMES, is the same junction. The lane has to be visible: losing the lane is not the line leaving.
+        A line that disappears before JUNCTION_LOST_Y was a false line, so the memory is dropped. blind_sec remembers nothing.
+        A + junction has no cross line; its lane end does not come through here.
+        """
+        step = self.step()
+        if step is None or step["until"] != "junction":
+            return
+        if blind:
+            self.junc_hold = 0
+            self.junc_gone = 0
+            return
+        if det is None:
+            return
+        at = step.get("at")
+        mark = (JUNCTION_Y if at is None else at) * FRAME_H - 1
+        low = line_y is not None and line_y >= mark
+        if line_y is not None and self.junc_latch:
+            self.junc_seen_y = line_y       # Where it was last, including after it has climbed back up the frame.
+        if low and self.armed["junction"]:
+            self.junc_hold += 1
+            self.junc_gone = 0
+            if self.junc_hold >= JUNCTION_LATCH_FRAMES:
+                self.junc_latch = True
+                self.junc_seen_y = line_y
+            return
+        self.junc_hold = 0
+        if not self.junc_latch or line_y is not None:
+            self.junc_gone = 0
+            return
+        self.junc_gone += 1
+        if self.junc_gone >= JUNCTION_GONE_FRAMES and (self.junc_seen_y or 0) < JUNCTION_LOST_Y * FRAME_H - 1:
+            self.clear_junction_latch()
 
     def track_end(self, ys, now):
         """cm=: measure the end line every frame, before it is reached too, so the speed is known by the time it leaves the frame."""
         step = self.step()
         if step is None or step.get("cm") is None:
             return
-        hline, tip = ys.get("hline_y"), ys.get("tip_y")
+        hline, tip, corner, lane_end = ys.get("hline_y"), ys.get("tip_y"), ys.get("corner_y"), ys.get("end_y")
+        if self.uses_laneend(step):
+            self.end_hits = self.end_hits + 1 if lane_end is not None else 0
+            if self.ruler.kind == "laneend" or self.end_hits >= LANEEND_FRAMES:
+                self.ruler.feed("laneend", lane_end, now, locked=self.run_out, moving=self.moving)
+                return
+            # No line end yet: the line across the lane is measured as before, and stands in if no end is ever found.
+        if self.uses_corner(step):
+            if self.ruler.kind == "corner" and self.gone_z is None:
+                self.corner_misses = 0 if corner is not None else self.corner_misses + 1
+                if self.corner_misses == 1:
+                    self.gone_at = self.ruler.z      # Where it was last: the place it left the view, if it stays gone.
+                elif self.corner_misses >= CORNER_GONE_FRAMES:
+                    self.gone_z = self.gone_at
+            self.corner_hits = self.corner_hits + 1 if corner is not None else 0
+            if self.ruler.kind != "corner" and self.corner_hits < CORNER_FRAMES:
+                corner = None       # Not yet sure it is one.
+            self.pace.feed("line", hline, now, moving=self.moving)
+            # The branch out of view is carried on at the car's speed. Read it now off the line across the lane, which is still in view:
+            # the car slows on its way in, and the speed from when the branch was last seen would carry it on too far (run 20261109-185159).
+            if corner is None and self.pace.read_t is not None and now - self.pace.read_t <= END_FRESH_SEC and self.pace.speed is not None:
+                self.ruler.speed = self.pace.speed
         if self.run_out:
-            self.ruler.feed(self.ruler.kind, hline if self.ruler.kind == "line" else tip, now, locked=True, moving=self.moving)
+            self.ruler.feed(self.ruler.kind, {"line": hline, "tip": tip, "corner": corner}.get(self.ruler.kind), now, locked=True, moving=self.moving)
+        elif self.uses_corner(step) and (corner is not None or self.ruler.kind == "corner"):
+            self.ruler.feed("corner", corner, now, moving=self.moving)      # Once the branch is seen it stays the ruler, carried on while out of view.
         elif hline is not None:
             self.ruler.feed("line", hline, now)
         elif step["until"] == "end" and ys.get("gap") is not None and tip is not None:
             self.ruler.feed("tip", tip, now)
 
+    def corner_expect(self):
+        """Where the branch measured so far should be on screen now, for following it to the frame side. None before it is found."""
+        ruler = self.ruler
+        if ruler.kind != "corner" or ruler.z is None:
+            return None
+        return HORIZON_Y + CAMERA_F * LANE_CM / LANE_WIDTH_PX * (max(342 - HORIZON_Y, 1.0)) / max(ruler.z, 1.0)
+
+    @staticmethod
+    def uses_laneend(step):
+        """to_junction(cm=) measured to where the lane's line ends (JUNCTION_REF)."""
+        return JUNCTION_REF == "laneend" and step["until"] == "junction" and step.get("cm") is not None
+
+    @staticmethod
+    def laneend_target(step):
+        """Distance of the line end where the action ends: in view, so it is read, not guessed."""
+        return max(step["cm"], LANEEND_MIN_CM + LANEEND_OFFSET_CM)     # Both as shown on screen.
+
+    @staticmethod
+    def uses_corner(step):
+        """to_junction(cm=) measured from the inside corner's branch (JUNCTION_REF)."""
+        return JUNCTION_REF == "corner" and step["until"] == "junction" and step.get("cm") is not None
+
     def start_run_out(self, step, ys, now):
         """cm=: the end line was reached. Make sure the ruler is on that line, not on what it was reading before."""
         self.run_out, self.run_start = True, now
         ruler = self.ruler
+        if self.uses_laneend(step) and ruler.kind == "laneend":
+            return      # Already on the line end: track_end fed it this frame.
+        if self.uses_corner(step):
+            if ruler.kind == "corner" and ruler.z is not None and not ruler.jump:
+                return      # Already on the branch: track_end fed it this frame.
+            if ys.get("corner_y") is not None and self.corner_hits >= CORNER_FRAMES:
+                ruler.reset("corner")
+                ruler.feed("corner", ys["corner_y"], now, locked=True)
+                return
+            # No branch in view: the line across the lane stands in, from its own base.
         kind = "line" if step["until"] == "junction" or ys.get("junction") is not None else "tip"
         y = ys.get("hline_y") if kind == "line" else ys.get("tip_y")
         if kind != ruler.kind or ruler.jump or ruler.read_t is None or now - ruler.read_t > END_FRESH_SEC:
@@ -1472,6 +1807,12 @@ class CourseRunner:
         if self.ruler.z is None:
             return True
         speed = self.ruler.speed if self.moving and self.ruler.speed else 0.0
+        if self.ruler.kind == "laneend":
+            return self.ruler.z + LANEEND_OFFSET_CM - speed * END_LEAD_SEC <= self.laneend_target(step)
+        if self.ruler.kind == "corner":     # The branch left the view, and the car has gone cm= further.
+            return self.gone_z is not None and self.ruler.z - speed * END_LEAD_SEC <= self.gone_z - step["cm"]
+        if self.uses_laneend(step):     # No line end was found: cm= is a line-end distance, so the line across ends it at its own base.
+            return self.ruler.z - speed * END_LEAD_SEC <= END_BASE_CM
         return self.ruler.z - speed * END_LEAD_SEC <= END_BASE_CM - step["cm"]
 
     def happened(self, event, now=0.0, hold=0.0):
@@ -1482,6 +1823,14 @@ class CourseRunner:
             need = {"lane": TURN_CLEAR_FRAMES, "aligned": ALIGN_FRAMES}.get(event, JUNCTION_FRAMES)
         held = hold <= 0 or (self.since[event] is not None and now - self.since[event] >= hold)
         return self.armed[event] and self.hits[event] >= need and held
+
+    def junction_lost(self):
+        """The cross line was seen at the bottom of the frame, then left it. Same end as holding it for JUNCTION_FRAMES."""
+        step = self.step()
+        if (step is None or step["until"] != "junction" or not self.armed["junction"]
+                or not self.junc_latch or self.junc_gone < JUNCTION_GONE_FRAMES):
+            return False
+        return (self.junc_seen_y or 0) >= JUNCTION_LOST_Y * FRAME_H - 1
 
     def update(self, junction, now, det=None, crosswalk=False, ys=None, light=None, lamps=None, obstacle=None):
         if self.step_start is None:
@@ -1495,51 +1844,66 @@ class CourseRunner:
             elapsed = now - self.step_start
             if step["until"] == "enter":
                 reason = "Enter" if self.entered else None
-            elif step["sec"] is not None:
-                reason = "시간" if elapsed >= step["sec"] else None
+            elif step["sec"] is not None and step["until"] is None:
+                reason = "time" if elapsed >= step["sec"] else None
+            elif step["sec"] is not None and elapsed >= step["sec"]:
+                reason = "time"     # wait() keeps both, and ends on whichever comes first.
             elif step["max"] is not None and elapsed >= step["max"] and not (self.needs_light() and self.red_seen):
                 # wait_green: max_sec is for a red light that was never found. Once red is seen, the car waits for green, however long.
-                reason = "최대 시간"
+                reason = "max time"
             elif (step.get("deg") and self.turned is not None and elapsed >= step["min"]
                   and self.turned >= step["deg"] / 90 * TURN_YAW_PX):
-                reason = f"회전각 {step['deg']}도"
-            elif step["max"] is None and step["until"] is not None and step["do"] != "wait" and elapsed >= STEP_MAX_SEC:
-                reason = f"안전 시간 {STEP_MAX_SEC}초 (조건이 안 와서 넘어감, max_sec로 조절)"
+                reason = f"turned {step['deg']} deg"
             elif self.run_out:
+                # Checked before the safety cap. The last cm= has its own limit, and the safety cap was already
+                # spent getting to the line. Cutting it here stops short of the measured spot.
                 if self.end_reached(step):
                     reason = self.end_reason(step)
-                elif now - self.run_start >= END_MAX_SEC:
-                    reason = f"{self.EVENT_NAMES[step['until']]} +{step['cm']:g}cm 못 재고 {END_MAX_SEC:g}초 지남"
                 else:
-                    reason = None
+                    limit = CORNER_MAX_SEC if self.ruler.kind in ("corner", "laneend") else END_MAX_SEC
+                    reason = (f"{self.EVENT_NAMES[step['until']]} +{step['cm']:g}cm not measured, {limit:g}s passed"
+                              if now - self.run_start >= limit else None)
+            elif step["max"] is None and step["until"] is not None and step["do"] != "wait" and elapsed >= STEP_MAX_SEC:
+                reason = f"safety time {STEP_MAX_SEC}s (the condition never came, set max_sec to change)"
             elif (step["until"] is not None and elapsed >= step["min"]
-                  and self.happened(step["until"], now, step.get("hold", 0.0))):
+                  and (self.happened(step["until"], now, step.get("hold", 0.0)) or self.junction_lost())
+                  and not (self.uses_corner(step) and self.ruler.kind != "corner" and 0 < self.corner_hits < CORNER_FRAMES)
+                           and not (self.uses_laneend(step) and self.ruler.kind != "laneend" and 0 < self.end_hits < LANEEND_FRAMES)):    # A branch being confirmed: wait the few frames for it.
+                lost = self.junction_lost()     # Cleared below, so read it first. A held line and a lost line never both match one frame.
                 reason = self.EVENT_NAMES[step["until"]]
+                self.clear_junction_latch()     # This line is used up. The next one has to be seen on its own.
                 if step["until"] not in self.STATE_EVENTS:
                     self.armed[step["until"]] = False   # Do not count the same line again in the next action.
                 self.count += 1
                 if self.count < (step.get("nth") or 1):
                     # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
-                    print(f"\n[{self.idx + 1}] {reason} {self.count}번째 지나감 ({step['nth']}번째에서 끝)")
+                    print(f"\n[{self.idx + 1}] {reason} #{self.count} passed (ends at #{step['nth']})")
                     self.ruler.reset(None)      # The next line is a new one.
                     reason = None
                 elif step.get("cm") is not None:
                     self.start_run_out(step, ys or {}, now)
                     reason = self.end_reason(step) if self.end_reached(step) else None
+                elif lost:
+                    reason = f"{reason} (lost)"
             else:
                 reason = None
             if reason is None:
                 return
-            print(f"\n[{self.idx + 1} 끝] {reason} ({elapsed:.1f}초)")
+            print(f"\n[{self.idx + 1} done] {reason} ({elapsed:.1f}s)")
             self.idx += 1
             self.begin(now)
 
     def end_reason(self, step):
         z = self.ruler.z
         if z is None:
-            return f"{self.EVENT_NAMES[step['until']]} (선 위치를 못 재서 +{step['cm']:g}cm 없이 끝)"
-        how = "속도로 추정" if self.ruler.guess else "선으로 측정"
-        return f"{self.EVENT_NAMES[step['until']]} +{END_BASE_CM - z:.1f}cm ({how}, 목표 {step['cm']:g}cm)"
+            return f"{self.EVENT_NAMES[step['until']]} (line not measured, ended without +{step['cm']:g}cm)"
+        how = "guessed from speed" if self.ruler.guess else "measured on the line"
+        if self.ruler.kind == "laneend":
+            return f"{self.EVENT_NAMES[step['until']]} lane end at {z + LANEEND_OFFSET_CM:.1f}cm ({how}, target {self.laneend_target(step):g}cm)"
+        if self.ruler.kind == "corner" and self.gone_z is not None:
+            return f"{self.EVENT_NAMES[step['until']]} +{self.gone_z - z:.1f}cm after the corner branch left the view at {self.gone_z:.1f}cm (target {step['cm']:g}cm)"
+        ref = ", no branch seen, line across used" if self.uses_corner(step) else ", no lane end seen, line across used" if self.uses_laneend(step) else ""
+        return f"{self.EVENT_NAMES[step['until']]} +{END_BASE_CM - z:.1f}cm ({how}{ref}, target {step['cm']:g}cm)"
 
     def lane_side(self, now):
         step = self.step()
@@ -1708,19 +2072,19 @@ img{display:block;width:100%;height:100%;object-fit:contain}
 #keys label{color:#fff;font-weight:600;font-size:13px} #kstate{color:var(--ok);font-size:12px} #keys small{color:var(--dim);flex:1 1 200px}
 @media (max-width:600px){header small,kbd{display:none} .tools{width:100%} button{flex:1} #keys small{flex-basis:100%}}
 </style></head><body>
-<header><b>__TITLE__</b><small>실시간 인식 화면</small>
-<span id="st"><i id="dot"></i><span id="stt">연결 중…</span></span>
+<header><b>__TITLE__</b><small>live detection view</small>
+<span id="st"><i id="dot"></i><span id="stt">connecting…</span></span>
 <span class="tools">
- <button id="bPause" title="화면 멈추기 / 다시 보기">일시정지<kbd>Space</kbd></button>
- <button id="bSave" title="지금 화면을 사진으로 저장">사진 저장<kbd>S</kbd></button>
- <button id="bFull" title="전체 화면 (더블클릭도 됨)">전체 화면<kbd>F</kbd></button>
+ <button id="bPause" title="pause / resume the view">Pause<kbd>Space</kbd></button>
+ <button id="bSave" title="save the view as a photo">Save photo<kbd>S</kbd></button>
+ <button id="bFull" title="full screen (double click too)">Full screen<kbd>F</kbd></button>
 </span></header>
-<div class="wrap" id="wrap"><img id="v" alt="" draggable="false"><div id="drag"></div><div id="paused">일시정지</div>
-<div id="msg">연결이 끊겼어요 · 다시 연결하는 중…</div><div id="toast"></div></div>
-<div id="keys"><label id="klabel">터미널 입력</label>
+<div class="wrap" id="wrap"><img id="v" alt="" draggable="false"><div id="drag"></div><div id="paused">Paused</div>
+<div id="msg">Disconnected · reconnecting…</div><div id="toast"></div></div>
+<div id="keys"><label id="klabel">Terminal keys</label>
 <button id="bEnter">Enter</button><button id="bStop">Ctrl+C</button><span id="kstate"></span><small>__KEYS_HELP__</small></div>
 <script>
-// 최신 화면을 한 장씩 받아옴. 실패하면 잠깐 쉬고 계속 다시 시도 (프로그램이 다시 켜지면 자동으로 이어짐)
+// Fetch the latest frame one at a time. On failure wait a moment and keep retrying (resumes by itself when the program restarts).
 const $ = id => document.getElementById(id);
 const img = $("v"), msg = $("msg"), dot = $("dot"), stt = $("stt"), wrap = $("wrap");
 let seq = -1, fails = 0, shown = [], url = null, paused = false, pausedAt = 0, lastBlob = null;
@@ -1728,20 +2092,20 @@ function status(ok, text) { dot.style.background = ok ? "var(--ok)" : "var(--bad
 function toast(t) { const e = $("toast"); e.textContent = t; e.style.opacity = 1; clearTimeout(e.t); e.t = setTimeout(() => e.style.opacity = 0, 1500); }
 function setPaused(p) {
   paused = p; pausedAt = Date.now(); $("paused").style.display = p ? "block" : "none";
-  $("bPause").classList.toggle("on", p); $("bPause").firstChild.textContent = p ? "다시 보기" : "일시정지";
+  $("bPause").classList.toggle("on", p); $("bPause").firstChild.textContent = p ? "Resume" : "Pause";
 }
 function save() {
-  if (!lastBlob) return toast("아직 받은 화면이 없어요");
+  if (!lastBlob) return toast("No frame received yet");
   const a = document.createElement("a"), d = new Date(), z = n => String(n).padStart(2, "0");
   a.href = URL.createObjectURL(lastBlob);
   a.download = `aicar-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.jpg`;
-  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast("사진 저장: " + a.download);
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast("Photo saved: " + a.download);
 }
 function full() { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen?.(); }
 $("bPause").onclick = () => setPaused(!paused); $("bSave").onclick = save; $("bFull").onclick = full; wrap.ondblclick = full;
-// 키를 읽는 프로그램이면 이 창에서 누른 키가 클릭 없이 바로 프로그램으로 감. 아니면 Ctrl+C만 가고 나머지는 화면 단축키.
-// 물리 키(code)로 읽어서 한글 입력 상태에서도 w는 w로 감.
-const KEY = "__KEY__", PROGRAM = "__PROGRAM__", CONFIRM = __CONFIRM__;      // KEY가 비면 보기 전용.
+// For a program that reads keys, keys pressed in this window go straight to it with no click. Otherwise only Ctrl+C goes, and the rest are view shortcuts.
+// Read by physical key (code), so w is w even with a Korean input method on.
+const KEY = "__KEY__", PROGRAM = "__PROGRAM__", CONFIRM = __CONFIRM__;      // An empty KEY is view only.
 const KEYS_TO_PROGRAM = __KEYS_TO_PROGRAM__ && !!KEY;
 const KEY_CODES = {Minus: ["-", "_"], Equal: ["=", "+"]};
 let keyQueue = Promise.resolve(), armed = null, armedAt = 0;
@@ -1752,25 +2116,25 @@ function postKeys(text, ms) {
 function sendKeys(text) {
   if (!text) return;
   keyQueue = keyQueue.then(() => postKeys(text, 1500)).then(r => {
-    if (r.status === 409) { location.reload(); return; }      // 그 사이 다른 프로그램으로 바뀜. 그 프로그램에 키를 보내면 안 됨.
+    if (r.status === 409) { location.reload(); return; }      // Another program started meanwhile: keys must not go to it.
     if (!r.ok) throw new Error(r.status);
-  }).catch(() => toast("키를 보내지 못했어요 · 프로그램이 꺼졌을 수 있어요"));
+  }).catch(() => toast("Could not send the key · the program may have stopped"));
 }
-async function sendStop() {     // 앞의 키가 멈춰 있어도 기다리지 않고 바로, 될 때까지 몇 번 보냄.
+async function sendStop() {     // Sent at once, without waiting for an earlier key, a few times until it gets through.
   for (let i = 0; i < 5; i++) {
     try {
-      if ((await postKeys("\\x03", 1000)).ok) { toast("Ctrl+C를 보냈어요"); return; }
+      if ((await postKeys("\\x03", 1000)).ok) { toast("Ctrl+C sent"); return; }
     } catch (e) {}
     await new Promise(ok => setTimeout(ok, 200));
   }
-  toast("Ctrl+C를 보내지 못했어요 · 맥에서 aicar stop");
+  toast("Could not send Ctrl+C · run aicar stop on the Mac");
 }
-function pressKey(text, repeat) {   // 저장·종료처럼 되돌릴 수 없는 키는 2초 안에 한 번 더 눌러야 함.
+function pressKey(text, repeat) {   // Keys that cannot be undone, such as save and quit, must be pressed again within 2 s.
   if (!CONFIRM.includes(text.toLowerCase())) { armed = null; sendKeys(text); return; }
   if (repeat) return;
   if (armed === text && Date.now() - armedAt < 2000) { armed = null; sendKeys(text); return; }
   armed = text; armedAt = Date.now();
-  toast((text === "\\n" ? "Enter" : text) + " 한 번 더 누르면 실행합니다");
+  toast((text === "\\n" ? "Enter" : text) + " again to confirm");
 }
 function keyText(e) {
   if (e.code === "Enter") return "\\n";
@@ -1790,7 +2154,7 @@ addEventListener("keydown", e => {
   }
   if (KEYS_TO_PROGRAM) {
     const text = keyText(e);
-    if (text) { e.preventDefault(); pressKey(text, e.repeat); }     // 방금 누른 버튼이 Space나 Enter로 다시 눌리지 않게도 막음.
+    if (text) { e.preventDefault(); pressKey(text, e.repeat); }     // Also keeps the button just clicked from being pressed again by Space or Enter.
   } else if (e.code === "Space") { e.preventDefault(); if (!e.repeat) setPaused(!paused); }
   else if (e.repeat) return;
   else if (e.code === "KeyS") save();
@@ -1799,24 +2163,24 @@ addEventListener("keydown", e => {
 function showFocus() {
   if (!KEY) return;
   const on = document.hasFocus();
-  $("kstate").textContent = on ? "키 받는 중" : "창을 한 번 누르면 키를 받습니다"; $("kstate").style.color = on ? "var(--ok)" : "var(--warn)";
+  $("kstate").textContent = on ? "taking keys" : "click the window once to send keys"; $("kstate").style.color = on ? "var(--ok)" : "var(--warn)";
 }
 addEventListener("focus", showFocus); addEventListener("blur", showFocus); showFocus();
 if (KEYS_TO_PROGRAM) document.querySelectorAll("kbd").forEach(k => k.remove());
 if (!KEYS_TO_PROGRAM) $("bEnter").style.display = "none";
 if (!KEY) {
   $("bStop").style.display = "none";
-  $("klabel").textContent = "보기 전용"; $("kstate").textContent = "aicar가 연 주소에서만 키를 보낼 수 있습니다"; $("kstate").style.color = "var(--dim)";
+  $("klabel").textContent = "View only"; $("kstate").textContent = "keys can be sent only from the address aicar opened"; $("kstate").style.color = "var(--dim)";
 }
 $("bEnter").onclick = () => pressKey("\\n", false); $("bStop").onclick = sendStop;
-// 왼쪽 카메라 화면에서 드래그한 네모를 프로그램으로. 위치는 카메라 화면에 대한 비율(0~1).
+// A box dragged on the left camera view goes to the program, as fractions (0-1) of the camera view.
 const DRAG = __DRAG__;
 if (DRAG && KEY) {
   const mark = $("drag");
   let from = null, area = null;
   const clip = v => Math.min(Math.max(v, 0), 1);
   const spot = e => [(e.clientX - area.x) / area.w, (e.clientY - area.y) / area.h];
-  function picture() {      // 사진은 비율을 유지해 가운데 놓이므로 img 칸보다 작을 수 있음.
+  function picture() {      // The picture keeps its aspect and is centered, so it can be smaller than the img box.
     const r = img.getBoundingClientRect(), s = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
     const w = img.naturalWidth * s, h = img.naturalHeight * s;
     return {x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w: w * DRAG, h};
@@ -1831,7 +2195,7 @@ if (DRAG && KEY) {
     area = picture();
     const [x, y] = spot(e);
     if (x < 0 || x > 1 || y < 0 || y > 1) return;
-    if (paused) return toast("일시정지 중에는 지정할 수 없어요");
+    if (paused) return toast("Cannot mark while paused");
     e.preventDefault(); from = [x, y]; wrap.setPointerCapture(e.pointerId);
   });
   wrap.addEventListener("pointermove", e => {
@@ -1845,15 +2209,15 @@ if (DRAG && KEY) {
     if (!from) return;
     const [x0, y0, x1, y1] = square(e);
     from = null; mark.style.display = "none";
-    if (x1 - x0 < 0.015 || y1 - y0 < 0.02) return;      // 드래그가 아니라 클릭.
+    if (x1 - x0 < 0.015 || y1 - y0 < 0.02) return;      // A click, not a drag.
     fetch("/box", {method: "POST", body: [x0, y0, x1, y1].map(v => v.toFixed(4)).join(","), signal: AbortSignal.timeout(1500),
                    headers: {"X-AICAR-Key": KEY, "X-AICAR-Program": PROGRAM}}).then(r => {
       if (r.status === 409) { location.reload(); return; }
       if (!r.ok) throw new Error(r.status);
-      toast("지정했어요 · 이 네모로 찍습니다");
-    }).catch(() => toast("보내지 못했어요 · 프로그램이 꺼졌을 수 있어요"));
+      toast("Marked · views are taken in this box");
+    }).catch(() => toast("Could not send · the program may have stopped"));
   });
-  wrap.ondblclick = null;       // 드래그 끝이 전체 화면으로 바뀌지 않게. 전체 화면은 버튼으로.
+  wrap.ondblclick = null;       // So the end of a drag does not go full screen. Full screen is on the button.
 }
 async function loop() {
   for (;;) {
@@ -1862,26 +2226,26 @@ async function loop() {
       const r = await fetch("/frame.jpg?after=" + seq, {cache: "no-store", signal: ctl.signal});
       clearTimeout(t);
       const program = r.headers.get("X-AICAR-Program");
-      if (program && program !== PROGRAM) { location.reload(); return; }     // 다른 프로그램이 켜짐. 그 프로그램의 키와 안내로 다시 열기.
-      if (r.status === 204) {     // 1초 동안 새 화면 없음 (프로그램은 켜져 있음)
-        fails = 0; msg.style.display = "none"; status(true, "연결됨 · 새 화면 없음"); continue;
+      if (program && program !== PROGRAM) { location.reload(); return; }     // Another program started: reopen with its keys and help.
+      if (r.status === 204) {     // No new frame for 1 s (the program is running)
+        fails = 0; msg.style.display = "none"; status(true, "connected · no new frame"); continue;
       }
       if (!r.ok) throw new Error(r.status);
       seq = +r.headers.get("X-Seq");
       const blob = await r.blob();
       fails = 0; msg.style.display = "none";
       const now = performance.now(); shown.push(now); shown = shown.filter(x => now - x < 2000);
-      if (paused) {               // 멈춘 동안은 화면만 그대로 두고 연결은 유지
-        status(true, "일시정지 · " + Math.round((Date.now() - pausedAt) / 1000) + "초 전 화면");
+      if (paused) {               // While paused the view stays as it is, and the connection is kept
+        status(true, "paused · frame from " + Math.round((Date.now() - pausedAt) / 1000) + " s ago");
         continue;
       }
       lastBlob = blob;
       const u = URL.createObjectURL(blob);
       img.src = u; if (url) URL.revokeObjectURL(url); url = u;
-      status(true, "연결됨 · " + (shown.length / 2).toFixed(0) + " fps");
+      status(true, "connected · " + (shown.length / 2).toFixed(0) + " fps");
     } catch (e) {
       clearTimeout(t); fails++;
-      if (fails >= 2) { msg.style.display = "flex"; status(false, "끊김 · 다시 연결 중"); }
+      if (fails >= 2) { msg.style.display = "flex"; status(false, "disconnected · reconnecting"); }
       await new Promise(ok => setTimeout(ok, Math.min(300 * fails, 2000)));
     }
   }
@@ -1988,7 +2352,7 @@ loop();
             try:
                 server = make_server("0.0.0.0", port, app, threaded=True)
             except (OSError, SystemExit) as e:   # Otherwise the page and its keys would still reach whichever program holds the port.
-                raise SystemExit(f"포트 {port}을 다른 프로그램이 쓰고 있습니다. 먼저 aicar stop ({e})")
+                raise SystemExit(f"port {port} is in use by another program. Run aicar stop first ({e})")
             threading.Thread(target=server.serve_forever, daemon=True).start()
 
     @property
@@ -2048,7 +2412,7 @@ class Recorder:
         self.queue = queue.Queue(maxsize=300)   # If saving falls behind (about 5 seconds), the loop waits briefly. Frames are not dropped.
         self.writer = threading.Thread(target=self._save_frames, daemon=True)
         self.writer.start()
-        print(f"녹화: {self.dir}")
+        print(f"Recording: {self.dir}")
 
     def _save_frames(self):
         while (item := self.queue.get()) is not None:
@@ -2139,7 +2503,7 @@ class Driver:
         if red["tries"] < RED_BACK_TRIES and now - red["look"] >= RED_LOOK_SEC:
             red["tries"] += 1
             red["back"], red["back_t"] = self.retrace_plan(RED_BACK_SEC), now
-            print(f"\n[신호등] 빨간불을 못 찾음 → {RED_BACK_SEC:g}초 후진 ({red['tries']}/{RED_BACK_TRIES})")
+            print(f"\n[light] red not found -> back up {RED_BACK_SEC:g}s ({red['tries']}/{RED_BACK_TRIES})")
             return red["back"][0][1]
         return None
 
@@ -2155,7 +2519,7 @@ class Driver:
             if found or elapsed >= back["len"] or course.idx != back["idx"] or course.stopped(now) or self.edge:
                 used = sum(1 for t_end, _ in back["plan"] if t_end <= elapsed) if not found else back["used_at"]
                 del self.history[len(self.history) - used:]   # That stretch is behind the car now.
-                print(f"\n[후진 끝] {'차선 다시 찾음' if found else '못 찾음'} ({elapsed:.1f}초)")
+                print(f"\n[back-up done] {'lane found again' if found else 'not found'} ({elapsed:.1f}s)")
                 self.back = None
                 return steer
             back["used_at"] = sum(1 for t_end, _ in back["plan"] if t_end <= elapsed)
@@ -2168,7 +2532,7 @@ class Driver:
         self.back = {"start": now, "plan": plan, "len": min(plan[-1][0], LOST_BACK_SEC), "used_at": 0, "idx": course.idx}
         self.back_lost = self.lost_since
         self.back_tries[course.idx] = self.back_tries.get(course.idx, 0) + 1
-        print(f"\n[후진] 차선 놓침 → 왔던 길로 {self.back['len']:.1f}초 후진 ({self.back_tries[course.idx]}/{LOST_BACK_TRIES})")
+        print(f"\n[back-up] lane lost -> backing up the way it came for {self.back['len']:.1f}s ({self.back_tries[course.idx]}/{LOST_BACK_TRIES})")
         return self.steering.output(plan[0][1], now, 0.0)
 
     def stand_for_person(self, now):
@@ -2196,7 +2560,7 @@ class Driver:
         slow = course.opt("slow")
         if slow is None or step["until"] not in CourseRunner.AT_EVENTS or not course.final_approach():
             return base
-        slow = min(max(slow, MIN_SPEED), base)      # Do not go below the speed that keeps the motor turning, nor speed up to get there.
+        slow = min(max(slow, MIN_SPEED, APPROACH_MIN), base)      # Do not go below the speed that keeps the motor turning, nor speed up to get there.
         if course.run_out:      # cm=: stay slow for the last distance, even once the line has gone from view.
             return slow
         level, seen_t, idx = self.approach
@@ -2425,9 +2789,19 @@ class Driver:
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
                        "near": detect.near_line,
-                       **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y} if step is not None and step.get("cm") is not None else {})},
+                       **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y,
+                           "corner_y": detect.find_corner(course.corner_expect()) if CourseRunner.uses_corner(step) else None,
+                           "end_y": detect.lane_end() if CourseRunner.uses_laneend(step) else None} if step is not None and step.get("cm") is not None else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
+        if dbg is not None and detect.end_y is not None:
+            ey = int(detect.end_y)
+            cv2.line(dbg, (0, ey), (FRAME_W - 1, ey), C_JUNC, 1, cv2.LINE_AA)
+            chip(dbg, f"LANE END {floor_cm(detect.end_y) + LANEEND_OFFSET_CM:.1f}cm", 10 if detect.end_side == "left" else FRAME_W - 190, ey - 20, C_JUNC, 0.4)
+        if dbg is not None and detect.corner_y is not None:
+            cy = int(detect.corner_y)
+            cv2.line(dbg, (detect.corner_cols[0], cy), (detect.corner_cols[1], cy), C_JUNC, 3, cv2.LINE_AA)
+            chip(dbg, f"CORNER {floor_cm(detect.corner_y):.1f}cm", max(min(detect.corner_cols) - 10, 0), cy - 20, C_JUNC, 0.4)
         watching = course.idx != idx_before and step is not None and step["until"] in ("junction", "end")
         if watching or self.ends.open is not None:
             line_y = detect.hline_edge()
@@ -2450,7 +2824,10 @@ class Driver:
             # Add shift so that state reads as zero.
             det = (det[0] + course.opt("shift", 0.0) * LANE_PX_PER_CM / (FRAME_W / 2), det[1])
         # Crosswalk just in front of the car: the stripes shake lane detection, so hold the current steering briefly and drive through.
-        self.cw_since = (self.cw_since or now) if detect.crosswalk and not detect.stripes else None
+        if detect.crosswalk and not detect.stripes:
+            self.cw_since = now if self.cw_since is None else self.cw_since    # 0.0 is a real start time, not "unset".
+        else:
+            self.cw_since = None
         if self.cw_since is not None and now - self.cw_since < CROSSWALK_HOLD_MAX:
             lane = steering.angle
         elif det is not None:
@@ -2477,25 +2854,29 @@ class Driver:
         else:
             lane = None
         target = course.target(lane, now, steering.angle)
-        if target is not None and course.stopped(now):
-            target = steering.angle     # Standing still: keep the wheels where they are, so the car does not set off at a full-lock angle.
-        steer = None
+        # Mat-edge stop is skipped while the lane is visible or during a turn, so a false hit does not stop the car.
+        self.edge = detect.edge and det is None and not course.turning(now)
+        red_angle = self.search_red(now, hold)
         if target is None:      # Lane lost during follow: hold the previous steering, up to LOST_HOLD seconds.
             self.lost_since = self.lost_since if self.lost_since is not None else now
         else:
             self.lost_since = None
+        # One output() per frame. Calling it again in the same instant used to spend a phantom 1/30s of
+        # steering rate, so the red-light reverse turned the wheels at fps/30 times STEER_RATE.
+        if red_angle is not None:
+            target, smooth = red_angle, 0.0
+        elif target is not None and course.stopped(now):
+            target = steering.angle     # Standing still: keep the wheels where they are, so the car does not set off at a full-lock angle.
+        steer = None
+        if target is not None:
             limit = course.opt("steer", AUTO_STEER_MAX)
             steer = steering.output(float(np.clip(target, -limit, limit)), now, smooth)
         lost_for = now - self.lost_since if self.lost_since is not None else 0.0
         # cm=: over the end line the lane lines may run out. That is expected, so the car holds its steering and does not back up.
         lost_long = self.lost_since is not None and lost_for > LOST_HOLD and not course.run_out
-        # Mat-edge stop is skipped while the lane is visible or during a turn, so a false hit does not stop the car.
-        self.edge = detect.edge and det is None and not course.turning(now)
         steer = self.back_up(now, lost_long, steer)
         backing = self.back is not None
-        red_angle = self.search_red(now, hold)
         if red_angle is not None:
-            steer = steering.output(red_angle, now, 0.0)
             speed = -LOST_BACK_SPEED
         elif course.stopped(now) or self.edge or hold:    # hold here: a stop action just ended with the figure still there.
             speed = 0.0
@@ -2554,19 +2935,19 @@ def open_camera(locked=True):
 def load_person(path=PERSON_FILE):
     """What finds the LEGO figure: the one registered on the day (aicar person), and any other if PERSON_ANY. None turns the check off, with a warning if that was not asked for."""
     if not PERSON_ON:
-        print("레고 사람 인식 꺼짐 (course.py PERSON_ON)")
+        print("LEGO figure detection off (course.py PERSON_ON)")
         return None
     detector = PersonDetector.load(HORIZON_Y, path)
     every = AnyFigure.load(HORIZON_Y, detector) if PERSON_ANY else None
     if every:
-        print(f"레고 사람 인식 켜짐 (등록 안 한 레고도 찾음, 등록 시점 {len(every.views)}개)")
+        print(f"LEGO figure detection on (unregistered figures too, {len(every.views)} registered views)")
         return every
     if detector and detector.photo_sigs is None:
-        print("[주의] 등록 사진이 없어 사진 비교를 못 합니다. 다시 등록하면 켜집니다: aicar person")
+        print("[warning] No registration photos, so no photo comparison. Register again to turn it on: aicar person")
     if detector and detector.embeds is None:
-        print("[주의] 등록된 레고에 모습 정보가 없어 색과 윤곽만 봅니다. 다시 등록하면 켜집니다: aicar person")
-    print(f"레고 사람 인식 켜짐 (시점 {len(detector.views)}개)" if detector
-          else "[경고] 등록된 레고 사람이 없어 사람을 보고 멈추지 않습니다. 등록: aicar person")
+        print("[warning] The registered figure has no look data, so only color and outline are used. Register again to turn it on: aicar person")
+    print(f"LEGO figure detection on ({len(detector.views)} views)" if detector
+          else "[warning] No LEGO figure registered, so the car will not stop for one. Register: aicar person")
     return detector
 
 
@@ -2578,19 +2959,19 @@ def main():
     from car import Car
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--drive", action="store_true", help="모터 구동 (없으면 조향만)")
+    ap.add_argument("--drive", action="store_true", help="drive the motor (otherwise steering only)")
     ap.add_argument("--speed", type=float, default=BASE_SPEED)
-    ap.add_argument("--start", type=int, default=1, help="COURSE 몇 번 동작부터 시작할지")
-    ap.add_argument("--record", action="store_true", help="runs/ 폴더에 프레임과 로그 저장")
+    ap.add_argument("--start", type=int, default=1, help="COURSE step to start from")
+    ap.add_argument("--record", action="store_true", help="save frames and the log in runs/")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-stream", action="store_true")
-    ap.add_argument("--set", nargs="*", default=[], help="KEY=VALUE 로 이번 실행만 설정 덮어쓰기 (예: KP=1.8)")
+    ap.add_argument("--set", nargs="*", default=[], help="override settings for this run with KEY=VALUE (for example KP=1.8)")
     args = ap.parse_args()
 
     for kv in args.set:
         key, val = kv.split("=", 1)
         if key not in globals() or not key.isupper():
-            raise SystemExit(f"--set: 알 수 없는 설정 {key}")
+            raise SystemExit(f"--set: unknown setting {key}")
         try:
             new = ast.literal_eval(val)
         except (ValueError, SyntaxError):
@@ -2608,20 +2989,23 @@ def main():
         from obstacle import Obstacle
         obs = Obstacle()
     except Exception as e:      # Driving still works if the sensor or module is missing.
-        print(f"[경고] 장애물 센서 사용 안 함: {e}")
+        print(f"[warning] obstacle sensor not used: {e}")
         obs = None
     if AUTO_TRIM:
         car.load_bias()     # Continue with the center trim learned on a previous run.
     cam = open_camera()
-    driver = Driver(COURSE, args.start, args.speed, obs, load_person())
+    try:
+        driver = Driver(COURSE, args.start, args.speed, obs, load_person())
+    except ValueError as e:
+        raise SystemExit(e)
     pauses = any(s["until"] == "enter" for s in driver.course.course)
     if pauses and args.no_stream:
-        raise SystemExit("코스에 next()가 있으면 웹페이지가 필요합니다 (--no-stream 빼기)")
+        raise SystemExit("a course with next() needs the web page (leave out --no-stream)")
     # Only a course with next() sends keys to the program, so other drives keep the page's own keys.
-    stream = None if args.no_stream else Stream(args.port, "AICAR 주행", "Enter 다음 동작 (next)" if pauses else None)
+    stream = None if args.no_stream else Stream(args.port, "AICAR drive", "Enter next step (next)" if pauses else None)
     rec = Recorder(args.speed, args.set) if args.record else None
-    print("모터", "ON" if args.drive else "OFF (조향만)",
-          f"| 코스 {len(COURSE)}단계, {args.start}번부터 | Ctrl+C로 정지")
+    print("Motor", "ON" if args.drive else "OFF (steering only)",
+          f"| course {len(COURSE)} steps, from {args.start} | Ctrl+C to stop")
 
     frames, t0, t_start = 0, time.monotonic(), time.monotonic()
     fps = None
@@ -2634,12 +3018,12 @@ def main():
             show = stream is not None and stream.watching and frames % 2 == 0
             steer, cmd, dbg = driver.tick(frame, now, show)
             if driver.done:
-                print("\n코스 완료")
+                print("\nCourse done")
                 break
             if steer is not None:
                 car.steer(steer)
             if driver.edge:
-                print("\r[매트 끝] 정지        ", end="", flush=True)
+                print("\r[mat edge] stopped    ", end="", flush=True)
             car.drive(cmd if args.drive else 0)
             course, detect, steering, traffic = driver.course, driver.detect, driver.steering, driver.traffic
             det, junction, light, speed = driver.det, driver.junction, driver.light, driver.speed
@@ -2670,11 +3054,11 @@ def main():
                       + f"{'LOST' if det is None else ''}    ", end="", flush=True)
                 frames, t0 = 0, time.monotonic()
     except KeyboardInterrupt:
-        print("\n정지")
+        print("\nStopped")
     finally:
         if AUTO_TRIM and args.drive:
             car.save_bias()
-            print(f"\n자동 중앙 보정 저장: {car.bias:+.1f}도")
+            print(f"\nAuto trim saved: {car.bias:+.1f} deg")
         car.close()
         cam.stop()
         if obs:
@@ -2682,7 +3066,7 @@ def main():
         if rec:
             rec.close()
             driver.ends.save(rec.dir / "ends.csv")
-            print(f"녹화 저장: {rec.dir} ({rec.n} 프레임)")
+            print(f"Recording saved: {rec.dir} ({rec.n} frames)")
 
 
 if __name__ == "__main__":

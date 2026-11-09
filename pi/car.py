@@ -57,7 +57,7 @@ class HardwareServo:
                  min_pulse_width=0.0005, max_pulse_width=0.0025):
         chips = sorted(Path("/sys/class/pwm").glob("pwmchip*"))
         if not chips:
-            raise OSError("하드웨어 PWM 없음 (config.txt 오버레이 확인)")
+            raise OSError("No hardware PWM (check the overlay in config.txt)")
         self.chip = chips[0]
         self.pwm = self.chip / "pwm0"
         if not self.pwm.exists():
@@ -101,7 +101,7 @@ def make_servo():
     try:
         return HardwareServo()
     except OSError as e:
-        print(f"[경고] {e} -> 소프트웨어 PWM 사용 (떨림 있음)")
+        print(f"[warning] {e} -> using software PWM (jitters)")
         from gpiozero import AngularServo
         return AngularServo(SERVO_PIN, min_angle=-90, max_angle=90,
                             min_pulse_width=0.0005, max_pulse_width=0.0025)
@@ -173,8 +173,8 @@ def main():
         elif cmd == "steer":
             car.steer(float(sys.argv[2]))
             pulse = 1500 + car.servo.angle / 90 * 1000
-            print(f"명령 {float(sys.argv[2]):+.0f} → 서보 각도 {car.servo.angle:+.1f}도 (펄스 {pulse:.0f}us) | "
-                  f"중앙보정 {STEER_TRIM:+.1f}, 민감도 {STEER_SCALE}, 반전 {STEER_INVERT}")
+            print(f"command {float(sys.argv[2]):+.0f} -> servo angle {car.servo.angle:+.1f} deg (pulse {pulse:.0f} us) | "
+                  f"trim {STEER_TRIM:+.1f}, scale {STEER_SCALE}, invert {STEER_INVERT}")
             sleep(1)
             car.center()    # Return to center after the check.
             sleep(0.5)
@@ -187,7 +187,7 @@ def main():
             old = float(data.get("steer_trim", 0.0))
             data["steer_trim"] = round(old + float(sys.argv[2]), 1)
             CALIB_FILE.write_text(json.dumps(data))
-            print(f"중앙 보정 {old:+.1f} → {data['steer_trim']:+.1f}도 저장")
+            print(f"trim {old:+.1f} -> {data['steer_trim']:+.1f} deg saved")
             car.trim = data["steer_trim"]
             car.center()    # Move to the new center so it can be checked.
             sleep(1)
