@@ -1314,8 +1314,8 @@ def test_speed_constant():
     d.detect.junction_y = 0.8 * lf.FRAME_H
     with quiet():
         d.course.update(False, 0.0, (0.0, 0.0), False, {"near": True})
-    check("slow=: does not slow below 0.4 near a line", abs(d.approach_speed(0.6, 0.05) - lf.APPROACH_MIN) < 1e-9, d.approach_speed(0.6, 0.05))
-    check("slow=: a speed already below 0.4 is kept", d.approach_speed(0.35, 0.05) == 0.35, d.approach_speed(0.35, 0.05))
+    check("slow=: does not slow below APPROACH_MIN near a line", abs(d.approach_speed(0.6, 0.05) - lf.APPROACH_MIN) < 1e-9, d.approach_speed(0.6, 0.05))
+    check("slow=: a speed already below APPROACH_MIN is kept", d.approach_speed(0.31, 0.05) == 0.31, d.approach_speed(0.31, 0.05))
     check("the lowest command holds even for a low set speed", lf.Driver([follow(30.0, speed=0.1), finish()]).tick(frame, 0.0)[1] >= lf.MOTOR_MIN - 1e-9)
     check("creeping at the lowest speed on a lost lane is kept", lf.MIN_SPEED == 0.3)
 

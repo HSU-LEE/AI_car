@@ -123,7 +123,7 @@ FAR_HLINE = 0.8         # A far horizontal line counts only if connected white p
                         # A thin far line shows only its middle in the mask (1.2 missed the T-junction line in runs 20261103-1939/1940 until it was at 0.5).
                         # Used only to slow down, not for the junction decision (until), so a curve mistaken for a line only slows the car briefly.
 SLOW_START_CM = 30.0    # Lane-end stops: drive at the set speed until the lane end is this close (cm, as shown), then slow= eases in.
-APPROACH_MIN = 0.4      # slow= never slows the car below this, whatever slow= asks. A speed set lower with speed= or set_speed() is kept.
+APPROACH_MIN = 0.325      # slow= never slows the car below this, whatever slow= asks. A speed set lower with speed= or set_speed() is kept.
 APPROACH_HOLD = 0.5     # slow=: keep slowing for this many seconds after the line disappears, so one or two false frames do not react.
 MOTOR_MIN = 0.3         # Lowest forward motor command. Every lower command is raised to this, whatever speed= or slow= asks for.
 MOTOR_MIN_TURN = 0.3    # Lowest motor command at full steer, because turned wheels add drag. Values in between scale with the steering angle.
