@@ -366,11 +366,14 @@ def test_motor():
 def test_turn_align_stop():
     print("[tr(): turn -> align -> slow drive]")
     import course as cs
+    # Frames (0.05 s each) until the turn may end: past both its blind period and its min_sec, whatever course.py sets them to.
+    first = cs._flat(cs.tr())[0]
+    pre = int(max(first["min"], first["blind"]) / 0.05) + 2
     with quiet():
         c = lf.CourseRunner([cs.tr(sec=1.0), finish()])
-        t = feed(c, 22, 0.0, det=None)                  # Still no lane after the 1 second blind period, so counting starts after that.
+        t = feed(c, pre, 0.0, det=None)                 # Still no lane after the blind period and min_sec, so counting starts after that.
         t = feed(c, lf.TURN_END_FRAMES, t, det=(0.3, 0.3))       # New lane: both position and heading match.
-    check("the turn ends before 3 s once a new lane is found", c.idx == 1 and t < 3.0, f"{t:.2f}s, step {c.idx + 1}")
+    check("the turn ends soon after min_sec once a new lane is found", c.idx == 1 and t < first["min"] + 1.5, f"{t:.2f}s, step {c.idx + 1}")
     with quiet():
         t = feed(c, 10, t, det=(0.3, 0.2))              # Still not aligned enough.
     check("keeps following the lane while not yet aligned", c.idx == 1 and not c.stopped(t))
@@ -391,8 +394,8 @@ def test_turn_align_stop():
     with quiet():   # A leftover lane crossing at an angle during a turn may look like a horizontal line, but a new lane still ends the turn.
         c = lf.CourseRunner([cs.tl(sec=0), finish()])
         t = 0.0
-        for _ in range(22):
-            c.update(False, t, None, False, {}); t += 0.05          # The lane stays lost until the 1 second blind period ends.
+        for _ in range(pre):
+            c.update(False, t, None, False, {}); t += 0.05          # The lane stays lost until the blind period and min_sec end.
         for _ in range(lf.TURN_END_FRAMES):
             c.update(True, t, (0.1, -0.3), False, {"near": True}); t += 0.05   # It looks like a junction, but it is a new lane.
     check("turn: ends on a new lane even if it looks like a line across (junction)", c.idx == 1, f"{t:.2f}s, step {c.idx + 1}")
@@ -556,8 +559,9 @@ def test_lost_and_far():
         total = ym(np.ascontiguousarray(room[:, 10 * k:10 * k + W]))
     check("camera turn measured: as far as the view slid (right turn = negative)", abs(total + 80) < 6, f"{total:+.1f}px (true -80)")
     with quiet():
+        first = cs._flat(cs.tr())[0]
         c = lf.CourseRunner([cs.tr(sec=0), finish()])
-        t = feed(c, 22, 0.0, det=None)
+        t = feed(c, int(max(first["min"], first["blind"]) / 0.05) + 2, 0.0, det=None)     # Past the blind period and min_sec.
         c.turned = lf.TURN_YAW_PX + 1
         feed(c, 1, t, det=None)
     check("turn: ends after 90 deg (TURN_YAW_PX) even with no new lane in view", c.idx == 1, f"step {c.idx + 1}")
@@ -1476,7 +1480,9 @@ def test_set_speed():
     check("straight is kept", spd[7] is None and spd[8] == 0.6)
     check("right and curve are kept", spd[9] is None and spd[10] is None)
     tr_steps = cs._flat(cs.tr())
-    check("tr (turn/align/slow) is kept", spd[11:11 + len(tr_steps)] == [s["speed"] for s in tr_steps])
+    check("tr (turn/align/slow) follows set_speed too", spd[11:11 + len(tr_steps)] == [0.33] * len(tr_steps), spd[11:11 + len(tr_steps)])
+    check("tr with no set_speed keeps its own speeds", [s["speed"] for s in tr_steps] == [cs.TURN_SPEED, cs.ALIGN_SPEED, cs.SETTLE_SPEED])
+    check("tr(speed=) keeps the speed given", all(s["speed"] == 0.4 for s in cs._flat([cs.set_speed(0.7), cs.tr(speed=0.4)])[:2]))
     check("set_speed(): back to the default", spd[-3] == cs.SPEED and spd[-2] == cs.SPEED)
     check("no set_speed step is left in the course", all(s["do"] != "set_speed" for s in flat) and cs._flat(flat) == flat)
     bundles = cs._flat([cs.set_speed(0.33), cs.cross_gap(), cs.cross(), cs.traffic(), cs.corner("left"), cs.uturn("right"),
@@ -2530,10 +2536,203 @@ def test_junction_lost():
     check("a crosswalk does not end by going away", c.idx == 0 and not c.junc_latch)
 
 
+def test_set_steer():
+    print("[course max steering set_steer]")
+    import course as cs
+    flat = cs._flat([cs.go(), cs.set_steer(15), cs.go(), cs.follow(2, steer=20), cs.tr(), cs.push(1), cs.set_steer(), cs.go()])
+    steers = [(s["do"], s.get("steer")) for s in flat]
+    check("set_steer: lane following after it gets the limit, an explicit steer= stays",
+          steers[:3] == [("follow", None), ("follow", 15), ("follow", 20)], steers)
+    check("set_steer: turns, their align, and push are not limited", all(st is None for do, st in steers[3:-1]), steers)
+    check("set_steer(): back to the default", steers[-1] == ("follow", None))
+    old = cs.STEER_MAX
+    cs.STEER_MAX = 20
+    try:
+        flat = cs._flat([cs.go(), cs.set_steer(10), cs.go(), cs.set_steer(), cs.go()])
+    finally:
+        cs.STEER_MAX = old
+    check("STEER_MAX: the default limit, and set_steer() returns to it", [s["steer"] for s in flat] == [20, 10, 20])
+    with quiet():
+        d = lf.Driver(cs._flat([cs.set_steer(5), cs.follow(2), finish()]))
+        steer = None
+        for i in range(30):
+            steer, _, _ = d.tick(lane_frame(shift=60), i / 30)
+    check("set_steer: the car does not steer past the limit", steer is not None and abs(steer) <= 5 + 1e-6, steer)
+    blank = np.full((H, W, 3), 30, np.uint8)
+    speeds = {}
+    for name, opt in (("none", {}), ("floor", {"min_speed": 0.425})):
+        with quiet():
+            d = lf.Driver(cs._flat([cs.set_speed(0.75), cs.follow(sec=8, **opt), finish()]))
+            for i in range(20):
+                d.tick(lane_frame() if i < 10 else blank, i / 30)
+        speeds[name] = d.speed
+    check("min_speed=: slowing (here for a lost lane) stops at it", abs(speeds["none"] - lf.MIN_SPEED) < 1e-9 and abs(speeds["floor"] - 0.425) < 1e-9, speeds)
+    try:
+        cs.set_steer(0)
+        refused = False
+    except ValueError:
+        refused = True
+    check("set_steer: a bad value is refused", refused)
+
+
+def reflection_frame(blobs=((W // 2, 300),), shift=0.0):
+    """Lane with crisp tape, plus soft bright ovals (ceiling-light reflections on a glossy mat) at these centers."""
+    img = lane_frame(shift=shift).astype(np.float32)
+    glow = np.zeros((H, W), np.float32)
+    for x, y in blobs:
+        cv2.ellipse(glow, (x, y), (14, 38), 0, 0, 360, 190, -1)
+    glow = cv2.GaussianBlur(glow, (0, 0), 7)
+    img += glow[:, :, None]
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def test_reflections():
+    print("[light reflections on a glossy mat]")
+    import calibrate as cal
+    old = lf.REFLECT_SHARP
+    img = reflection_frame()
+    top = int(H * lf.ROI_TOP)
+    d = lf.LaneDetector()
+    mask = d.line_mask(img[top:])
+    comps = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+    sharp = {i: d.blob_sharpness(img[top:], comps, i) for i in d.near_blobs(comps)}
+    tall = {i: v for i, v in sharp.items() if comps[2][i][3] >= 0.6 * mask.shape[0]}
+    soft = {i: v for i, v in sharp.items() if i not in tall}
+    check("tape edges are crisp, a reflection is soft", tall and soft and min(tall.values()) > max(soft.values()), sharp)
+    try:
+        lf.REFLECT_SHARP = None
+        with quiet():
+            off_none = [lf.LaneDetector()(img, draw=False)[0] for _ in range(3)][-1]
+        lf.REFLECT_SHARP = old
+        with quiet():
+            d = lf.LaneDetector()
+            for _ in range(3):
+                det, _, dbg = d(img)
+            clean = lf.LaneDetector()(lane_frame(), draw=False)[0]
+        check("the reflection is left out, and the lane reads as without it",
+              d.reflections and det is not None and abs(det[0] - clean[0]) < 0.05 and abs(det[1] - clean[1]) < 0.05, (off_none, det, clean))
+        many = reflection_frame(blobs=[(x, 300) for x in (230, 300, 370, 440)])
+        lf.REFLECT_SHARP = None
+        with quiet():
+            dn = lf.LaneDetector()
+            for _ in range(3):
+                dn(many, draw=False)
+        lf.REFLECT_SHARP = old
+        with quiet():
+            dr = lf.LaneDetector()
+            for _ in range(3):
+                dr(many, draw=False)
+        check("a row of reflections is not a crosswalk", not dr.crosswalk_any, (dn.crosswalk_any, dr.crosswalk_any))
+        lf.REFLECT_SHARP = None
+        with quiet():
+            plain = [lf.LaneDetector()(lane_frame(shift=s), draw=False)[0] for s in (0, 30, -30)]
+        lf.REFLECT_SHARP = old
+        with quiet():
+            filt = [lf.LaneDetector()(lane_frame(shift=s), draw=False)[0] for s in (0, 30, -30)]
+        check("a lane with no reflection reads the same with the filter on", plain == filt)
+        frames = [reflection_frame()] * 6
+        cut = cal.measure_reflections(frames)
+        check("calibration: the cut falls between the reflection and the tape",
+              not isinstance(cut, str) and cut[2] is not None and cut[2] < cut[0] < cut[1], cut)
+        none = cal.measure_reflections([lane_frame()] * 6)
+        check("calibration: with no reflection, the cut sits under the tape", not isinstance(none, str) and none[2] is None and none[0] < none[1], none)
+        check("calibration: no lane in view is reported", isinstance(cal.measure_reflections([np.full((H, W, 3), 30, np.uint8)] * 4), str))
+        lf.REFLECT_SHARP = None
+        geo_bad = cal.fit_geometry(cal.measure_lanes([reflection_frame(blobs=[(W // 2 - 40, 300)])] * 6))
+        lf.REFLECT_SHARP = old
+        geo = cal.fit_geometry(cal.measure_lanes([reflection_frame(blobs=[(W // 2 - 40, 300)])] * 6))
+        ref = cal.fit_geometry(cal.measure_lanes([lane_frame()] * 6))
+        check("calibration: lane width is measured past a reflection between the lines",
+              not isinstance(geo, str) and abs(geo["lane_width_px"] - ref["lane_width_px"]) < 5, (geo_bad, geo, ref))
+    finally:
+        lf.REFLECT_SHARP = old
+
+
+def test_glare_motion():
+    print("[reflections by motion, red floor signs]")
+    top = int(H * lf.ROI_TOP)
+
+    def y_of(cm):       # Frame row of a floor point this far ahead (inverse of floor_cm).
+        scale = lf.CAMERA_F * lf.LANE_CM / lf.LANE_WIDTH_PX * max(342 - lf.HORIZON_Y, 1.0)
+        return lf.HORIZON_Y + scale / cm
+
+    def scene(t, glare=True, paint=True):
+        img = lane_frame().astype(np.float32)
+        layer = np.zeros((H, W), np.float32)
+        if glare:
+            cv2.ellipse(layer, (W // 2 - 60, 300), (14, 36), 0, 0, 360, 190, -1)
+        if paint:       # A soft painted bar 40 cm ahead at t=0, coming closer at 20 cm/s.
+            yb = int(y_of(40 - 20 * t))
+            cv2.rectangle(layer, (W // 2 + 20, yb - 14), (W // 2 + 70, yb), 200, -1)
+        layer = cv2.GaussianBlur(layer, (0, 0), 6)
+        return np.clip(img + layer[:, :, None], 0, 255).astype(np.uint8)
+
+    d = lf.LaneDetector()
+    glare_seen = paint_seen = 0
+    with quiet():
+        t = 0.0
+        while t < 1.0:
+            d.now, d.moving = t, True
+            d(scene(t), draw=False)
+            if t > 0.5:
+                glare_seen += any(abs(x + w / 2 - (W // 2 - 60)) < 20 for x, y, w, h in d.reflect_boxes)
+                paint_seen += any(abs(x + w / 2 - (W // 2 + 45)) < 25 for x, y, w, h in d.paint_boxes)
+            t += 1 / 30
+    check("driving: a reflection that stays put is dropped", glare_seen >= 10, glare_seen)
+    check("driving: a soft painted bar coming closer is kept as paint", paint_seen >= 5, paint_seen)
+    with quiet():
+        for k in range(10):
+            d.now, d.moving = 1.0 + k / 30, False
+            d(scene(1.0, paint=False), draw=False)
+    check("stopped: the reflection seen while driving is still dropped", len(d.reflections) >= 1)
+    d2 = lf.LaneDetector()
+    with quiet():
+        for k in range(20):
+            d2.now, d2.moving = k / 30, True
+            d2(lane_frame(), draw=False)
+            d2b = d2(lane_frame(), draw=False)
+    check("a plain lane: nothing is dropped by the motion test", not d2.reflections, d2.reflections)
+
+    tl = lf.TrafficLight()
+    img = np.full((H, W, 3), 40, np.uint8)
+    cv2.circle(img, (70, 150), 45, (40, 40, 230), -1)       # A red sign painted on the floor (BGR), with a white bit in its red:
+    cv2.rectangle(img, (40, 145), (48, 153), (250, 250, 250), -1)     # white center, red around, like a lit lamp.
+    sign = tl(img)
+    painted = list(tl.painted)
+    lamp = np.full((H, W, 3), 40, np.uint8)
+    cv2.circle(lamp, (60, 100), 8, (40, 40, 255), -1)       # A small red lamp with a blown-out center.
+    cv2.rectangle(lamp, (57, 97), (63, 103), (250, 250, 250), -1)
+    check("light: a white bit inside a red floor sign is not a red lamp, a small lamp is", sign is None and painted and tl(lamp) == "red", (sign, painted))
+
+    base = lane_frame()
+    xs = [int(W * 0.42) + k * 26 for k in range(4)]
+    stripes = base.copy()
+    for x in xs:
+        cv2.rectangle(stripes, (x, 250), (x + 12, 275), (235, 235, 235), -1)
+    on_sign = stripes.copy()
+    cv2.rectangle(on_sign, (xs[0] - 30, 230), (xs[-1] + 42, 295), (40, 40, 220), 10)     # The same white pieces inside a red border.
+    with quiet():
+        a, b = lf.LaneDetector(), lf.LaneDetector()
+        for _ in range(3):
+            a(stripes, draw=False)
+            b(on_sign, draw=False)
+    check("crosswalk: white pieces inside a red sign are not a crosswalk, plain ones are", a.crosswalk_any and not b.crosswalk_any, (a.crosswalk_any, b.crosswalk_any))
+    odd = base.copy()       # Three pieces of very different sizes between the lines: a thin far bit, a small one, a tall soft-edged one.
+    cv2.rectangle(odd, (int(W * 0.42), 200), (int(W * 0.42) + 50, 207), (235, 235, 235), -1)
+    cv2.rectangle(odd, (int(W * 0.5), 215), (int(W * 0.5) + 18, 224), (235, 235, 235), -1)
+    cv2.rectangle(odd, (int(W * 0.55), 270), (int(W * 0.55) + 40, 352), (235, 235, 235), -1)
+    with quiet():
+        c = lf.LaneDetector()
+        for _ in range(3):
+            c(odd, draw=False)
+    check("crosswalk: pieces of very different sizes are not stripes", not c.stripes, c.stripes)
+    check("light: the whole width is searched, so a light straight ahead is found", lf.TrafficLight.regions()[0][2] >= W // 2)
+
+
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

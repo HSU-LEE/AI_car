@@ -67,6 +67,26 @@ LINE_COLOR = "white"    # Track type. "white": white line on a black floor. "bla
 WHITE_THR = None        # Brightness above the floor that counts as a white line. None means automatic.
 WHITE_MIN = 35          # Auto mode never goes below this, so noise on an empty floor is not taken as a line.
 TOPHAT_K = 23           # A bright blob thicker than this is not a line (reflection, floor outside the mat), in half-resolution px. [narrow FOV 35]
+REFLECT_SHARP = 0.34    # Ceiling-light reflections on a glossy mat look like white lines but have soft, blurred edges. A blob whose edge steepness
+                        # (90th percentile edge gradient / its contrast with the floor) is below this is dropped. None turns it off. Tape measured 0.37-0.5, reflections 0.18-0.33.
+                        # calibrate.py measures it on the venue (vision.json reflect_sharp overrides this).
+REFLECT_Y = 0.4         # Only blobs centered below this fraction of the ROI height are judged. Far tape is out of focus (focus is ~15 cm) and soft too.
+REFLECT_MIN_AREA = 60   # Smaller blobs are not judged.
+REFLECT_LINE_H = 0.6    # A blob at least this tall (fraction of the ROI height) is a lane line running up the view, not judged. Reflections are short.
+# Motion test (works under any lighting): paint on the floor comes toward the car as fast as the car drives. A ceiling light seen in
+# a glossy floor is a mirror image as far below the floor as the light is above it, so it barely moves (about 1/20 of the floor).
+GLARE_WINDOW = 0.4      # Seconds back to the frame a blob is compared with. The car must have been driving forward all that time.
+GLARE_PAINT_CM = 2.5    # Came this many cm or more closer in that time: paint (kept even if its edges are soft, such as a far crosswalk).
+GLARE_STILL_CM = 1.0    # Came less than this closer: a reflection (dropped even if its edges are crisp).
+GLARE_STEER_MAX = 12    # The test runs only while steering less than this. A turn sweeps everything sideways.
+GLARE_MATCH = 0.6       # How well the blob must match its old self (normalized correlation) to be judged.
+GLARE_MARGIN = 0.1      # The other answer must match at least this much worse, or there is no verdict.
+GLARE_SIDE_PX = 60      # Sideways search in px. A piece of a long slanted line coming closer looks like it slides along itself.
+GLARE_REACH_CM = 40     # Paint cannot have come closer than this in GLARE_WINDOW (100 cm/s), so the match looks no farther back.
+GLARE_STILL_DX = 8      # "Stayed put" allows only this much sideways in px, so the next stripe of a crosswalk cannot pass for the same one standing still.
+GLARE_SHARP_MAX = 0.4   # A blob this crisp or crisper is never dropped by the motion test: tape (0.37-0.5), not a reflection (up to about 0.33).
+GLARE_KEEP = 3.0        # A spot judged a reflection stays one for this long, also once the car stops (the reflection stays put when it does).
+REFLECT_FALLBACK_MAX = 0.36  # With no motion verdict (standing still, turning), the edge test cuts at most this. Tape and paint measured 0.37 and up.
 USE_MAT_MASK = True     # Ignore the floor and wooden border outside the black mat.
 MAT_MIN_CONTRAST = 70   # Below this brightness gap between the mat and the outside, there is no separate mat (tape on one floor), so the whole frame is used.
                         # Wood floor plus black tape differs by about 50 under lighting and vignetting, so splitting would erase the near tape in the bottom corners.
@@ -74,12 +94,17 @@ MAT_MIN_CONTRAST = 70   # Below this brightness gap between the mat and the outs
 LINE_W_MIN, LINE_W_MAX = 3, 87   # Width of one line inside a band, in px. [narrow FOV 4, 130]
 MIN_PIXELS = 40         # Minimum pixels required to accept one line. [narrow FOV 60]
 DOUBLE_GAP = 33         # Two lines closer than this gap (px) are merged into one double line. [narrow FOV 50]
+CROSSWALK_INSIDE = 3    # With both lane lines known, a crosswalk band needs this many stripes between them.
 CROSSWALK_LINES = 4     # This many lines or more in one band means a crosswalk, and that band is ignored.
 STRIPE_MAX = 0.3        # Crosswalk stripe: a separate white blob no longer than this times the lane width at its height. Lane lines are long blobs.
                         # Run 20261103-202456: stripes 41x15..84x59 px (about 0.2 lane width), lane lines 97x183 px and longer. Far line bits about 0.38.
 STRIPE_MIN_AREA = 120   # Smaller blobs are noise, not stripes.
 SPECK_SIDE = 0.25       # A blob in the far half of the ROI, shorter than 1.5 bands, narrower than a horizontal line, centered in the outer SPECK_SIDE of the frame,
                         # and not cut by any ROI edge (a lane line leaving the frame) is not a lane line: a dark object or shadow off the track (run 20261103-210839).
+SIGN_RED_SHARE = 0.08   # A white blob with this share or more of red paint around it is a number on a red sign, not a crosswalk stripe.
+SIGN_S_MIN, SIGN_V_MIN = 90, 70     # How red a pixel must be to count.
+SIGN_MIN_AREA = 400     # A red area on the floor at least this big (px) whose outline holds white is a sign: everything inside it is left out of
+SIGN_WHITE_SHARE = 0.1  # the lane lines and the crosswalk test. The white inside must be at least this share of the outline (a sign face, not a red object).
 STRIPES_MIN = 3         # This many stripes or more, each inside the lane (lane line on both its left and right), is a crosswalk.
                         # Then they are removed from lane detection, so a stripe is never taken as a lane line.
 LANE_WIDTH_PX = 482     # Lane width in px at the bottom of the frame (y=342). Corrected automatically when both lines are visible.
@@ -133,6 +158,7 @@ LANE_PX_PER_CM = REF_LANE_PX / 20.0     # How many position-error px equal 1 cm,
 # style= steering character: (KP scale, KH scale, SMOOTH).
 STYLES = {"soft": (0.8, 0.7, 0.35), "normal": (1.0, 1.0, None), "sharp": (1.3, 1.6, 0.05)}
 
+HLINE_LANE_SHARE = 0.4  # With both lane lines known, a horizontal line must cover this share of the lane between them to be a line across.
 HLINE_RATIO = 0.27      # A run covering at least this fraction of the band width is a horizontal line (a junction). [narrow FOV 0.4]
 JUNCTION_Y = 0.5        # The junction action starts once the horizontal line drops below this frame height. A smaller value starts earlier.
 CAMERA_F = 492          # Focal length in px of the full-sensor view (about 66 degrees wide). Turns screen height into floor distance for cm=.
@@ -158,6 +184,11 @@ LANEEND_LINE_GAP = 20.0 # When no line end is found, it is taken this far before
 LANEEND_FRAMES = 4      # The line end must be found this many frames in a row before it counts.
 LANEEND_GAP = 4         # Walking up along the lane line, this many empty rows in a row end it.
 LANEEND_TOL = 0.06      # The line is looked for this far either side of where it should be, in lane widths (at least 4 px).
+LANEEND_DRIFT = 3.0     # While walking up a lane line, it may bend this many px per row and still be the same line (a curve).
+LANEEND_BEND_ROWS = 30  # Where a lane line leaves its straight path, the other line is looked at this many rows higher up.
+LANEEND_BEND_PX = 15.0  # The other line that far off its straight path, the same way: the whole lane curves (an S-bend, not a side road).
+LANEEND_BEND_GROW = 10.0    # Or bending away that much more over those rows. Measured: curves 16-36 px, side roads under 5 px.
+LANEEND_CURVE_HOLD = 0.6    # The other line out of sight just after a curve was seen: still the curve for this long (s).
 LANEEND_CURVE = 0.35    # Above its end, line pixels this close to where it would go on (in lane widths) mean it bends on: a curve, not an end.
 LANEEND_MAX_SEC = 12.0  # The last distance takes at most this long. It starts as soon as the line end is confirmed, as far off as that is.
 END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is bounded because lost-lane back-up is off during it.
@@ -205,7 +236,7 @@ CURVE_ASSIST = 0.5      # curve(): blend of the set angle and lane-follow steeri
 
 # Traffic light. tune_light.py adjusts these for the venue lighting and saves them in vision.json.
 LIGHT_Y = (0.0, 0.7)    # Height range searched for a lamp, as a fraction of frame height. Stopped just before the crosswalk, the lamp is at 0.54-0.59.
-LIGHT_SIDE = 0.4        # Look only in this fraction of the width on the left and the right. The light sits beside the lane. [narrow FOV 0.35]
+LIGHT_SIDE = 0.5        # Look in this fraction of the width from the left and from the right. 0.5 is the whole width: the light may stand beside the lane or straight ahead at its end. [narrow FOV 0.35]
 LIGHT_S_MIN = 110       # Minimum saturation that counts as a color (0-255).
 LIGHT_V_MIN = 170       # Minimum value that counts as a color (0-255). An LED emits light, so it is brighter than nearby objects.
 LIGHT_AREA_MIN = 11     # Minimum lamp-blob size, in px. Small reflections are ignored. [narrow FOV 25]
@@ -213,6 +244,9 @@ LIGHT_AREA_MAX = 1778   # Maximum size, in px. Large red or green objects are ig
 LIGHT_G_HUE = (35, 100)  # wait_green: wide green range used only at the spot where red was seen. A green LED also reads cyan, H 80-95.
 LIGHT_LOCAL_S_MIN = 60  # Minimum saturation at that spot. Looser than full-frame LIGHT_S_MIN, because the position is known and a false hit matters less.
 LIGHT_LOCAL_V_MIN = 100  # Minimum value at that spot. A green LED tends to read darker than red.
+LIGHT_PART = 2.5        # A lamp candidate inside a colored area more than this many times its size is paint (a red speed-limit sign on the floor), not a lamp.
+                        # Measured: a piece of a sign ring 2.8-3.9 times, a lamp and its glow about 1.
+LIGHT_PART_S_MIN, LIGHT_PART_V_MIN = 70, 60     # How colored a pixel must be to count toward that area.
 LIGHT_NEAR = 4          # wait_green: green must lie within (red lamp size times this) of where the red lamp was.
                         # That allows the gap between lamps on the same light and ignores green objects elsewhere.
 
@@ -232,7 +266,7 @@ def load_vision(path=None):
     lane width and vanishing point, and exposure / white balance. Focus stays at LENS_POSITION.
     """
     global LINE_COLOR, WHITE_THR, CAMERA_X, LIGHT_S_MIN, LIGHT_V_MIN, LIGHT_AREA_MIN
-    global LANE_WIDTH_PX, HORIZON_Y, CAMERA_LOCK
+    global LANE_WIDTH_PX, HORIZON_Y, CAMERA_LOCK, REFLECT_SHARP
     try:
         data = json.loads((path or VISION_FILE).read_text())
     except (OSError, ValueError):
@@ -254,6 +288,7 @@ def load_vision(path=None):
     LANE_WIDTH_PX = pick("lane_width_px", LANE_WIDTH_PX, (int, float))
     HORIZON_Y = pick("horizon_y", HORIZON_Y, (int, float))
     CAMERA_LOCK = pick("camera_lock", CAMERA_LOCK, dict)
+    REFLECT_SHARP = pick("reflect_sharp", REFLECT_SHARP, (int, float))
 
 
 def motor_floor(angle):
@@ -294,6 +329,9 @@ def ellipse_rects(size):
             reach[hw] = max(reach.get(hw, 0), abs(r - c))
         _ELLIPSE_RECTS[size] = [np.ones((2 * hh + 1, 2 * hw + 1), np.uint8) for hw, hh in reach.items()]
     return _ELLIPSE_RECTS[size]
+
+
+REFLECT_K9, REFLECT_K5 = np.ones((9, 9), np.uint8), np.ones((5, 5), np.uint8)
 
 
 def tophat_ellipse(img, size):
@@ -373,6 +411,15 @@ def draw_person(dbg, detector, at):
 
 class LaneDetector:
     def __init__(self):
+        self.reflections, self.reflect_boxes = [], []     # Blobs dropped as light reflections this frame, and their boxes in the ROI.
+        self.sign_ids = []                      # Blobs dropped as part of a red sign on the floor this frame.
+        self.signs = None                       # Mask of red-rimmed floor signs this frame (ROI size), or None.
+        self.curve_t = None                     # Last time a line leaving its straight path was judged a curve of the whole lane.
+        self.now, self.moving = None, False     # Set by Driver before each frame: time, and driving forward without a big steer (motion test).
+        self.moving_since = None
+        self.history = collections.deque(maxlen=40)     # (time, gray ROI) of recent frames for the motion test.
+        self.glare_spots = []                   # (x0, y0, x1, y1, time) of blobs judged reflections by motion, in ROI px.
+        self.paint_boxes = []                   # Boxes judged paint by motion this frame (for the view).
         self.left = [None] * SLICES     # Left and right line x in each band from the previous frame.
         self.right = [None] * SLICES
         self.center = [None] * SLICES
@@ -477,7 +524,49 @@ class LaneDetector:
         hull = cv2.dilate(hull, np.ones((3, 3), np.uint8))
         return cv2.resize(hull, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
 
-    def find_stripes(self, comps, shape, top):
+    @staticmethod
+    def sign_area(roi):
+        """Mask (ROI size) of red-rimmed signs painted on the floor, rim and face, such as a speed limit "30" or "70".
+
+        Their white face and numbers would otherwise read as lane lines or as crosswalk stripes.
+        Half size: a sign is big, so this is plenty and cheap.
+        """
+        H, W = roi.shape[:2]
+        small = cv2.resize(roi, (W // 2, H // 2), interpolation=cv2.INTER_AREA)
+        hue, sat, val = cv2.split(cv2.cvtColor(small, cv2.COLOR_BGR2HSV))
+        red = (((hue < 10) | (hue > 170)) & (sat >= SIGN_S_MIN) & (val >= SIGN_V_MIN)).astype(np.uint8)
+        n, lab, st, _ = cv2.connectedComponentsWithStats(red, connectivity=8)
+        out = None
+        for i in range(1, n):
+            if st[i][4] * 4 < SIGN_MIN_AREA:
+                continue
+            ys, xs = np.nonzero(lab == i)
+            hull = cv2.convexHull(np.stack([xs, ys], axis=1).astype(np.int32))
+            face = np.zeros_like(red)
+            cv2.fillConvexPoly(face, hull, 1)
+            inside = face.astype(bool) & (red == 0)
+            if (val[inside] >= 150).sum() < SIGN_WHITE_SHARE * face.sum():
+                continue        # Nothing white inside: a red object, not a sign face.
+            out = face if out is None else (out | face)
+        if out is None:
+            return None
+        out = cv2.dilate(out, np.ones((3, 3), np.uint8))
+        return cv2.resize(out, (W, H), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+    @staticmethod
+    def on_red_sign(roi, box):
+        """Whether a white blob sits on a red sign (a speed-limit number on the floor): red paint right around it."""
+        x, y, w, h = box
+        pad = int(1.5 * max(w, h))
+        H, W = roi.shape[:2]
+        crop = roi[max(y - pad, 0):min(y + h + pad, H), max(x - pad, 0):min(x + w + pad, W)]
+        if crop.size == 0:
+            return False
+        hue, sat, val = cv2.split(cv2.cvtColor(crop, cv2.COLOR_BGR2HSV))
+        red = ((hue < 10) | (hue > 170)) & (sat >= SIGN_S_MIN) & (val >= SIGN_V_MIN)
+        return red.mean() >= SIGN_RED_SHARE
+
+    def find_stripes(self, comps, shape, top, roi=None):
         """Crosswalk stripes: short separate white blobs (STRIPE_MAX of the lane width) inside the lane. Lane lines are long blobs.
 
         Inside the lane: at the stripe's rows there is lane-line (long blob) mask on both its left and its right, in this same frame.
@@ -487,6 +576,7 @@ class LaneDetector:
         """
         n, labels, stats, cents = comps
         found = []
+        self.sign_ids = []
         for i in range(1, n):
             x, y, w, h, area = stats[i]
             if area < STRIPE_MIN_AREA:
@@ -496,6 +586,9 @@ class LaneDetector:
             # Cut off by an ROI edge: the end of a lane line (before a gap, at the ROI top, at a side), not a whole stripe.
             cut = y <= 0 or x <= 0 or x + w >= shape[1] or y + h >= shape[0]
             if not cut and lane_w > 0 and max(w, h) < STRIPE_MAX * lane_w:
+                if roi is not None and self.on_red_sign(roi, (int(x), int(y), int(w), int(h))):
+                    self.sign_ids.append(i)     # Part of a red speed-limit sign: neither a stripe nor a lane line.
+                    continue
                 found.append((i, int(cents[i][0]), int(cy), int(w), int(h)))
         if len(found) < STRIPES_MIN:
             return [], []
@@ -509,7 +602,162 @@ class LaneDetector:
                 inside.append((i, cx, cy, w, h))
         if len(inside) < STRIPES_MIN:
             return [], []
-        return [f[0] for f in inside], [f[1:] for f in inside]
+        # A crosswalk's stripes are alike in size. Pieces of very different sizes (a thin far line end, a tall reflection
+        # near the car) are not one. Sizes are compared after scaling to the same distance (the lane width at their height).
+        def size(f):
+            lane_w = max(LANE_WIDTH_PX * (f[2] - HORIZON_Y) / max(342 - HORIZON_Y, 1.0), 1.0)
+            return f[3] / lane_w, f[4] / lane_w
+        best = []
+        for f in inside:
+            w0, h0 = size(f)
+            alike = [g for g in inside if 0.5 <= size(g)[0] / w0 <= 2 and 0.5 <= size(g)[1] / h0 <= 2]
+            if len(alike) > len(best):
+                best = alike
+        if len(best) < STRIPES_MIN:
+            return [], []
+        return [f[0] for f in best], [f[1:] for f in best]
+
+    @staticmethod
+    def near_blobs(comps, short_only=False):
+        """Ids of blobs big enough and centered in the near part of the ROI (REFLECT_Y). short_only leaves out tall ones (lane lines, REFLECT_LINE_H)."""
+        n, labels, stats, cents = comps
+        H = labels.shape[0]
+        y_min, tall = REFLECT_Y * H, REFLECT_LINE_H * H
+        return [i for i in range(1, n) if stats[i][4] >= REFLECT_MIN_AREA and cents[i][1] >= y_min
+                and not (short_only and stats[i][3] >= tall)]
+
+    @staticmethod
+    def blob_sharpness(roi, comps, i):
+        """Edge steepness of blob i: 90th percentile edge gradient over its contrast with the floor around it. None if it cannot be measured.
+
+        Tape has crisp edges (about 0.37-0.5). A ceiling-light reflection on a glossy mat fades out softly (about 0.18-0.33).
+        """
+        _, labels, stats, _ = comps
+        H, W = labels.shape
+        x, y, w, h, _ = stats[i]
+        x0, y0, x1, y1 = max(x - 5, 0), max(y - 5, 0), min(x + w + 5, W), min(y + h + 5, H)
+        blob = (labels[y0:y1, x0:x1] == i).astype(np.uint8)
+        g = cv2.cvtColor(roi[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if LINE_COLOR == "black":
+            g = 255 - g
+        ring = (cv2.dilate(blob, REFLECT_K9) > 0) & (blob == 0)
+        edge = (cv2.dilate(blob, REFLECT_K5) > 0) & (cv2.erode(blob, REFLECT_K5) == 0)
+        if not ring.any() or not edge.any():
+            return None
+        contrast = np.percentile(g[blob > 0], 90) - np.median(g[ring])
+        mag = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
+        return float(np.percentile(mag[edge], 90) / max(contrast, 1.0))
+
+    def motion_verdict(self, gray, old, box):
+        """"paint", "glare", or None: how far the blob came toward the car since the old frame, on the floor.
+
+        The blob is looked up in the old frame at its place and higher up (farther away), where paint would have been.
+        """
+        x, y, w, h = box
+        if h < 6 or w < 6 or y <= 1:      # Cut off by the ROI top: where it came from cannot be seen.
+            return None
+        top = FRAME_H - 2 * gray.shape[0]       # gray and old are half size: matching costs a quarter.
+        x2, y2, w2, h2 = x // 2, y // 2, max(w // 2, 3), max(h // 2, 3)
+        H, W = gray.shape
+        patch = gray[y2:y2 + h2, x2:x2 + w2]
+        sx0, sx1 = max(x2 - GLARE_SIDE_PX // 2, 0), min(x2 + w2 + GLARE_SIDE_PX // 2, W)    # Wide sideways: a slanted line coming closer slides sideways too.
+        sy1 = min(y2 + h2 + 3, H)
+        # Only as far up as paint could have come from in the time (GLARE_REACH_CM farther away): the rest costs time for nothing.
+        scale = CAMERA_F * LANE_CM / LANE_WIDTH_PX * max(342 - HORIZON_Y, 1.0)
+        far_y = HORIZON_Y + scale / (floor_cm(top + 2 * (y2 + h2)) + GLARE_REACH_CM)       # Bottom edge back then, frame px.
+        sy0 = int(min(max((far_y - top) / 2 - h2 - 2, 0), max(sy1 - h2, 0)))
+        region = old[sy0:sy1, sx0:sx1]
+        if region.shape[0] < h2 or region.shape[1] < w2 or patch.shape != (h2, w2):
+            return None
+        full = cv2.matchTemplate(region, patch, cv2.TM_CCOEFF_NORMED)
+        res = full.max(axis=1)      # Best match per old height, anywhere sideways (paint may slide sideways as it comes closer).
+        dx = GLARE_STILL_DX // 2
+        c0 = x2 - sx0               # Column of res where the blob would be with no sideways shift.
+        res_still = full[:, max(c0 - dx, 0):c0 + dx + 1].max(axis=1)     # A reflection stays where it is sideways too.
+        bottoms = top + 2 * (sy0 + np.arange(len(res)) + h2)      # Bottom edge (where the blob meets the floor) in the old frame, per row of res.
+        came = scale / np.maximum(bottoms - HORIZON_Y, 1.0) - floor_cm(top + 2 * (y2 + h2))
+        still = res_still[np.abs(came) < GLARE_STILL_CM]
+        moved = res[came >= GLARE_PAINT_CM]
+        if not len(still) or not len(moved):      # Both answers must be testable.
+            return None
+        still, moved = float(still.max()), float(moved.max())
+        # Only a clear answer counts. A repeating pattern (crosswalk stripes) matches both, and is left to the other tests.
+        if moved >= GLARE_MATCH and still < moved - GLARE_MARGIN:
+            return "paint"
+        if still >= GLARE_MATCH and moved < still - GLARE_MARGIN:
+            return "glare"
+        return None
+
+    def find_reflections(self, roi, comps):
+        """Ids of blobs that are light reflections, not paint.
+
+        1. Motion, while driving forward: a blob that did not come toward the car is a reflection, one that did is paint.
+        2. Otherwise, standing still, a spot judged a reflection in the last GLARE_KEEP seconds of driving is still one.
+        3. Otherwise the edge test (REFLECT_SHARP, capped at REFLECT_FALLBACK_MAX) in the near part of the ROI.
+        """
+        n, labels, stats, cents = comps
+        now = self.now
+        gray = None
+        old = None
+        if now is not None:
+            if self.moving:
+                self.moving_since = now if self.moving_since is None else self.moving_since
+            else:
+                self.moving_since = None
+            gray = cv2.resize(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (roi.shape[1] // 2, roi.shape[0] // 2), interpolation=cv2.INTER_AREA)
+            if self.moving_since is not None and now - self.moving_since >= GLARE_WINDOW:
+                past = [g for t, g in self.history if now - t >= GLARE_WINDOW and t >= self.moving_since]
+                old = past[-1] if past else None
+            self.history.append((now, gray))
+            if self.moving:     # A spot is let go only while driving, when it would have shown itself to be paint by now.
+                self.glare_spots = [g for g in self.glare_spots if now - g[4] <= GLARE_KEEP]
+        H = labels.shape[0]
+        near = set(self.near_blobs(comps, short_only=True))
+        cut = None if REFLECT_SHARP is None else min(REFLECT_SHARP, REFLECT_FALLBACK_MAX)
+        out, self.paint_boxes = [], []
+        for i in range(1, n):
+            x, y, w, h, area = (int(v) for v in stats[i])
+            if area < REFLECT_MIN_AREA or h >= REFLECT_LINE_H * H:      # Long lane lines are not judged: that also keeps the cost down.
+                continue
+            cx, cy = cents[i]
+            known = any(gx0 <= cx <= gx1 and gy0 <= cy <= gy1 for gx0, gy0, gx1, gy1, _ in self.glare_spots)
+            verdict = self.motion_verdict(gray, old, (x, y, w, h)) if old is not None else None
+            if verdict == "glare" and not known:     # A spot already checked needs no second edge test: that keeps the cost down.
+                sharp = self.blob_sharpness(roi, comps, i)
+                if sharp is not None and sharp >= GLARE_SHARP_MAX:     # Crisp like tape: a piece of a lane line that only seemed to stand still.
+                    verdict = None
+            if verdict == "glare":
+                self.glare_spots.append((x, y, x + w, y + h, now))
+                out.append(i)
+                continue
+            if verdict == "paint":
+                self.paint_boxes.append((x, y, w, h))
+                continue
+            if not self.moving and known:
+                # Standing still: a reflection seen while driving is still there. While driving, paint can pass through the same spot.
+                out.append(i)
+                continue
+            if cut is not None and i in near:
+                sharp = self.blob_sharpness(roi, comps, i)
+                if sharp is not None and sharp < cut:
+                    out.append(i)
+        return out
+
+    def drop_reflections(self, roi, mask):
+        """Remove reflection blobs from the mask in place. Returns the connected components of what is left."""
+        comps = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+        self.reflections = self.find_reflections(roi, comps)
+        self.reflect_boxes = []
+        if self.reflections:        # Gone before anything else looks at the mask, so they cannot make a lane line or a crosswalk.
+            dead = np.zeros(comps[0], bool)
+            dead[self.reflections] = True
+            self.reflect_boxes = [tuple(int(v) for v in comps[2][i][:4]) for i in self.reflections]
+            hit = dead[comps[1]]
+            mask[hit] = 0
+            stats = comps[2].copy()
+            stats[dead, 4] = 0          # Gone: no area, so nothing below takes it for a stripe or a line.
+            comps = (comps[0], np.where(hit, 0, comps[1]), stats, comps[3])     # Cheaper than labelling the mask again.
+        return comps
 
     def find_specks(self, comps, shape, band_h):
         """Ids of small blobs near the frame sides (SPECK_SIDE). They are off-track objects, not lane lines."""
@@ -585,8 +833,12 @@ class LaneDetector:
         return None
 
     @staticmethod
-    def find_lines(band):
-        """One band: vertical-line x positions, a horizontal-line candidate (start, end) or None, and a crosswalk flag."""
+    def find_lines(band, between=None):
+        """One band: vertical-line x positions, a horizontal-line candidate (start, end) or None, and a crosswalk flag.
+
+        between: (left line x, right line x) from the last frame, if both are known. A crosswalk then needs CROSSWALK_INSIDE
+        stripes inside them, so the two lane lines plus a reflection or two between them are not a crosswalk.
+        """
         cols = band.sum(axis=0).astype(np.float64)
         on = (cols > band.shape[0] * 0.2 * 255).astype(np.int8)
         edges = np.flatnonzero(np.diff(np.concatenate(([0], on, [0]))))
@@ -602,7 +854,11 @@ class LaneDetector:
             gaps = np.array([runs[k + 1][0] - runs[k][1] for k in range(len(runs) - 1)], dtype=float)
             med = np.median(widths)
             if np.all((widths > 0.5 * med) & (widths < 2 * med)) and np.median(gaps) < 2.5 * med:
-                return [], hline, True
+                if between is None:
+                    return [], hline, True
+                lo, hi = between[0] + LINE_W_MAX / 2, between[1] - LINE_W_MAX / 2
+                if sum(lo < (a + b) / 2 < hi for a, b in runs) >= CROSSWALK_INSIDE:
+                    return [], hline, True
         merged = []     # Double lines become one.
         for a, b in runs:
             if merged and a - merged[-1][1] < DOUBLE_GAP:
@@ -722,18 +978,57 @@ class LaneDetector:
         y = r0 + float(np.median(low[cols]))
         return None if y >= strip.shape[0] - 2 else int(FRAME_H * ROI_TOP) + y + 1
 
+    def walk_line(self, side, mask, top):
+        """Follow one lane line up the view, pixel by pixel, so it bends with a curve. Returns {row: x} of where it was found, and the straight fit."""
+        xs = self.left if side == "left" else self.right
+        pts = [(self.band_y[i] - top, xs[i]) for i in range(SLICES) if xs[i] is not None]
+        if len(pts) < 2:
+            return None, None
+        slope, base = np.polyfit([p[0] for p in pts], [p[1] for p in pts], 1)
+        rows_n, cols_n = mask.shape
+        width = lambda r: LANE_WIDTH_PX * (r + top - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
+        row0 = int(max(p[0] for p in pts))
+        step = 2        # Every other row: plenty for a lane line, and half the cost.
+        x, dx, path, miss = slope * row0 + base, -slope * step, {}, 0
+        drift = LANEEND_DRIFT * step
+        for row in range(row0, -1, -step):
+            if not 0 <= x < cols_n:
+                break
+            tol = max(4.0, LANEEND_TOL * width(row))
+            lo = max(int(x - tol), 0)
+            found = mask[row, lo:int(x + tol) + 1].nonzero()[0]
+            if len(found):
+                shift = min(max(lo + found.mean() - x, -drift), drift)
+                x += shift
+                dx = 0.7 * dx - 0.3 * shift
+                path[row], miss = x, 0
+            else:
+                miss += step
+                if miss > 3 * LANEEND_GAP:
+                    break
+            x -= dx
+        return path, (slope, base)
+
     def lane_end(self):
         """Where the lane's own line ends ahead, at a junction: the y of its top, of the nearer side if both end. None if neither ends in view.
 
         Each lane line is walked up from the near bands along where it runs, until it stops. At an inside corner it stops where it turns off
         sideways; on the outside of an L it goes on to the line across, farther, so the nearer end is the junction's near edge either way.
         A line that bends on (a curve) is not an end: its pixels go on above, near where it would be.
+        A line that leaves the straight path while the other line bends the same way is a curve of the whole lane, not an end either.
+        At a side road only one line turns off, and the other goes on straight.
         """
         self.end_y = self.end_side = None
         mask = self.mask > 0
         top = int(FRAME_H * ROI_TOP)
         rows_n, cols_n = mask.shape
+        # Row prefix sums: "any line pixel between columns a and b on this row" becomes one subtraction.
+        cs = np.zeros((rows_n, cols_n + 1), np.int32)
+        np.cumsum(mask, axis=1, out=cs[:, 1:])
+        hit = lambda r, a, b: cs[r, min(max(b, 0), cols_n)] > cs[r, min(max(a, 0), cols_n)]
+        self._row_sums = cs
         best = None
+        walks = {}
         for side, xs in (("left", self.left), ("right", self.right)):
             pts = [(self.band_y[i] - top, xs[i]) for i in range(SLICES) if xs[i] is not None]
             if len(pts) < 2:
@@ -743,7 +1038,7 @@ class LaneDetector:
             last, miss = None, 0
             for row in range(int(max(p[0] for p in pts)), -1, -1):
                 x, tol = slope * row + base, max(4.0, LANEEND_TOL * width(row))
-                if 0 <= x < cols_n and mask[row, max(int(x - tol), 0):int(x + tol) + 1].any():
+                if 0 <= x < cols_n and hit(row, int(x - tol), int(x + tol) + 1):
                     last, miss = row, 0
                 else:
                     miss += 1
@@ -751,16 +1046,47 @@ class LaneDetector:
                         break
             if last is None or last <= LANEEND_GAP or last >= rows_n - 2:
                 continue        # Runs on to the top of the view, or has already left by the bottom.
+            if sum(p[0] > last + LANEEND_GAP for p in pts) < 2:
+                continue        # Not seen running up to that end over two bands: two different lines joined by the fit, not one that ends.
             above = range(max(last - 30, 0), max(last - LANEEND_GAP, 0))
-            bends = [mask[r, max(int(slope * r + base - LANEEND_CURVE * width(r)), 0):max(int(slope * r + base + LANEEND_CURVE * width(r)) + 1, 0)].any()
+            bends = [hit(r, int(slope * r + base - LANEEND_CURVE * width(r)), int(slope * r + base + LANEEND_CURVE * width(r)) + 1)
                      for r in above]
             if bends and np.mean(bends) > 0.3:
                 continue
+            curve = self.lane_bends(side, last, mask, top, walks)
+            now = self.now if self.now is not None else 0.0
+            if curve:
+                self.curve_t = now
+                continue        # The whole lane curves here: both lines bend the same way.
+            if curve is None and self.curve_t is not None and 0 <= now - self.curve_t <= LANEEND_CURVE_HOLD:
+                continue        # The other line is out of sight, and the lane was curving a moment ago: still the curve.
             if best is None or last > best[0]:
                 best = (last, side)
         if best is not None:
             self.end_y, self.end_side = top + best[0], best[1]
         return self.end_y
+
+    def lane_bends(self, side, last, mask, top, walks):
+        """Whether the whole lane curves where this side's line left its straight path (row last): the other line bends the same way.
+
+        Returns True (a curve), False (the other line goes on straight: a side road), or None (the other line is not seen that high).
+        Measured as how far the other line has moved off its own straight path, outward on this side, at rows above last.
+        """
+        other = "right" if side == "left" else "left"
+        if other not in walks:
+            walks[other] = self.walk_line(other, mask, top)
+        path, fit = walks[other]
+        if not path or fit is None:
+            return None
+        outward = -1.0 if side == "left" else 1.0
+        dev = lambda q: (path[q] - (fit[0] * q + fit[1])) * outward
+        at = [q for q in path if last - 3 <= q <= last + 3]
+        high = [q for q in path if q <= last - LANEEND_BEND_ROWS // 2]
+        if not at or not high:
+            return None
+        q0, q1 = min(at, key=lambda q: abs(q - last)), max(min(high), last - LANEEND_BEND_ROWS)
+        q1 = min(high, key=lambda q: abs(q - q1))
+        return dev(q1) >= LANEEND_BEND_PX or dev(q1) - dev(q0) >= LANEEND_BEND_GROW
 
     def lane_tip(self):
         """y where the lane ends ahead: halfway between the tips of the left and right lines. None if the lane does not end in view.
@@ -820,10 +1146,13 @@ class LaneDetector:
         """
         top = int(FRAME_H * ROI_TOP)
         mask = self.line_mask(frame[top:])
+        self.signs = self.sign_area(frame[top:])
+        if self.signs is not None:      # A red-rimmed sign on the floor: its white face and numbers are not lines or stripes.
+            mask[self.signs] = 0
         h = mask.shape[0] // SLICES
-        comps = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)     # Once per frame, shared below.
-        stripe_ids, self.stripes = self.find_stripes(comps, mask.shape, top)
-        gone = stripe_ids + self.find_specks(comps, mask.shape, h)
+        comps = self.drop_reflections(frame[top:], mask)     # Once per frame, shared below.
+        stripe_ids, self.stripes = self.find_stripes(comps, mask.shape, top, frame[top:])
+        gone = stripe_ids + self.sign_ids + self.find_specks(comps, mask.shape, h)
         labels, stats = comps[1], comps[2]
         if gone:        # Clear crosswalk stripes and off-track specks from the mask, and from the blob labels assign() reads.
             dead = np.zeros(comps[0], bool)
@@ -839,6 +1168,8 @@ class LaneDetector:
             roi, on = dbg[top:], mask > 0       # Paint white-line pixels translucent so the original image still shows.
             roi[on] = (0.45 * roi[on] + 0.55 * np.array(C_LANE)).astype(np.uint8)
             dashed_hline(dbg, top, C_DIM)       # Only below this line is used for lane detection.
+            for bx, by, bw, bh in self.reflect_boxes:      # Light reflections left out of the lane lines.
+                cv2.rectangle(dbg, (bx, top + by), (bx + bw, top + by + bh), C_DIM, 1)
         cx0 = int(FRAME_W * CAMERA_X)
         jy = int(FRAME_H * JUNCTION_Y)
         marks = {}                          # Junction and crosswalk labels, one per kind, drawn on top at the end.
@@ -862,7 +1193,17 @@ class LaneDetector:
         for i in range(SLICES):     # Band 0 is the nearest. Tracking walks from the bottom upward.
             y1 = mask.shape[0] - (i + 1) * h
             cy = top + y1 + h // 2
-            lines, hrun, crosswalk = self.find_lines(mask[y1:y1 + h])
+            # The lane lines at this height in the last frame, or at the nearest height where both were seen.
+            both = [k for k in range(SLICES) if self.left[k] is not None and self.right[k] is not None]
+            k = min(both, key=lambda k: abs(k - i)) if both else None
+            prev = (self.left[k], self.right[k]) if k is not None and abs(k - i) <= 1 else None
+            lines, hrun, crosswalk = self.find_lines(mask[y1:y1 + h], prev)
+            if hrun is not None and prev is not None:
+                # A line across must cross the lane in front of the car. A run off to one side is a lane line bending flat
+                # (a curve seen from inside it), not a junction.
+                inside = min(hrun[1], prev[1]) - max(hrun[0], prev[0])
+                if inside < HLINE_LANE_SHARE * (prev[1] - prev[0]):
+                    hrun = None
             hline = hrun is not None
             bands.append((cy, lines, hline or crosswalk))
             if hline and cy >= jy or (JUNCTION_BY_BRANCH and i < 2 and len(lines) >= 3):
@@ -1027,6 +1368,7 @@ class TrafficLight:
         self.local = []
         self.lamps = {}         # Largest lamp box per color {"red": (x, y, w, h), "green": ...}. Compared by position in wait_green.
         self.mask_vis = None    # Color mask shown by tune_light.py, only when keep_mask=True.
+        self.painted = []
         self.keep_mask = False
 
     @staticmethod
@@ -1062,9 +1404,31 @@ class TrafficLight:
 
         if self.keep_mask:
             self.mask_vis = np.zeros_like(frame)
+        self.painted = []       # Candidates dropped as part of a big painted area (for the view).
+
         for x0, y0, x1, y1 in self.regions():
             hue, sat, val = cv2.split(cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV))
             strong = (sat >= LIGHT_S_MIN) & (val >= LIGHT_V_MIN)
+
+            def painted(color, x, y, w, h, x0=x0, y0=y0):
+                """Whether the candidate is a piece of a much bigger colored area: a sign or marking, not a lamp.
+
+                Looked at in the whole frame around it, so an area cut by the search-region edge still counts whole.
+                """
+                fx, fy = x0 + x, y0 + y
+                reach = int(max(w, h) * (LIGHT_PART + 1))
+                cx0, cy0 = max(fx - reach, 0), max(fy - reach, 0)
+                cx1, cy1 = min(fx + w + reach, FRAME_W), min(fy + h + reach, FRAME_H)
+                ch, cs, cv = cv2.split(cv2.cvtColor(frame[cy0:cy1, cx0:cx1], cv2.COLOR_BGR2HSV))
+                loose = (cs >= LIGHT_PART_S_MIN) & (cv >= LIGHT_PART_V_MIN) & (self.is_red(ch) if color == "red" else self.is_green(ch))
+                _, lab, st, _ = cv2.connectedComponentsWithStats(loose.astype(np.uint8), connectivity=8)
+                pad = max(2, max(w, h) // 2)
+                ids = np.unique(lab[max(fy - pad - cy0, 0):fy + h + pad - cy0, max(fx - pad - cx0, 0):fx + w + pad - cx0])
+                big = max(w, h) * LIGHT_PART
+                if any(st[i][2] > big or st[i][3] > big for i in ids if i > 0):
+                    self.painted.append((fx, fy, w, h))
+                    return True
+                return False
 
             # 1. Color blobs.
             for color, mask in (("red", strong & self.is_red(hue)), ("green", strong & self.is_green(hue))):
@@ -1073,7 +1437,7 @@ class TrafficLight:
                     self.mask_vis[y0:y1, x0:x1][mask > 0] = (0, 0, 255) if color == "red" else (0, 255, 0)
                 _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
                 for x, y, w, h, area in stats[1:]:
-                    if self.lamp_like(w, h, area, LIGHT_AREA_MIN):
+                    if self.lamp_like(w, h, area, LIGHT_AREA_MIN) and not painted(color, x, y, w, h):
                         add(color, x0 + x, y0 + y, w, h, area)
 
             # 2. LED with a blown-out white center: color of the surrounding ring.
@@ -1094,7 +1458,7 @@ class TrafficLight:
                 h_ring = hue[sy, sx][colored]
                 color = ("red" if self.is_red(h_ring).mean() > 0.6 else
                          "green" if self.is_green(h_ring).mean() > 0.6 else None)
-                if color:
+                if color and not painted(color, x, y, w, h):
                     add(color, x0 + x, y0 + y, w, h, area)
 
         # Keep every red-lamp candidate so wait_green can re-read the spots that were red.
@@ -2617,6 +2981,8 @@ class Driver:
         if course.turning(now):
             # During a turn the car rotates quickly, so remembered line positions from the previous frame are wrong. Judge each frame fresh.
             detect.left, detect.right, detect.center = [None] * SLICES, [None] * SLICES, [None] * SLICES
+        detect.now = now
+        detect.moving = self.speed > 0 and abs(steering.angle) < GLARE_STEER_MAX     # Driving forward: the motion test for reflections can run.
         det, junction, dbg = detect(frame, course.lane_side(now), draw=show)     # Skip drawing when the view is not being sent.
         step = course.step()
         detect.far_y = None
@@ -2678,6 +3044,7 @@ class Driver:
             return None, 0.0, dbg
 
         base = course.speed if course.speed is not None else self.base_speed
+        set_base = base     # The speed the action set, before slow= takes anything off.
         base = self.approach_speed(base, now)
         kp, kh, smooth = STYLES[course.opt("style", "normal")]
         if det is not None:
@@ -2752,6 +3119,9 @@ class Driver:
             speed = speed_for(steering.angle, base)   # Slow for a large steer only while following the lane.
         else:
             speed = base        # Turn, straight, and curve keep the speed that was set.
+        floor = course.opt("min_speed")
+        if floor is not None and speed > 0:     # min_speed=: slowing for steering, slow=, or a lost lane stops here (never above the set speed).
+            speed = max(speed, min(floor, set_base))
         if speed > 0 and self.lost_since is None and abs(steering.angle) > HARD_STEER:
             speed += HARD_STEER_BOOST   # A large steer drags the wheels and slows the car, so add this back. Skipped while the lane is lost.
         self.speed = speed
