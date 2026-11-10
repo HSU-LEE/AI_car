@@ -13,7 +13,7 @@ pi_status() {
     local h state
     h=$(cat "$STATE/host" 2>/dev/null)
     if [ -z "$h" ] || ! nc -z -G 1 "$h" 22 2>/dev/null; then
-        echo "  ${R}●${N} 파이 연결 안 됨 ${D}(명령을 실행하면 자동으로 다시 찾음)${N}"
+        echo "  ${R}●${N} 파이에 연결되지 않았습니다 ${D}(명령을 실행하면 자동으로 다시 찾습니다)${N}"
         return
     fi
     state=$(ssh -n -o BatchMode=yes -o ConnectTimeout=2 -o ControlMaster=auto \
@@ -38,7 +38,7 @@ header() {
 item() { printf "   ${C}%-3s${N} %s\n" "$1" "$2"; }
 section() { echo "  ${D}$1${N}"; }
 
-pause() { echo; read -r -p "  ${D}엔터를 누르면 돌아갑니다...${N}" _; }
+pause() { echo; read -r -p "  ${D}엔터를 누르면 메뉴로 돌아갑니다...${N}" _; }
 
 # --- Submenus ---
 # Form: "key|label|command". Key s stops from anywhere.
@@ -65,7 +65,7 @@ submenu() {
         for e in "${entries[@]}"; do
             [ "${e%%|*}" = "$n" ] && cmd=${e##*|}
         done
-        if [ -z "$cmd" ]; then echo "  ${R}없는 번호입니다${N}"; sleep 1; continue; fi
+        if [ -z "$cmd" ]; then echo "  ${R}없는 번호입니다. 다시 선택하세요${N}"; sleep 1; continue; fi
         echo
         eval "$cmd"
         pause
@@ -109,7 +109,7 @@ menu_camera() {
 menu_settings() {
     submenu "설정 / 보정" \
         '1|현재 설정 보기|$A config' \
-        '0|자동 캘리브레이션 (차를 직선 차로 가운데에 놓고)|echo "  차를 직선 차로 가운데에, 차로 방향으로 똑바로 놓으세요. 측정하는 동안(약 15초) 차와 카메라 앞을 가리지 마세요."; y=$(ask "준비되면 엔터 (취소: n) "); [ "$y" != n ] && $A calibrate' \
+        '0|자동 캘리브레이션 (차를 직선 차로 가운데에 놓고)|echo "  차를 직선 차로 가운데에, 차로 방향으로 똑바로 놓으세요. 측정하는 동안(약 15초) 차와 카메라 앞을 가리지 마세요."; y=$(ask "준비되면 엔터를 누르세요 (취소: n) "); [ "$y" != n ] && $A calibrate' \
         'f|초점 측정만 (저장 안 함, 주행은 15cm 고정)|$A focus' \
         '-' \
         '2|서보 중앙 맞추기 (키보드)|$A tune-center' \
@@ -136,7 +136,7 @@ menu_system() {
         '8|저장된 와이파이 삭제|$A wifi; echo; w=$(ask "삭제할 와이파이 이름: "); $A wifi-del "$w"' \
         '-' \
         '9|파이 재부팅|$A reboot' \
-        '0|파이 끄기 (전원 뽑기 전에)|y=$(ask "파이를 끌까요? [y/N] "); [ "$y" = y ] && $A shutdown'
+        '0|파이 끄기 (전원 뽑기 전에)|y=$(ask "파이를 종료하시겠습니까? [y/N] "); [ "$y" = y ] && $A shutdown'
 }
 
 # --- Main screen ---
@@ -171,6 +171,6 @@ while true; do
         5) menu_system ;;
         r|R|"") ;;
         q|Q|0) clear; exit 0 ;;
-        *) echo "  ${R}없는 번호입니다${N}"; sleep 1 ;;
+        *) echo "  ${R}없는 번호입니다. 다시 선택하세요${N}"; sleep 1 ;;
     esac
 done

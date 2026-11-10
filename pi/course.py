@@ -221,11 +221,11 @@ def to_junction(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
             cm = _lf.LANEEND_BASE_CM
     return _auto(follow(until="junction", speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm), speed, SPEED)
 
-def co(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
+def go(at=None, slow=0.3, blind_sec=0.5, speed=None, nth=1, cm=None):
     if nth is None:
         nth = 1
     if isinstance(nth, bool) or not isinstance(nth, int) or nth < 1:
-        raise ValueError(f"to_junction(): nth must be an integer of 1 or more ({nth})")
+        raise ValueError(f"go(): nth must be an integer of 1 or more ({nth})")
     if cm is None and at is None:
         import lane_follow as _lf
         if _lf.JUNCTION_REF == "laneend":
@@ -386,7 +386,7 @@ def describe(step):
 # to_crosswalk(at)          횡단보도 앞까지 감속하며 가서 끝
 # to_gap(at)                차선이 끊기는 곳 앞까지 감속하며 가서 끝
 # to_end(at)                바로 앞 끝에서 끝: 교차로선(가로선)이든 차선 끊김이든 먼저 오는 쪽
-#                           to_junction(cm=25): 화면의 LANE END 거리가 25cm가 되면 끝 (차로 선이 교차로에서 끝나는 곳까지 거리). cm 없으면 30
+#                           to_junction(cm=25): 화면의 LANE END 거리가 25cm가 되면 끝 (차로 선이 교차로에서 끝나는 곳까지 거리). cm 없으면 10
 #                                            거리는 차 앞쪽 기준. 4.5보다 작게 주면 선이 화면에서 안 보여 4.5에서 끝냄. 화면 값과 줄자 값이 다르면 lane_follow.py LANEEND_OFFSET_CM
 #                           to_end(cm=10): 선을 자로 재서 기준 위치에서 10cm 더 간 뒤 끝. cm=0은 선이 카메라 앞 38cm일 때
 # pass_crosswalk            횡단보도 지나가기 

@@ -122,6 +122,7 @@ FAR_BOT = 0.6           # A far line that is still thin can sit below ROI_TOP be
 FAR_HLINE = 0.8         # A far horizontal line counts only if connected white pixels on one row cover at least this times the lane width at that height.
                         # A thin far line shows only its middle in the mask (1.2 missed the T-junction line in runs 20261103-1939/1940 until it was at 0.5).
                         # Used only to slow down, not for the junction decision (until), so a curve mistaken for a line only slows the car briefly.
+SLOW_START_CM = 30.0    # Lane-end stops: drive at the set speed until the lane end is this close (cm, as shown), then slow= eases in.
 APPROACH_MIN = 0.4      # slow= never slows the car below this, whatever slow= asks. A speed set lower with speed= or set_speed() is kept.
 APPROACH_HOLD = 0.5     # slow=: keep slowing for this many seconds after the line disappears, so one or two false frames do not react.
 MOTOR_MIN = 0.3         # Lowest forward motor command. Every lower command is raised to this, whatever speed= or slow= asks for.
@@ -149,7 +150,7 @@ JUNCTION_REF = "laneend" # to_junction(cm=): what it measures to. "laneend": whe
 LANEEND_OFFSET_CM = -14.5   # Added to every line-end distance read from the camera: real minus read, in cm. -14.5 makes it the distance from
                         # the car front (2026-11-09: read 19.5 cm, tape 5 cm), since the camera sits about 15 cm behind it.
 # The settings below are all distances from the car front, as shown on screen (LANE END) and written as cm=.
-LANEEND_BASE_CM = 25.0  # to_junction() with no cm=: ends with the line end this far ahead. to_junction(cm=20) ends at 20 cm.
+LANEEND_BASE_CM = 10.0  # to_junction() with no cm=: ends with the line end this far ahead. to_junction(cm=20) ends at 20 cm.
 LANEEND_MIN_CM = 4.5    # The nearest it can still be read: the frame bottom is about 2.6 cm, plus room for the 2 frames a reading is old.
 LANEEND_MAX_CM = 28.0   # The farthest it can be read and still be confirmed: the top of the view is about 31 cm. A larger cm= would end on first sight.
 LANEEND_LINE_GAP = 20.0 # When no line end is found, it is taken this far before the line across (cm), unless the two were seen together and
@@ -1630,6 +1631,16 @@ class CourseRunner:
         """Distance of the line end where the action ends: in view, so it is read, not guessed."""
         return float(np.clip(step["cm"], LANEEND_MIN_CM, LANEEND_MAX_CM))
 
+    def laneend_dist(self, step):
+        """Lane-end distance from the car front in cm (as shown on screen), or None when unknown."""
+        if not self.uses_laneend(step) or self.ruler.z is None or self.ruler.guess:
+            return None
+        if self.ruler.kind == "laneend":
+            return self.ruler.z + LANEEND_OFFSET_CM
+        if self.ruler.kind == "line":
+            return self.ruler.z + LANEEND_OFFSET_CM - self.lane_gap()
+        return None
+
     def start_run_out(self, step, ys, now):
         """cm=: the end line was reached. Make sure the ruler is on that line, not on what it was reading before."""
         self.run_out, self.run_start = True, now
@@ -2412,6 +2423,12 @@ class Driver:
         slow = min(max(slow, MIN_SPEED, APPROACH_MIN), base)      # Do not go below the speed that keeps the motor turning, nor speed up to get there.
         if course.run_out:      # cm=: stay slow for the last distance, even once the line has gone from view.
             return slow
+        dist = course.laneend_dist(step)
+        if dist is not None:    # Lane-end stop: full speed beyond SLOW_START_CM, then ease to slow at the target.
+            target = course.laneend_target(step)
+            level = float(np.clip((SLOW_START_CM - dist) / max(SLOW_START_CM - target, 1.0), 0.0, 1.0))
+            self.approach = (level, now, course.idx)
+            return base - (base - slow) * level
         level, seen_t, idx = self.approach
         if idx != course.idx:       # New action: start over.
             level, seen_t = 0.0, -1.0
@@ -2619,8 +2636,9 @@ class Driver:
             # Whether any spot that was red has changed to green. The lamp spot still changes even if another red object is present.
             colors = [self.traffic.color_at(frame, box) for box in course.red_boxes]
             course.local_light = "green" if "green" in colors else ("red" if "red" in colors else None)
-        # LEGO figure, in every action. A stop or wait action keeps its own clock (the light can still change), and the car is standing anyway.
-        hold = self.person is not None and self.person.update(frame, now)
+        # LEGO figure: only while following the lane (follow, to_junction, go, ...) or in straight. Turns, stop, and wait do not look for it.
+        looks = course.following() or (step is not None and step["do"] == "straight")
+        hold = self.person is not None and looks and self.person.update(frame, now)
         course.paused = hold and not course.stopped(now) and (step is None or step["do"] != "finish")
         if course.paused:
             self.stand_for_person(now)
@@ -2795,6 +2813,49 @@ def load_person(path=PERSON_FILE):
     return detector
 
 
+class MotorWatchdog:
+    """Stops the motor if the drive loop sends no command for WATCHDOG_SEC (a camera that hangs in capture_array, for example).
+
+    Only acts when the loop has stalled, so a normal drive is unchanged.
+    """
+
+    def __init__(self, car, timeout):
+        self.car, self.timeout = car, timeout
+        self.lock = threading.Lock()
+        self.last = time.monotonic()
+        self.tripped = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def drive(self, cmd):
+        with self.lock:
+            self.car.drive(cmd)
+            self.last = time.monotonic()
+            if self.tripped:
+                print("\n[watchdog] loop running again")
+                self.tripped = False
+
+    def _run(self):
+        while not self._stop.wait(0.1):
+            with self.lock:
+                if not self.tripped and time.monotonic() - self.last > self.timeout:
+                    try:
+                        self.car.drive(0)
+                    except Exception:
+                        pass
+                    self.tripped = True
+                    print(f"\n[watchdog] no command for {self.timeout:g}s (camera stalled?) -> motor stopped")
+
+    def close(self):
+        self._stop.set()
+        self._thread.join(timeout=1)
+
+
+WATCHDOG_SEC = 0.5      # Motor stops if the drive loop sends nothing for this long.
+FRAME_ERRORS_MAX = 10   # Consecutive frames that raise an error before the drive ends.
+
+
 def stop_on_signal(*_):
     raise KeyboardInterrupt
 
@@ -2854,13 +2915,25 @@ def main():
     frames, t0, t_start = 0, time.monotonic(), time.monotonic()
     fps = None
     prev_now = t_start
+    watchdog = None
+    errors = 0
     try:
+        watchdog = MotorWatchdog(car, WATCHDOG_SEC)
         while True:
             frame = cam.capture_array()
             now = time.monotonic()
             # Send this frame to the browser only if someone is watching, and only every other frame. If nobody is watching, drawing costs nothing.
             show = stream is not None and stream.watching and frames % 2 == 0
-            steer, cmd, dbg = driver.tick(frame, now, show)
+            try:
+                steer, cmd, dbg = driver.tick(frame, now, show)
+                errors = 0
+            except Exception as e:      # One bad frame does not end the drive: stand still this frame and carry on.
+                errors += 1
+                watchdog.drive(0)
+                print(f"\n[frame error {errors}/{FRAME_ERRORS_MAX}] {type(e).__name__}: {e}")
+                if errors >= FRAME_ERRORS_MAX:
+                    raise
+                continue
             if driver.done:
                 print("\nCourse done")
                 break
@@ -2868,7 +2941,7 @@ def main():
                 car.steer(steer)
             if driver.edge:
                 print("\r[mat edge] stopped    ", end="", flush=True)
-            car.drive(cmd if args.drive else 0)
+            watchdog.drive(cmd if args.drive else 0)
             course, detect, steering, traffic = driver.course, driver.detect, driver.steering, driver.traffic
             det, junction, light, speed = driver.det, driver.junction, driver.light, driver.speed
 
@@ -2900,17 +2973,26 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped")
     finally:
-        if AUTO_TRIM and args.drive:
-            car.save_bias()
-            print(f"\nAuto trim saved: {car.bias:+.1f} deg")
-        car.close()
-        cam.stop()
-        if obs:
-            obs.close()
-        if rec:
-            rec.close()
-            driver.ends.save(rec.dir / "ends.csv")
-            print(f"Recording saved: {rec.dir} ({rec.n} frames)")
+        # Motor first: nothing below may keep the car moving if it fails.
+        if watchdog:
+            watchdog.close()
+        try:
+            car.close()
+        except Exception as e:
+            print(f"\n[error] car.close: {e}")
+            try:
+                car.drive(0)
+            except Exception:
+                pass
+        for name, fn in (("save_bias", lambda: (car.save_bias(), print(f"\nAuto trim saved: {car.bias:+.1f} deg")) if AUTO_TRIM and args.drive else None),
+                         ("camera", cam.stop),
+                         ("obstacle", lambda: obs.close() if obs else None),
+                         ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"),
+                                                         print(f"Recording saved: {rec.dir} ({rec.n} frames)")))):
+            try:
+                fn()
+            except Exception as e:
+                print(f"\n[error] {name}: {e}")
 
 
 if __name__ == "__main__":

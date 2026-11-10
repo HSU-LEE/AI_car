@@ -4,6 +4,6 @@ source "$(dirname "$0")/../_common.sh"
 
 $A wifi
 echo
-w=$(ask "삭제할 와이파이 이름: ")
+w=$(ask "Wi-Fi network to delete: ")
 $A wifi-del "$w"
 finish

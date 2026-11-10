@@ -6,5 +6,5 @@ ask() { read -r -p "$1" REPLY; echo "$REPLY"; }
 
 finish() {
     echo
-    read -r -p "엔터를 누르면 창을 닫습니다..." _
+    read -r -p "Press Enter to close this window..." _
 }

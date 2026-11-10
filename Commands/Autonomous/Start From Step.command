@@ -2,6 +2,6 @@
 # Start autonomous driving at course step N.
 source "$(dirname "$0")/../_common.sh"
 
-k=$(ask "몇 번 동작부터: ")
+k=$(ask "Start from step number: ")
 $A go --start "$k"
 finish

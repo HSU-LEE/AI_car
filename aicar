@@ -221,7 +221,11 @@ cmd_person() {
         case "$key" in 1) mode=new ;; 2) mode=add ;; *) echo "Cancelled"; return ;; esac
     fi
     case "$mode" in
-        new) mode="" ;;
+        new)
+            mode=""
+            echo "Warning: the saved figure and its photos will be deleted and replaced."
+            read -r -n 1 -p "Continue? [y/n]: " key; echo
+            [ "$key" = y ] || [ "$key" = Y ] || { echo "Cancelled"; return; } ;;
         add|--add) mode="--add" ;;
         *) die "Usage: aicar person [new|add]" ;;
     esac
