@@ -19,6 +19,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pi"))
 import lane_follow as lf  # noqa: E402
+import course as _course_settings  # noqa: E402
+# The tests check the code, not the day's settings at the top of course.py, so pin those to their defaults.
+_course_settings.STEER_MAX = None
+_course_settings.REFLECT_MOTION_ON = True
 from course import COURSE, finish, follow, stop, straight, wait_green  # noqa: E402
 import person  # noqa: E402
 from person import AutoViews, PersonDetector  # noqa: E402
@@ -379,7 +383,7 @@ def test_turn_align_stop():
     check("keeps following the lane while not yet aligned", c.idx == 1 and not c.stopped(t))
     with quiet():
         t = feed(c, lf.ALIGN_FRAMES, t, det=(0.05, 0.03))       # Lane center, pointed straight.
-    check("once aligned, drives slowly at SETTLE_SPEED without stopping", c.idx == 2 and not c.stopped(t) and c.speed == cs.SETTLE_SPEED, c.status(t))
+    check("once aligned, drives on at the set speed (no slowing in a turn) without stopping", c.idx == 2 and not c.stopped(t) and c.speed == cs.SPEED, c.status(t))
     with quiet():
         t = feed(c, 25, t, det=(0.05, 0.03))
     check("next step after sec (1 s)", c.idx == 3 or c.done, f"step {c.idx + 1}")
@@ -1484,7 +1488,7 @@ def test_set_speed():
     check("right and curve are kept", spd[9] is None and spd[10] is None)
     tr_steps = cs._flat(cs.tr())
     check("tr (turn/align/slow) follows set_speed too", spd[11:11 + len(tr_steps)] == [0.33] * len(tr_steps), spd[11:11 + len(tr_steps)])
-    check("tr with no set_speed keeps its own speeds", [s["speed"] for s in tr_steps] == [cs.TURN_SPEED, cs.ALIGN_SPEED, cs.SETTLE_SPEED])
+    check("tr with no set_speed runs at SPEED all through (no slowing in a turn)", [s["speed"] for s in tr_steps] == [cs.SPEED] * 3 and all(s["keep_speed"] for s in tr_steps))
     check("tr(speed=) keeps the speed given", all(s["speed"] == 0.4 for s in cs._flat([cs.set_speed(0.7), cs.tr(speed=0.4)])[:2]))
     check("set_speed(): back to the default", spd[-3] == cs.SPEED and spd[-2] == cs.SPEED)
     check("no set_speed step is left in the course", all(s["do"] != "set_speed" for s in flat) and cs._flat(flat) == flat)
@@ -2565,6 +2569,17 @@ def test_set_steer():
         for i in range(30):
             steer, _, _ = d.tick(lane_frame(shift=60), i / 30)
     check("set_steer: the car does not steer past the limit", steer is not None and abs(steer) <= 5 + 1e-6, steer)
+    with quiet():
+        d = lf.Driver(cs._flat([cs.back(1.0), cs.back(0.5, speed=0.6, angle=10), cs.follow(0.5), finish()]))
+        seen = []
+        for i in range(60):
+            out = d.tick(lane_frame(shift=40), i / 30)
+            seen.append((d.course.idx, out))     # The action that made this command (after the tick).
+    first = [cmd for idx, (_, cmd, _) in seen[1:25] if idx == 0]
+    second = [(st, cmd) for idx, (st, cmd, _) in seen if idx == 1]
+    check("back(): reverses for its seconds at LOST_BACK_SPEED, wheels straight, ignoring the lane", first and all(c == -lf.LOST_BACK_SPEED for c in first))
+    check("back(speed=, angle=): that speed, wheels at that angle", second and all(c == -0.6 for _, c in second) and abs(second[-1][0] - 10) < 1e-6, second[-1:])
+    check("back(): then drives on forward", any(idx == 2 and cmd > 0 for idx, (_, cmd, _) in seen))
     blank = np.full((H, W, 3), 30, np.uint8)
     speeds = {}
     for name, opt in (("none", {}), ("floor", {"min_speed": 0.425})):
@@ -2814,7 +2829,8 @@ def test_line_and_stop_points():
     import landmarks
     import course as cs
     import tune_landmark as tl
-    old_line, old_stop = lf.LINE_MODEL, lf.STOP_MODEL
+    old_line, old_stop, old_on = lf.LINE_MODEL, lf.STOP_MODEL, cs.STOP_POINTS_ON
+    cs.STOP_POINTS_ON = True        # The stop-point search, whatever course.py has it set to.
     try:
         img = lane_frame()
         l, r = lane_x(300)
@@ -2875,8 +2891,10 @@ def test_line_and_stop_points():
             refused = True
         check("stop: go_to needs a name", refused)
         check("stop: go_to keeps the name and offset", [(s["until"], s["stop"], s["stop_cm"]) for s in cs._flat([cs.go_to("B", offset=3)])] == [("_stop", "B", 3)])
+        cs.STOP_POINTS_ON = False
+        check("stop: STOP_POINTS_ON = False makes go_to() a go() (lane end)", cs._flat([cs.go_to("A|B", steer=8)])[0]["until"] == "junction")
     finally:
-        lf.LINE_MODEL, lf.STOP_MODEL = old_line, old_stop
+        lf.LINE_MODEL, lf.STOP_MODEL, cs.STOP_POINTS_ON = old_line, old_stop, old_on
 
 
 def main():

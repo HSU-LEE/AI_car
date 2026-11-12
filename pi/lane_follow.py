@@ -128,6 +128,7 @@ AUTO_STEER_MAX = 26     # Maximum steering angle while driving, in degrees. Does
 STEER_RATE = 150        # Maximum change in steering angle per second, in deg/s. A smaller value turns less abruptly.
 
 BASE_SPEED = 0.3        # Speed going straight, when an action sets none.
+STEER_SLOWDOWN = False  # True slows the car as steering grows while following the lane (speed_for). Off: the set speed is kept.
 MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of slow=, and while the lane is lost.
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
@@ -369,6 +370,19 @@ def tophat_ellipse(img, size):
     return cv2.subtract(img, opened)
 
 
+def pct(a, q):
+    """np.percentile(a, q) of a 1-D array (linear), by partial sort: much quicker than a full np.percentile on the Pi."""
+    n = a.size
+    pos = (n - 1) * (q / 100)
+    lo = int(pos)
+    t = pos - lo
+    if t == 0 or lo + 1 >= n:
+        return a.dtype.type(np.partition(a, lo)[lo])
+    part = np.partition(a, (lo, lo + 1))
+    v0, v1 = part[lo], part[lo + 1]
+    return np.percentile(np.array([v0, v1], a.dtype), t * 100)       # The two around it, mixed exactly as numpy does.
+
+
 def percentile_u8(img, q):
     """np.percentile(img, q) with linear interpolation, computed from a histogram without sorting. For uint8 images."""
     n = img.size
@@ -384,6 +398,8 @@ def percentile_u8(img, q):
 # --- Detection Overlay (Browser Live View) ---
 # Colors (BGR) drawn on the debug view.
 C_LANE = (255, 210, 60)     # Pixels detected as the white line (translucent).
+# The view paints line pixels 0.45 * pixel + 0.55 * C_LANE: per channel, as a lookup table (much faster than float math on the Pi).
+LANE_TINT = np.stack([(0.45 * np.arange(256) + 0.55 * c).astype(np.uint8) for c in C_LANE], axis=1).reshape(1, 256, 3)
 C_LEFT, C_RIGHT = (255, 140, 40), (60, 60, 255)    # Left line / right line.
 C_PATH = (80, 230, 80)      # Lane center the car follows.
 C_JUNC = (255, 0, 255)      # Junction (horizontal line).
@@ -717,9 +733,9 @@ class LaneDetector:
         edge = (cv2.dilate(blob, REFLECT_K5) > 0) & (cv2.erode(blob, REFLECT_K5) == 0)
         if not ring.any() or not edge.any():
             return None
-        contrast = np.percentile(g[blob > 0], 90) - np.median(g[ring])
+        contrast = pct(g[blob > 0], 90) - pct(g[ring], 50)
         mag = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
-        return float(np.percentile(mag[edge], 90) / max(contrast, 1.0))
+        return float(pct(mag[edge], 90) / max(contrast, 1.0))
 
     def motion_verdict(self, gray, old, box):
         """"paint", "glare", or None: how far the blob came toward the car since the old frame, on the floor.
@@ -772,7 +788,7 @@ class LaneDetector:
         now = self.now
         gray = None
         old = None
-        if now is not None:
+        if now is not None and getattr(_course, "REFLECT_MOTION_ON", True):     # course.py switch: off skips the motion test (faster).
             if self.moving:
                 self.moving_since = now if self.moving_since is None else self.moving_since
             else:
@@ -1066,6 +1082,11 @@ class LaneDetector:
         rows_n, cols_n = mask.shape
         width = lambda r: LANE_WIDTH_PX * (r + top - HORIZON_Y) / (max(342 - HORIZON_Y, 1.0))
         row0 = int(max(p[0] for p in pts))
+        cs = self._row_sums         # Made by lane_end for this frame's mask.
+        if self._row_xsums is None:     # Same, weighted by column: for the mean column in a window. Once per frame, when needed.
+            self._row_xsums = np.zeros((rows_n, cols_n + 1), np.int32)
+            np.cumsum(mask * np.arange(cols_n, dtype=np.int32), axis=1, out=self._row_xsums[:, 1:])
+        csx = self._row_xsums
         step = 2        # Every other row: plenty for a lane line, and half the cost.
         x, dx, path, miss = slope * row0 + base, -slope * step, {}, 0
         drift = LANEEND_DRIFT * step
@@ -1074,9 +1095,12 @@ class LaneDetector:
                 break
             tol = max(4.0, LANEEND_TOL * width(row))
             lo = max(int(x - tol), 0)
-            found = mask[row, lo:int(x + tol) + 1].nonzero()[0]
-            if len(found):
-                shift = min(max(lo + found.mean() - x, -drift), drift)
+            hi = min(int(x + tol) + 1, cols_n)
+            count = int(cs[row, hi] - cs[row, lo]) if hi > lo else 0
+            if count:
+                # Mean column of the line pixels in the window, from row prefix sums (no per-row array): same value as before.
+                mean = float(np.float64(int(csx[row, hi] - csx[row, lo]) - lo * count) / count)
+                shift = min(max(lo + mean - x, -drift), drift)
                 x += shift
                 dx = 0.7 * dx - 0.3 * shift
                 path[row], miss = x, 0
@@ -1105,6 +1129,7 @@ class LaneDetector:
         np.cumsum(mask, axis=1, out=cs[:, 1:])
         hit = lambda r, a, b: cs[r, min(max(b, 0), cols_n)] > cs[r, min(max(a, 0), cols_n)]
         self._row_sums = cs
+        self._row_xsums = None      # Made by walk_line only if it is needed this frame.
         best = None
         walks = {}
         for side, xs in (("left", self.left), ("right", self.right)):
@@ -1246,7 +1271,7 @@ class LaneDetector:
         dbg = frame.copy() if draw else None
         if draw:
             roi, on = dbg[top:], mask > 0       # Paint white-line pixels translucent so the original image still shows.
-            roi[on] = (0.45 * roi[on] + 0.55 * np.array(C_LANE)).astype(np.uint8)
+            cv2.copyTo(cv2.LUT(roi, LANE_TINT), on.astype(np.uint8), roi)      # Same tint as 0.45 * pixel + 0.55 * color, from a table (4x faster on the Pi).
             dashed_hline(dbg, top, C_DIM)       # Only below this line is used for lane detection.
             for bx, by, bw, bh in self.reflect_boxes:      # Light reflections left out of the lane lines.
                 cv2.rectangle(dbg, (bx, top + by), (bx + bw, top + by + bh), C_DIM, 1)
@@ -2277,6 +2302,8 @@ class CourseRunner:
         if step is None or step["do"] in ("follow", "stop", "wait", "finish"):
             return lane
         angle = step["angle"]
+        if step["do"] == "back":
+            return angle        # Backing up: the wheels as set, no lane steering (it is for driving forward).
         if step["do"] == "straight":
             if angle == "hold":
                 if self.hold is None:
@@ -2971,7 +2998,7 @@ class Driver:
     EVENT_EN = {"junction": "JUNCTION", "crosswalk": "CROSSWALK", "lane": "NEW LANE", "gap": "LANE ENDS", "end": "END (JUNCTION/GAP)", "crossed": "CROSSWALK PASSED",
                 "green": "GREEN LIGHT", "obstacle": "OBSTACLE", "clear": "CLEAR", "lost": "LANE LOST",
                 "aligned": "ALIGNED", "enter": "ENTER", "_crosswalk": "_CROSSWALK", "_crossed": "_CROSSWALK PASSED", "_stop": "STOP POINT"}
-    DO_EN = {"follow": "FOLLOW LANE", "straight": "STRAIGHT", "right": "TURN RIGHT", "left": "TURN LEFT",
+    DO_EN = {"follow": "FOLLOW LANE", "straight": "STRAIGHT", "back": "BACK UP", "right": "TURN RIGHT", "left": "TURN LEFT",
              "curve": "CURVE", "stop": "STOP", "wait": "WAIT", "finish": "FINISH"}
 
     def step_text(self, step):
@@ -3263,7 +3290,11 @@ class Driver:
         backing = self.back is not None
         if red_angle is not None:
             speed = -LOST_BACK_SPEED
-        elif course.stopped(now) or self.edge or hold:    # hold here: a stop action just ended with the figure still there.
+        elif course.stopped(now) or hold:    # hold here: a stop action just ended with the figure still there.
+            speed = 0.0
+        elif (course.step() or {}).get("do") == "back":
+            speed = -(course.speed if course.speed is not None else LOST_BACK_SPEED)     # back(): reverse for its seconds.
+        elif self.edge:
             speed = 0.0
         elif backing:
             speed = -LOST_BACK_SPEED
@@ -3271,8 +3302,8 @@ class Driver:
             speed = 0.0
         elif self.lost_since is not None:
             speed = min(base, MIN_SPEED)     # Creep while the lane is lost.
-        elif course.following():
-            speed = speed_for(steering.angle, base)   # Slow for a large steer only while following the lane.
+        elif course.following() and STEER_SLOWDOWN and not course.opt("keep_speed"):
+            speed = speed_for(steering.angle, base)   # Slow for a large steer only while following the lane (off: STEER_SLOWDOWN).
         else:
             speed = base        # Turn, straight, and curve keep the speed that was set.
         floor = course.opt("min_speed")

@@ -217,6 +217,9 @@ class LineModel:
 STOP_FILE = Path(__file__).with_name("stops.json")
 STOP_SCALES = (0.45, 0.55, 0.65, 0.75, 0.85, 1.0, 1.15)   # Sizes the registered shape is looked for at: from farther away it looks smaller.
 STOP_MATCH = 0.78           # How well (normalized correlation of the line masks) the shape must match.
+STOP_VIEWS_PER_FRAME = 2    # Not found yet: this many views are tried per frame, in turn, so many views do not slow the drive.
+STOP_MAX_VIEWS = 8          # Views kept per point (the newest). More only cost time.
+STOP_WIDE = 0.6             # A box wider than this share of the frame takes in more than the place: refused.
 STOP_TRACK_PX = 40          # Once found, the next frame looks only this far (half-size px) around it, at nearby sizes.
 
 
@@ -238,6 +241,7 @@ class StopModel:
     def __init__(self, points=None):
         self.points = dict(points or {})
         self._patches = {}
+        self._turn = {}         # Per point: which views the next search tries.
 
     @classmethod
     def load(cls, path=STOP_FILE):
@@ -256,10 +260,14 @@ class StopModel:
     def add(self, name, mask, box):
         """Add a view of point name: mask is the frame-size line mask (0/255), box (x, y, w, h) in frame px."""
         x, y, w, h = box
+        if w > STOP_WIDE * mask.shape[1]:
+            return False, "the box is too wide: draw it around just the mark (line end, line across, corner), not the whole view"
         patch = cv2.resize(mask[y:y + h, x:x + w], (max(w // 2, 4), max(h // 2, 4)), interpolation=cv2.INTER_AREA)
         if patch.std() < 8:
             return False, "no line inside the box (draw it around the line end, line across or corner)"
-        self.points.setdefault(name, {"views": []})["views"].append({"patch": _encode(patch), "box": [int(v) for v in box]})
+        views = self.points.setdefault(name, {"views": []})["views"]
+        views.append({"patch": _encode(patch), "box": [int(v) for v in box]})
+        del views[:-STOP_MAX_VIEWS]
         self._patches.pop(name, None)
         return True, f"{name}: view {len(self.points[name]['views'])}"
 
@@ -277,7 +285,8 @@ class StopModel:
 
     def templates(self, name):
         if name not in self._patches:
-            self._patches[name] = [(cv2.GaussianBlur(_decode(v["patch"]), (5, 5), 0).astype(np.float32), v["box"]) for v in self.points[name]["views"]]
+            views = self.points[name]["views"][-STOP_MAX_VIEWS:]     # A file from before the limit may hold more: the newest count.
+            self._patches[name] = [(cv2.GaussianBlur(_decode(v["patch"]), (5, 5), 0).astype(np.float32), v["box"]) for v in views]
         return self._patches[name]
 
     def find(self, name, mask, top, last=None):
@@ -291,17 +300,26 @@ class StopModel:
         small = cv2.GaussianBlur(cv2.resize(mask, (mask.shape[1] // 2, mask.shape[0] // 2), interpolation=cv2.INTER_AREA), (5, 5), 0).astype(np.float32)
         if last is None:
             coarse = cv2.resize(small, (small.shape[1] // 2, small.shape[0] // 2), interpolation=cv2.INTER_AREA)
-            guess = self._search(name, coarse, STOP_SCALES, None, factor=4, top=top, min_score=STOP_MATCH - 0.15)
+            n = len(self.templates(name))
+            k = self._turn.get(name, 0) % max(n, 1)
+            self._turn[name] = k + STOP_VIEWS_PER_FRAME
+            views = [(k + j) % n for j in range(min(STOP_VIEWS_PER_FRAME, n))]
+            guess = self._search(name, coarse, STOP_SCALES, None, factor=4, top=top, min_score=STOP_MATCH - 0.15, views=views)
             if guess is None:
                 return None
             last = guess
         return self._search(name, small, None, last, factor=2, top=top, min_score=STOP_MATCH)
 
-    def _search(self, name, img, scales, last, factor, top, min_score):
-        """Best match of point name in img (the line mask at 1/factor size). last: look only around it, at sizes near its scale."""
+    def _search(self, name, img, scales, last, factor, top, min_score, views=None):
+        """Best match of point name in img (the line mask at 1/factor size). last: look only around it, at sizes near its scale,
+        with the view it was found with. views: which views to try (all if None)."""
         SH, SW = img.shape
         best = None
-        for tpl, _ in self.templates(name):
+        tpls = self.templates(name)
+        if last is not None and "view" in last:
+            views = [last["view"]]
+        for vi in (range(len(tpls)) if views is None else views):
+            tpl = tpls[vi][0]
             for sc in (scales if last is None else [last["scale"] * f for f in (0.92, 1.0, 1.08)]):
                 k = sc * 2 / factor             # Templates are kept at half size.
                 th, tw = int(tpl.shape[0] * k), int(tpl.shape[1] * k)
@@ -323,5 +341,5 @@ class StopModel:
                 _, score, _, loc = cv2.minMaxLoc(res)
                 if best is None or score > best["score"]:
                     best = {"score": float(score), "scale": sc, "x": factor * (rx0 + loc[0]), "y": top + factor * (ry0 + loc[1]),
-                            "w": factor * tw, "h": factor * th}
+                            "w": factor * tw, "h": factor * th, "view": vi}
         return best if best is not None and best["score"] >= min_score else None
