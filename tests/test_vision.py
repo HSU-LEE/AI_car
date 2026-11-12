@@ -23,6 +23,7 @@ import course as _course_settings  # noqa: E402
 # The tests check the code, not the day's settings at the top of course.py, so pin those to their defaults.
 _course_settings.STEER_MAX = None
 _course_settings.REFLECT_MOTION_ON = True
+_course_settings.SLOWDOWN_ON = True     # The slowdown code is tested as it works when switched on.
 from course import COURSE, finish, follow, stop, straight, wait_green  # noqa: E402
 import person  # noqa: E402
 from person import AutoViews, PersonDetector  # noqa: E402
@@ -2900,10 +2901,27 @@ def test_line_and_stop_points():
         lf.LINE_MODEL, lf.STOP_MODEL, cs.STOP_POINTS_ON = old_line, old_stop, old_on
 
 
+def test_no_slowdown():
+    print("\n[SLOWDOWN_ON = False: no slowing anywhere]")
+    import course as cs
+    cs.SLOWDOWN_ON = False
+    try:
+        d = lf.Driver([follow(until="junction", speed=0.6, at=0.8, slow=0.3), finish()])
+        d.detect.junction_y = 280
+        with quiet():
+            d.course.update(False, 0.0, (0.0, 0.0), False, {"near": True})
+        check("slow= is ignored: the set speed is kept near the line", d.approach_speed(0.6, 0.05) == 0.6, d.approach_speed(0.6, 0.05))
+        steps = cs._flat(cs.uturn("left"))
+        check("uturn runs at SPEED with no slow=", all(st.get("slow") is None for st in steps) and steps[0]["speed"] == cs.SPEED, [st.get("speed") for st in steps])
+        check("to_end runs at SPEED", cs._flat([cs.to_end()])[0]["speed"] == cs.SPEED)
+    finally:
+        cs.SLOWDOWN_ON = True
+
+
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_no_slowdown):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

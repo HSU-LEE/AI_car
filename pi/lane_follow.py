@@ -3019,6 +3019,8 @@ class Driver:
         course = self.course
         step = course.step()
         slow = course.opt("slow")
+        if not getattr(_course, "SLOWDOWN_ON", True):
+            return base         # course.py SLOWDOWN_ON = False: slow= is ignored, the set speed is kept to the end.
         if slow is None or step["until"] not in CourseRunner.AT_EVENTS + ("_stop",) or not course.final_approach():
             return base
         slow = min(max(slow, MIN_SPEED, APPROACH_MIN), base)      # Do not go below the speed that keeps the motor turning, nor speed up to get there.
@@ -3358,7 +3360,7 @@ class Driver:
         elif lost_long:
             speed = 0.0
         elif self.lost_since is not None:
-            speed = min(base, MIN_SPEED)     # Creep while the lane is lost.
+            speed = min(base, MIN_SPEED) if getattr(_course, "SLOWDOWN_ON", True) else base   # Creep while the lane is lost (SLOWDOWN_ON = False: keep the speed).
         elif course.following() and STEER_SLOWDOWN and not course.opt("keep_speed"):
             speed = speed_for(steering.angle, base)   # Slow for a large steer only while following the lane (off: STEER_SLOWDOWN).
         else:
