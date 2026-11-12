@@ -295,7 +295,8 @@ class StopModel:
         self._patches = {}
         self._turn = {}         # Per point: which views the next search tries.
         self._prep = None       # (picture, half, quarter) of the last picture looked in.
-        self._rank, self._home_turn = {}, {}    # Near check with many views: last scores per view, and whose turn it is.
+        self._rank, self._home_turn = {}, {}
+        self._sizes = {}        # (point, view, w, h): that view resized, made once.    # Near check with many views: last scores per view, and whose turn it is.
 
     @classmethod
     def load(cls, path=STOP_FILE):
@@ -335,6 +336,7 @@ class StopModel:
             far = [i for i, v in enumerate(views[:-1]) if v["box"][1] + v["box"][3] / 2 < STOP_NEAR_Y]
             del views[far[0] if far else 0]
         self._patches.pop(name, None)
+        self._sizes = {k: v for k, v in self._sizes.items() if k[0] != name}
         note = f"{name}: view {len(self.points[name]['views'])}"
         if plain:
             note += "  [warning] almost nothing to see in this box (no line or edge): it may never be found"
@@ -358,6 +360,7 @@ class StopModel:
         if not views:
             self.points.pop(name, None)
         self._patches.pop(name, None)
+        self._sizes = {k: v for k, v in self._sizes.items() if k[0] != name}
 
     def top_y(self, names):
         """Highest frame y any view of these points reaches (for stop_view)."""
@@ -441,6 +444,17 @@ class StopModel:
         self._home_turn[name] = k + STOP_HOME_PER_FRAME - len(best)
         return best + [rest[(k + j) % len(rest)] for j in range(min(STOP_HOME_PER_FRAME - len(best), len(rest)))]
 
+    def _sized(self, name, vi, tpl, tw, th):
+        """View vi resized to tw x th (None when it has too little in it), made once and kept: the same few sizes come up
+        every frame."""
+        key = (name, vi, tw, th)
+        if key not in self._sizes:
+            if len(self._sizes) > 4000:
+                self._sizes.clear()
+            t = cv2.resize(tpl, (tw, th), interpolation=cv2.INTER_AREA)
+            self._sizes[key] = None if t.std() < 4 else t
+        return self._sizes[key]
+
     def _prepare(self, mask, key=None):
         """The picture at half and quarter size, glints off. key (the frame's number): kept for the same frame, so several
         points, or a second look in one frame, do not redo it. No key: always made fresh."""
@@ -467,8 +481,8 @@ class StopModel:
                 th, tw = int(tpl.shape[0] * k), int(tpl.shape[1] * k)
                 if th < 5 or tw < 5 or th > SH or tw > SW:
                     continue
-                t = cv2.resize(tpl, (tw, th), interpolation=cv2.INTER_AREA)
-                if t.std() < 4:
+                t = self._sized(name, vi, tpl, tw, th)
+                if t is None:
                     continue
                 if last is None:
                     rx0, ry0, region = 0, 0, img

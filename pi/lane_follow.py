@@ -386,7 +386,38 @@ def pct(a, q):
         return a.dtype.type(np.partition(a, lo)[lo])
     part = np.partition(a, (lo, lo + 1))
     v0, v1 = part[lo], part[lo + 1]
+    if a.dtype == np.float32 and _LERP_OK:
+        return _lerp32(v0, v1, t)
     return np.percentile(np.array([v0, v1], a.dtype), t * 100)       # The two around it, mixed exactly as numpy does.
+
+
+def _lerp32(v0, v1, t):
+    """np.percentile(np.array([v0, v1], float32), t * 100), worked out directly (much quicker on the Pi): numpy divides
+    t*100 by 100 in float32, and mixes the two in float32, from the far side once past half way."""
+    T = np.float32
+    q = T(t * 100) / T(100)
+    k = np.floor(q)
+    lo2, hi2 = (v0, v1) if k == 0 else (v1, v1)
+    g = T(q - k)
+    d = T(hi2 - lo2)
+    return T(hi2 - d * (1 - g)) if g >= 0.5 else T(lo2 + d * g)
+
+
+def _lerp_check():
+    """True when _lerp32 gives exactly what this numpy's percentile gives (checked once at start). Numpy versions mix
+    differently in the last bit, so with another numpy pct() keeps calling numpy itself."""
+    rng = np.random.default_rng(7)
+    for _ in range(300):
+        v = np.sort((rng.random(2) * rng.choice([1.0, 255.0, 1000.0])).astype(np.float32))
+        t = float(rng.random())
+        want = np.percentile(np.array(v, np.float32), t * 100)
+        got = _lerp32(v[0], v[1], t)
+        if not (got == want and type(got) is type(want)):
+            return False
+    return True
+
+
+_LERP_OK = _lerp_check()
 
 
 def percentile_u8(img, q):
@@ -721,8 +752,7 @@ class LaneDetector:
         return [i for i in range(1, n) if stats[i][4] >= REFLECT_MIN_AREA and cents[i][1] >= y_min
                 and not (short_only and stats[i][3] >= tall)]
 
-    @staticmethod
-    def blob_sharpness(roi, comps, i):
+    def blob_sharpness(self, roi, comps, i):
         """Edge steepness of blob i: 90th percentile edge gradient over its contrast with the floor around it. None if it cannot be measured.
 
         Tape has crisp edges (about 0.37-0.5). A ceiling-light reflection on a glossy mat fades out softly (about 0.18-0.33).
@@ -732,16 +762,27 @@ class LaneDetector:
         x, y, w, h, _ = stats[i]
         x0, y0, x1, y1 = max(x - 5, 0), max(y - 5, 0), min(x + w + 5, W), min(y + h + 5, H)
         blob = (labels[y0:y1, x0:x1] == i).astype(np.uint8)
-        g = cv2.cvtColor(roi[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
-        if LINE_COLOR == "black":
-            g = 255 - g
         ring = (cv2.dilate(blob, REFLECT_K9) > 0) & (blob == 0)
         edge = (cv2.dilate(blob, REFLECT_K5) > 0) & (cv2.erode(blob, REFLECT_K5) == 0)
         if not ring.any() or not edge.any():
             return None
-        contrast = pct(g[blob > 0], 90) - pct(g[ring], 50)
+        g = self._roi_gray(roi)[y0:y1, x0:x1].astype(np.float32)    # The ROI's gray, made once per frame (the same pixels as converting the crop).
+        if LINE_COLOR == "black":
+            g = 255 - g
         mag = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
+        contrast = pct(g[blob > 0], 90) - pct(g[ring], 50)
         return float(pct(mag[edge], 90) / max(contrast, 1.0))
+
+    def _roi_gray(self, roi):
+        """Gray of this picture (uint8). Inside a detection it is made once per frame and shared (line mask, reflections);
+        outside one (tools calling a part directly) it is made each time."""
+        cache = getattr(self, "_sharp_cache", None)
+        if cache is None:
+            return cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        key = (roi.__array_interface__["data"][0], roi.shape, roi.strides)
+        if key not in cache:
+            cache[key] = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        return cache[key]
 
     def motion_verdict(self, gray, old, box):
         """"paint", "glare", or None: how far the blob came toward the car since the old frame, on the floor.
@@ -799,7 +840,7 @@ class LaneDetector:
                 self.moving_since = now if self.moving_since is None else self.moving_since
             else:
                 self.moving_since = None
-            gray = cv2.resize(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (roi.shape[1] // 2, roi.shape[0] // 2), interpolation=cv2.INTER_AREA)
+            gray = cv2.resize(self._roi_gray(roi), (roi.shape[1] // 2, roi.shape[0] // 2), interpolation=cv2.INTER_AREA)
             if self.moving_since is not None and now - self.moving_since >= GLARE_WINDOW:
                 past = [g for t, g in self.history if now - t >= GLARE_WINDOW and t >= self.moving_since]
                 old = past[-1] if past else None
@@ -876,7 +917,7 @@ class LaneDetector:
         return int(stats[ids, 3].max()) if len(ids) else 0
 
     def line_mask(self, roi):
-        gray = cv2.GaussianBlur(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY), (5, 5), 0)
+        gray = cv2.GaussianBlur(self._roi_gray(roi), (5, 5), 0)
         if LINE_COLOR == "black":
             # Black line on a white floor: inverting brightness makes it look like a white line on a black floor (the mat is the white floor).
             gray = cv2.bitwise_not(gray)
@@ -1249,6 +1290,17 @@ class LaneDetector:
             self.gap_why = "held by line tips"
 
     def __call__(self, frame, side="center", draw=True):
+        """Return ((position error, heading error) or None, junction detected, debug image).
+
+        draw=False skips the debug drawing. Detection is unchanged, and the debug image is None, which is faster when the view is not being sent.
+        """
+        self._sharp_cache = {}      # This frame's gray and edge pictures, shared by every blob_sharpness() call inside it.
+        try:
+            return self._detect(frame, side, draw)
+        finally:
+            self._sharp_cache = None
+
+    def _detect(self, frame, side="center", draw=True):
         """Return ((position error, heading error) or None, junction detected, debug image).
 
         draw=False skips the debug drawing. Detection is unchanged, and the debug image is None, which is faster when the view is not being sent.
