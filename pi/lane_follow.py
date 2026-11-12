@@ -1882,6 +1882,7 @@ class CourseRunner:
         self.clear_junction_latch()
         self.entered = False    # next(): Enter counts only once this action is running.
         self.count = 0          # nth=: how many of this action's until events have passed so far.
+        self.gap_end = None     # gap=: after passing one, the next is not looked at until this time.
         self.hits["lane"] = 0
         self.turn_clear = 0
         self.hold = None
@@ -2028,7 +2029,8 @@ class CourseRunner:
         # blind_sec: for this long after the action starts, the end condition is not counted and the event is not armed.
         # A line that flickers during that time does not end the action the moment the blind period finishes.
         blind = (until is not None and self.step_start is not None
-                 and now - self.step_start < (step.get("blind") or 0))
+                 and (now - self.step_start < (step.get("blind") or 0)
+                      or (self.gap_end is not None and now < self.gap_end)))
         for k, v in seen.items():
             self.miss[k] = 0 if v else self.miss[k] + 1
             if blind and k == until:
@@ -2218,6 +2220,7 @@ class CourseRunner:
             elif step["max"] is None and step["until"] is not None and step["do"] != "wait" and elapsed >= STEP_MAX_SEC:
                 reason = f"safety time {STEP_MAX_SEC}s (the condition never came, set max_sec to change)"
             elif (step["until"] is not None and elapsed >= step["min"]
+                  and (self.gap_end is None or now >= self.gap_end)     # gap=: still in the wait after a passed one.
                   and (self.happened(step["until"], now, step.get("hold", 0.0)) or self.junction_lost())
                   and not (self.uses_laneend(step) and self.ruler.kind != "laneend" and 0 < self.end_hits < LANEEND_FRAMES)):    # A lane end being confirmed: wait the few frames for it.
                 lost = self.junction_lost()     # Cleared below, so read it first. A held line and a lost line never both match one frame.
@@ -2231,6 +2234,10 @@ class CourseRunner:
                     print(f"\n[{self.idx + 1}] {reason} #{self.count} passed (ends at #{step['nth']})")
                     self.ruler.reset(None)      # The next line is a new one.
                     self.end_hits, self.line_gap = 0, None
+                    if step.get("gap"):
+                        wait = step["gap"][min(self.count, len(step["gap"])) - 1]
+                        self.gap_end = now + wait
+                        print(f"[{self.idx + 1}] next one not looked at for {wait:g}s")
                     reason = None
                 elif step.get("cm") is not None:
                     self.start_run_out(step, ys or {}, now)

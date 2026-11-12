@@ -2,7 +2,7 @@
 # --- 주행 ---
 REFLECT_MOTION_ON = False    # 반사광을 움직임으로 구별 (반짝이는 매트용). False = 끄고 가장자리 날카로움으로만 판단 (반사 없는 경기장이면 결과 같고 더 빠름)
 STOP_POINTS_ON = False      # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
-SPEED = 0.7                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
+SPEED = 0.75                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 STEER_MAX = 8            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
 
 # --- 신호등 ---
@@ -23,7 +23,7 @@ EVENTS = ("junction", "crosswalk", "lane", "gap", "end", "crossed", "green", "ob
           "_crosswalk", "_crossed", "_stop", None)
 SIDES = ("left", "right", "center", None)
 STYLES = ("soft", "normal", "sharp", None)
-OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow", "blind_sec", "deg", "nth", "cm", "min_speed")
+OPTIONS = ("min_sec", "max_sec", "speed", "at", "side", "shift", "steer", "style", "hold_sec", "slow", "blind_sec", "deg", "nth", "gap", "cm", "min_speed")
 
 
 def _hint(word, choices):
@@ -79,6 +79,7 @@ def _step(do, angle, sec, until, **opt):
     nth = opt.get("nth")
     if nth is not None and (isinstance(nth, bool) or not isinstance(nth, int) or nth < 1):
         raise ValueError(f"{do}(): nth must be an integer of 1 or more")
+    gap = _gap(opt.get("gap"), nth, do)
     cm = opt.get("cm")
     if cm is not None and until not in ("junction", "end"):
         raise ValueError(f'{do}(): cm= is only for until="junction" / "end"')
@@ -117,7 +118,7 @@ def _step(do, angle, sec, until, **opt):
             "min": min_sec, "max": max_sec, "speed": speed,
             "at": at, "hold": hold, "side": opt.get("side"), "shift": shift,
             "steer": steer, "style": opt.get("style"), "slow": slow,
-            "blind": blind, "deg": deg, "nth": nth, "cm": cm, "min_speed": min_speed}
+            "blind": blind, "deg": deg, "nth": nth, "gap": gap, "cm": cm, "min_speed": min_speed}
 
 
 def _auto(step, speed, default):
@@ -235,6 +236,21 @@ def finish():
     return _step("finish", 0.0, 0, None)
 
 
+def _gap(gap, nth, name):
+    # gap=1.5: nth로 하나 지나칠 때마다 1.5초 동안 다음 인식을 안 봄. gap=[1, 2]: 첫 틈 1초, 둘째 틈 2초
+    if gap is None:
+        return None
+    gaps = list(gap) if isinstance(gap, (list, tuple)) else [gap]
+    if not gaps or any(_bad_num(g, 0, 60) for g in gaps):
+        raise ValueError(f"{name}(): gap must be 0 to 60 seconds, or a list of them ({gap!r})")
+    n = nth or 1
+    if n < 2:
+        raise ValueError(f"{name}(): gap= needs nth=2 or more (it is the wait between sightings)")
+    if isinstance(gap, (list, tuple)) and len(gaps) != n - 1:
+        raise ValueError(f"{name}(): nth={n} has {n - 1} gaps, so gap needs {n - 1} numbers ({gap!r})")
+    return [float(g) for g in gaps] if len(gaps) > 1 else [float(gaps[0])] * (n - 1)
+
+
 def _nth(nth, name):
     # nth=2: 같은 것을 하나 지나치고 두 번째에서 끝
     if nth is None:
@@ -244,34 +260,34 @@ def _nth(nth, name):
     return nth if nth > 1 else None
 
 
-def to_junction(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None):
+def to_junction(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None, gap=None):
     if nth is None:
         nth = 1
     if isinstance(nth, bool) or not isinstance(nth, int) or nth < 1:
         raise ValueError(f"to_junction(): nth must be an integer of 1 or more ({nth})")
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"to_junction(): sec must be 0 to 600 ({sec})")
-    step = _auto(follow(until="junction", shift=shift, speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
+    step = _auto(follow(until="junction", shift=shift, speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, gap=gap, cm=cm, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
     # cm, at 둘 다 없으면 lane_follow.py LANEEND_BASE_CM(기본 10cm)을 주행 시작 때 채움 (여기서 lane_follow를 부르면 순환 import)
     return dict(step, cm_default=True) if cm is None and at is None else step
 
-def go(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None):
+def go(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None, gap=None):
     if nth is None:
         nth = 1
     if isinstance(nth, bool) or not isinstance(nth, int) or nth < 1:
         raise ValueError(f"go(): nth must be an integer of 1 or more ({nth})")
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"go(): sec must be 0 to 600 ({sec})")
-    step = _auto(follow(until="junction", shift=shift, speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, cm=cm, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
+    step = _auto(follow(until="junction", shift=shift, speed=speed, at=at, slow=slow, blind_sec=blind_sec, nth=nth if nth > 1 else None, gap=gap, cm=cm, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
     # cm, at 둘 다 없으면 lane_follow.py LANEEND_BASE_CM(기본 10cm)을 주행 시작 때 채움 (여기서 lane_follow를 부르면 순환 import)
     return dict(step, cm_default=True) if cm is None and at is None else step
 
 
-def to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1):
+def to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1, gap=None):
     # sec=3: 횡단보도에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽). steer=15: 최대 조향각
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"to_crosswalk(): sec must be 0 to 600 ({sec})")
-    return _auto(follow(until="crosswalk", nth=_nth(nth, "to_crosswalk"), shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
+    return _auto(follow(until="crosswalk", nth=_nth(nth, "to_crosswalk"), gap=gap, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
 
 
 def pass_crosswalk():
@@ -279,14 +295,14 @@ def pass_crosswalk():
 
 
 # 등록한 횡단보도(aicar crosswalk)로 판단하는 버전. 위의 to_crosswalk / pass_crosswalk는 그대로 두고 함께 쓸 수 있음
-def _to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1):
+def _to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1, gap=None):
     # 등록한 횡단보도가 at 높이까지 오면 끝. sec=3: 횡단보도에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽). steer=15: 최대 조향각
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"_to_crosswalk(): sec must be 0 to 600 ({sec})")
-    return _auto(follow(until="_crosswalk", nth=_nth(nth, "_to_crosswalk"), shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
+    return _auto(follow(until="_crosswalk", nth=_nth(nth, "_to_crosswalk"), gap=gap, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
 
 
-def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, min_speed=None, blind_sec=0.5, shift=None):
+def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, min_speed=None, blind_sec=0.5, shift=None, gap=None):
     # 등록한 정지 지점(aicar stoppoint, 메뉴 t)까지 가서 정지. 차를 그 자리에 놓고 등록한 모양이 등록 때 위치에 오면 끝
     # offset=3: 등록 위치보다 3cm 더 가서 / -3: 덜 가서.  nth=2: 같은 모양을 하나 지나치고 두 번째에서
     # sec=10: 못 찾아도 10초가 지나면 끝.  감속 없이 지정 속도로 가서 정지 (slow=0.3을 주면 다가가며 감속). steer, speed, min_speed, blind_sec는 go()와 같음
@@ -303,9 +319,9 @@ def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, mi
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"go_to(): sec must be 0 to 600 ({sec})")
     if not STOP_POINTS_ON:      # 꺼져 있으면 go()와 같이 차선 끝(기본 10cm)에서 정지
-        return go(slow=slow, blind_sec=blind_sec, speed=speed, nth=nth, steer=steer, sec=sec, min_speed=min_speed, shift=shift)
+        return go(slow=slow, blind_sec=blind_sec, speed=speed, nth=nth, gap=gap, steer=steer, sec=sec, min_speed=min_speed, shift=shift)
     step = follow(until="_stop", shift=shift, speed=speed, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed,
-                  blind_sec=blind_sec, nth=nth if nth > 1 else None)
+                  blind_sec=blind_sec, nth=nth if nth > 1 else None, gap=gap)
     return _auto(dict(step, stop=name, stop_cm=offset), speed, SPEED)
 
 
@@ -459,7 +475,7 @@ def describe(step):
         parts.append(where)
     for key, fmt in (("side", "on the {} line"), ("shift", "{:+}cm off center"), ("steer", "max {} deg"),
                      ("style", "{}"), ("speed", "speed {}"), ("slow", "slow to {}"),
-                     ("blind", "ignore first {}s"), ("min", "at least {}s"), ("deg", "end after {} deg"), ("nth", "at line #{}"), ("cm", "+{}cm")):
+                     ("blind", "ignore first {}s"), ("min", "at least {}s"), ("deg", "end after {} deg"), ("nth", "at line #{}"), ("gap", "gaps {}s"), ("cm", "+{}cm")):
         if step.get(key) is not None and not (key == "speed" and step["do"] in ("stop", "wait")) \
                 and not (key in ("blind", "min") and not step[key]):
             parts.append(fmt.format(step[key]))
@@ -483,40 +499,48 @@ def describe(step):
 # finish()                  코스 끝, 정지
 # set_speed(v)              이 뒤 주행 속도를 v로 (턴, straight, 직접 준 speed= 제외). set_speed()는 기본값으로 되돌림
 # set_steer(deg)            이 뒤 차선 주행 최대 조향각을 deg도로 (턴, straight, 직접 준 steer= 제외). set_steer()는 STEER_MAX로 되돌림
+# back(sec, angle)          sec초 동안 후진 (차선은 안 봄). angle=10: 바퀴를 오른쪽으로 10도 꺾고 후진, speed=0.5: 후진 속도
 # 
-# [목표 지점까지 가기]
-# to_junction(at, nth)      다음 교차로 선 앞까지 감속하며 가서 끝 (nth=2: 첫 선은 지나치고 두 번째에서). 아래까지 보였다가 사라져도 끝
-# to_crosswalk(at)          횡단보도 앞까지 감속하며 가서 끝
-# to_gap(at)                차선이 끊기는 곳 앞까지 감속하며 가서 끝
-# to_end(at)                바로 앞 끝에서 끝: 교차로선(가로선)이든 차선 끊김이든 먼저 오는 쪽
+# [목표 지점까지 가기]  (감속 없음: 지정 속도 그대로 가서 끝. slow=0.3을 주면 다가가며 감속)
+# go(cm, nth) / to_junction 교차로 앞 차선 끝까지 가서 끝 (cm 없으면 10cm). 아래까지 보였다가 사라져도 끝
 #                           go(sec=3) / to_junction(sec=3): 교차로에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽)
-#                           to_junction(cm=25): 화면의 LANE END 거리가 25cm가 되면 끝 (차로 선이 교차로에서 끝나는 곳까지 거리). cm 없으면 10
+#                           go(cm=25): 화면의 LANE END 거리가 25cm가 되면 끝 (차로 선이 교차로에서 끝나는 곳까지 거리)
 #                                            거리는 차 앞쪽 기준. 4.5보다 작게 주면 선이 화면에서 안 보여 4.5에서 끝냄. 화면 값과 줄자 값이 다르면 lane_follow.py LANEEND_OFFSET_CM
+# to_crosswalk(at, nth)     횡단보도 앞까지 가서 끝
+# to_gap(at)                차선이 끊기는 곳 앞까지 가서 끝
+# to_end(at)                바로 앞 끝에서 끝: 교차로선(가로선)이든 차선 끊김이든 먼저 오는 쪽
 #                           to_end(cm=10): 선을 자로 재서 기준 위치에서 10cm 더 간 뒤 끝. cm=0은 선이 카메라 앞 38cm일 때
-# pass_crosswalk            횡단보도 지나가기 
-# _to_crosswalk(at) / _pass_crosswalk()   위와 같지만 등록한 횡단보도(aicar crosswalk, 메뉴 c)로 판단. 기존 것과 함께 쓸 수 있음
-# go_to("A", offset)        등록한 정지 지점 A(aicar stoppoint, 메뉴 t)까지 가서 정지. offset=3: 3cm 더 가서
+# pass_crosswalk()          횡단보도 지나가기
+# _to_crosswalk(at, nth) / _pass_crosswalk()   위와 같지만 등록한 횡단보도(aicar crosswalk, 메뉴 c)로 판단. 기존 것과 함께 쓸 수 있음
+# go_to("A", offset, nth)   등록한 정지 지점 A(aicar stoppoint, 메뉴 t)까지 가서 정지. offset=3: 3cm 더 가서 / -3: 덜 가서. sec=10: 못 찾아도 10초 뒤 끝
 #                           go_to("A|B"): A 또는 B 중 먼저 오는 곳에서 정지 (소문자 "a|b"도 됨)
+#                           STOP_POINTS_ON = False면 go()처럼 차선 끝에서 정지
+# nth=, gap=                (go, to_junction, to_crosswalk, _to_crosswalk, go_to)
+#                           nth=3: 앞의 2개는 지나치고 세 번째에서 끝
+#                           gap=[1, 2.5]: 하나 지나칠 때마다 다음 인식까지 쉬는 초. 첫 틈 1초, 둘째 틈 2.5초 (개수 = nth-1) / gap=1.5: 모든 틈 1.5초
+#
 # [묶음 동작 (여러 단계)]
 # cross_gap(at, angle)      끊긴 곳까지 간 뒤 새 차선이 잡힐 때까지 직진 (sec=1.5: 1.5초만 직진, steer=15: 최대 조향각)
 # traffic(at, max_sec)      횡단보도 앞에 서서 초록불에 출발
 # cross(at, line, approach) 교차로선까지 가서 정면으로 건넘 / line="crosswalk": 차선 따라 횡단보도 건넘 (approach=False: 이미 앞에 서 있을 때)
-# corner(direction, wide)   교차로 선까지 가서 go_sec초 더 간 뒤 꺾고 정렬·천천히 주행 (to_junction + straight + tr/tl)
-# uturn(direction)          교차로 선 앞에서 최대 조향으로 돌아 정렬·천천히 주행 (blind_sec 동안 새 차선 안 봄)
-# tr(min_sec, sec, deg)     우회전 → 차로에 맞춰 정렬 → sec초 천천히(0.3) 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
-# tl(min_sec, sec, deg)     좌회전 → 차로에 맞춰 정렬 → sec초 천천히(0.3) 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
+# corner(direction, wide)   교차로 선까지 가서 go_sec초 더 간 뒤 꺾고 정렬·주행 (to_junction + straight + tr/tl)
+# uturn(direction)          교차로 선 앞에서 최대 조향으로 돌아 정렬·주행 (blind_sec 동안 새 차선 안 봄)
+# tr(min_sec, sec, deg)     우회전 → 차로에 맞춰 정렬 → sec초 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
+# tl(min_sec, sec, deg)     좌회전 → 차로에 맞춰 정렬 → sec초 주행 (deg: 이만큼 돌면 끝, min_sec: 최소 이 시간은 돎)
 #                           tr(align=False) / tl(align=False): 회전 뒤 차로 가운데 맞추기(정렬)를 건너뜀
-#                           tr()/tl() 속도: set_speed()가 있으면 회전·정렬·주행 모두 그 속도. 없으면 회전 0.35, 정렬 0.4, 주행 0.3
+#                           tr()/tl() 속도: 감속 없음. speed=를 주면 그 속도, 없으면 set_speed() 또는 SPEED 그대로
 #
 # [공통 옵션]
-# at=        감지 위치 (0.4~1.0, 클수록 가까이)     slow=      선에 가까워질수록 이 속도까지 감속
+# at=        감지 위치 (0.4~1.0, 클수록 가까이)     slow=      선에 가까워질수록 이 속도까지 감속 (없으면 감속 안 함)
 # speed=     주행 속도                              blind_sec= 시작 후 이 시간 동안 감지 안 함
 # min_sec=   최소 진행 시간                         max_sec=   최대 진행 시간
 # side=      기준 선 ("left"/"right"/"center")      shift=     차로 안에서 치우침 (cm, +오른쪽, ±8)
 # style=     조향 성향 ("soft"/"normal"/"sharp")    steer=     최대 조향각
-# min_speed= 감속(조향, slow=, 차선 놓침)해도 이 속도 밑으로 안 내려감 (예: min_speed=0.425)
+# nth=       n번째에서 끝 (앞의 것은 지나침)        gap=       지나친 뒤 다음 인식까지 쉬는 초 (숫자 또는 틈마다 리스트)
+# min_speed= slow=나 차선 놓침으로 감속해도 이 속도 밑으로 안 내려감 (예: min_speed=0.425)
 # hold_sec=  조건이 이 시간 동안 유지돼야 끝
 # until=     "junction" "crosswalk" "lane" "gap" "end" "crossed" "green" "obstacle" "clear" "lost" "aligned"
+#            "_crosswalk" "_crossed" (등록 횡단보도) "_stop" (등록 정지 지점)
 
 # --- 예시 코스 ---
 
@@ -554,33 +578,43 @@ def describe(step):
 COURSE = _flat([
     start_gate(2),
     follow(8,shift=3),
-    go(steer=8,cm=12,nth=2),
-    follow(1),
-    stop(0.35),
-    _to_crosswalk(0.85),
+    go(steer=8,cm=12),
+    follow(5),
+    _to_crosswalk(0.85, nth=2, gap=1.5),
     wait_green(max_sec=20),
     stop(1.5),
     pass_crosswalk(),
-    go(steer=8,cm=20,nth=2,shift=4),
-    follow(16),
-
-    next(),
-
-    go(steer=8,cm=20,shift=3),
-
-    next(),
-
-
-    stop(0.5),
-    stop(1),
-    back(3),
+    go(steer=8,cm=8,nth=3,shift=2),
+    follow(0.25),
     tl(),
+
+
+
     set_speed(0.5),
     go(steer=8,cm=12),
+
     set_speed(0.75),
-    stop(1),
+    stop(0.5),
+    follow(0.5),
+    tr(),
+
+
+    set_speed(0.5),
+    go(steer=8,cm=7),
+
+
+    next(),
+
+
+
+
+    set_speed(0.75),
+    stop(0.5),
     follow(1),
-    tl(),
+    tr(),
+
+
+
     finish(),
  
 
