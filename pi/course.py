@@ -697,7 +697,7 @@ def describe(step):
     # tl(),
     # go(steer=8,cm=12),
     # follow(1),
-    # tr(),
+    # tr(align=False),
     # stop(0.5),
     # follow(2),
     # stop(0.5),
