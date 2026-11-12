@@ -50,7 +50,9 @@ HELP = {
   Stand the car exactly where it should stop. Drag a box around what marks the place ahead:
   the lane's line end, the line across, or a corner. Move the car 1-2 cm and drag again (2-3 views).
   Then n for the next stop point, and so on. Use them in course.py as go_to("A").
+  Or press Space: the whole view is registered (no box). Good where no one mark stands out.
 
+    Space           register the whole view as a view of this point
     n               next stop point (A, B, C, ...)
     Enter (twice)   save and quit         u   undo the last view
     q (twice)       quit without saving
@@ -200,7 +202,7 @@ def main():
         print("  [warning] Exposure is not locked. Run aicar calibrate first for steadier results.\n")
 
     cam = lf.open_camera()
-    keys = "drag a box · n next point · u undo · Enter twice save · q twice quit" if kind == "stop" else "drag a box · u undo · Enter twice save · q twice quit without saving"
+    keys = "drag a box or Space whole view · n next point · u undo · Enter twice save · q twice quit" if kind == "stop" else "drag a box · u undo · Enter twice save · q twice quit without saving"
     stream = lf.Stream(8000, f"AICAR {kind}", keys, confirm="\nq", drag_share=0.5)
     traffic, det = lf.TrafficLight(), lf.LaneDetector()
 
@@ -288,7 +290,14 @@ def main():
                             added.append(name)
                             note = f"Added: {note}  (stop where its bottom is at y {model.stop_y(name):.0f})"
             for key in stream.read_keys(terminal=False).lower() + (sys.stdin.read(1).lower() if lf.select.select([sys.stdin], [], [], 0)[0] else ""):
-                if key == "n" and kind == "stop":
+                if key == " " and kind == "stop":
+                    shot = grab(cam, VIEW_FRAMES)
+                    mask = frame_mask(shot)
+                    ok, note = model.add(name, mask, landmarks.StopModel.whole_box(mask.shape, int(lf.FRAME_H * lf.ROI_TOP)), whole=True)
+                    if ok:
+                        added.append(name)
+                        note = f"Added whole view: {note}"
+                elif key == "n" and kind == "stop":
                     if name in model.points:
                         nxt = next_name(model)
                         if nxt is None:

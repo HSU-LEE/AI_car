@@ -220,6 +220,10 @@ STOP_MATCH = 0.78           # How well (normalized correlation of the line masks
 STOP_VIEWS_PER_FRAME = 2    # Not found yet: this many views are tried per frame, in turn, so many views do not slow the drive.
 STOP_MAX_VIEWS = 8          # Views kept per point (the newest). More only cost time.
 STOP_WIDE = 0.6             # A box wider than this share of the frame takes in more than the place: refused.
+STOP_WHOLE_ROWS = (0.30, 0.85)  # Whole-view stop point (Space): this band of the line area (0 = its top, 1 = the frame bottom).
+STOP_WHOLE_COLS = (0.04, 0.96)  # ... across this much of the width. The room left above and at the sides lets it be found while still coming.
+STOP_WHOLE_MATCH = 0.9         # A whole view must match better than a box: a plain lane looks much the same all along.
+STOP_WHOLE_SCALE = 0.95         # ... and at about its registered size before it counts as reached (farther, it looks smaller).
 STOP_TRACK_PX = 40          # Once found, the next frame looks only this far (half-size px) around it, at nearby sizes.
 
 
@@ -257,16 +261,27 @@ class StopModel:
     def names(self):
         return sorted(self.points)
 
-    def add(self, name, mask, box):
-        """Add a view of point name: mask is the frame-size line mask (0/255), box (x, y, w, h) in frame px."""
+    @staticmethod
+    def whole_box(shape, top):
+        """The box a whole-view stop point uses: most of the line area, frame px (x, y, w, h)."""
+        H, W = shape[:2]
+        y0, y1 = int(top + (H - top) * STOP_WHOLE_ROWS[0]), int(top + (H - top) * STOP_WHOLE_ROWS[1])
+        x0, x1 = int(W * STOP_WHOLE_COLS[0]), int(W * STOP_WHOLE_COLS[1])
+        return x0, y0, x1 - x0, y1 - y0
+
+    def add(self, name, mask, box, whole=False):
+        """Add a view of point name: mask is the frame-size line mask (0/255), box (x, y, w, h) in frame px.
+
+        whole: the box is the whole view (whole_box), so the wide-box limit does not apply.
+        """
         x, y, w, h = box
-        if w > STOP_WIDE * mask.shape[1]:
-            return False, "the box is too wide: draw it around just the mark (line end, line across, corner), not the whole view"
+        if not whole and w > STOP_WIDE * mask.shape[1]:
+            return False, "the box is too wide: draw it around just the mark, or press Space to register the whole view"
         patch = cv2.resize(mask[y:y + h, x:x + w], (max(w // 2, 4), max(h // 2, 4)), interpolation=cv2.INTER_AREA)
         if patch.std() < 8:
             return False, "no line inside the box (draw it around the line end, line across or corner)"
         views = self.points.setdefault(name, {"views": []})["views"]
-        views.append({"patch": _encode(patch), "box": [int(v) for v in box]})
+        views.append({"patch": _encode(patch), "box": [int(v) for v in box], **({"whole": True} if whole else {})})
         del views[:-STOP_MAX_VIEWS]
         self._patches.pop(name, None)
         return True, f"{name}: view {len(self.points[name]['views'])}"
@@ -286,7 +301,8 @@ class StopModel:
     def templates(self, name):
         if name not in self._patches:
             views = self.points[name]["views"][-STOP_MAX_VIEWS:]     # A file from before the limit may hold more: the newest count.
-            self._patches[name] = [(cv2.GaussianBlur(_decode(v["patch"]), (5, 5), 0).astype(np.float32), v["box"]) for v in views]
+            self._patches[name] = [(cv2.GaussianBlur(_decode(v["patch"]), (5, 5), 0).astype(np.float32), v["box"], bool(v.get("whole")))
+                                   for v in views]
         return self._patches[name]
 
     def find(self, name, mask, top, last=None):
@@ -339,7 +355,9 @@ class StopModel:
                         continue
                 res = cv2.matchTemplate(region, t, cv2.TM_CCOEFF_NORMED)
                 _, score, _, loc = cv2.minMaxLoc(res)
+                if tpls[vi][2] and score < min_score + (STOP_WHOLE_MATCH - STOP_MATCH):
+                    continue        # Whole view: the stricter match.
                 if best is None or score > best["score"]:
                     best = {"score": float(score), "scale": sc, "x": factor * (rx0 + loc[0]), "y": top + factor * (ry0 + loc[1]),
-                            "w": factor * tw, "h": factor * th, "view": vi}
+                            "w": factor * tw, "h": factor * th, "view": vi, "whole": tpls[vi][2]}
         return best if best is not None and best["score"] >= min_score else None

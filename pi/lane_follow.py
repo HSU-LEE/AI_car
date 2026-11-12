@@ -2940,6 +2940,8 @@ class Driver:
             dist = max(floor_cm(STOP_MODEL.stop_y(name)) - (step.get("stop_cm") or 0.0), 1.0)
             target = float(min(HORIZON_Y + scale / dist, FRAME_H - 2))
             y = None if found is None else found["y"] + found["h"] / 2      # Its center, like the registered one.
+            if y is not None and found.get("whole") and found["scale"] < landmarks.STOP_WHOLE_SCALE:
+                y = min(y, target - 1)      # Whole view still smaller than registered: still coming, not there yet.
             left = None if y is None else floor_cm(y) - floor_cm(target)
             if best is None or (left is not None and (best[3] is None or left < best[3])):
                 best = (name, found, target, left, y)
