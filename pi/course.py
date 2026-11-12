@@ -690,18 +690,20 @@ def describe(step):
     # wait_green(max_sec=20),
     # stop(1.5),
     # pass_crosswalk(),
-    # go(steer=8,cm=20,nth=2,shift=2),
-    # follow(1),
-    # go_to("A", cm=15),
-    # stop(0.5),    
-    # back(5.5),
-    # tl(),    
+    # go(steer=8,cm=20,nth=1,shift=2),
+    # follow(5),
+    # go_to("A", cm=20,shift=2),
+    # follow(2),
+    # tl(),
     # go(steer=8,cm=12),
-    # push(1),
+    # follow(1),
     # tr(),
-    # go(steer=8,cm=20),
     # stop(0.5),
-    # back(4.25),
+    # follow(2),
+    # stop(0.5),
+    # go_to("B", cm=20),
+    # stop(1),
+    # back(5),
     # tr(),
     # follow(3),
     # to_crosswalk(0.8),
@@ -717,37 +719,6 @@ COURSE = _flat([
     set_style("soft"),
     start_gate(2),
 
-    go_to("A", cm=15),
-
-
-    # follow(8,shift=3),
-    # go(steer=8,cm=12),
-    # _to_crosswalk(0.85, nth=2, gap=1.5),
-    # wait_green(max_sec=20),
-    # stop(1.5),
-    # pass_crosswalk(),
-    # go(steer=8,cm=20,nth=2,shift=2),
-    # follow(1),
-    # go_to("A", cm=15),
-
-    # stop(0.5),    
-    # back(5.5),
-    
-    # tl(),
-    
-    # go(steer=8,cm=12),
-    
-    # push(1),
-    # tr(),
-    
-    # go(steer=8,cm=20),
-    # stop(0.5),
-    
-    # back(4.25),
-    # tr(),
-    
-    # follow(3),
-    # to_crosswalk(0.8),
 
 
 
