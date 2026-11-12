@@ -2886,6 +2886,8 @@ class Driver:
 
     def __init__(self, course, start=1, base_speed=BASE_SPEED, obstacle=None, person=None):
         self.detect, self.traffic, self.steering = LaneDetector(), TrafficLight(), Steering()
+        self.traffic_view = TrafficLight()      # The light shown on the web page when not waiting for green: kept apart from
+                                                # self.traffic, so watching the page cannot change what wait_green decides.
         self.course = CourseRunner(course, start)
         self.base_speed = base_speed
         self.obs = obstacle
@@ -3153,7 +3155,7 @@ class Driver:
         """Camera detection view with the info panel on the right."""
         course, detect, steering = self.course, self.detect, self.steering
         step = course.step()
-        self.traffic.draw(dbg, regions=course.needs_light())
+        (self.traffic if course.needs_light() else self.traffic_view).draw(dbg, regions=course.needs_light())
         if self.person is not None:
             draw_person(dbg, self.person.detector, self.person.at)
 
@@ -3301,10 +3303,12 @@ class Driver:
         course.stop_whole = bool(self.stop_found and self.stop_found.get("whole"))
         # Traffic light: every frame while waiting for green. For the view only, every LIGHT_VIEW_EVERY frames (the last result is shown between).
         need_light = course.needs_light()
-        if need_light or (show and self.light_tick % LIGHT_VIEW_EVERY == 0):
+        if need_light:
             self.traffic(frame)
+        elif show and self.light_tick % LIGHT_VIEW_EVERY == 0:
+            self.traffic_view(frame)        # For the view only.
         self.light_tick += 1
-        light = self.traffic.state if need_light or show else None
+        light = self.traffic.state if need_light else (self.traffic_view.state if show else None)
         course.local_light = None
         if step is not None and step["do"] == "wait" and step["until"] == "green" and course.red_seen:
             # Whether any spot that was red has changed to green. The lamp spot still changes even if another red object is present.
