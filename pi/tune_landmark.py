@@ -233,14 +233,22 @@ def main():
                 elif kind == "line":
                     found = f"reflection cut {model.reflect_cut():.2f}" if model.samples else "reflection cut (default)"
                 else:
-                    found = f"now registering {name}"
                     top = int(lf.FRAME_H * lf.ROI_TOP)
+                    seen = []
                     for nm in model.names():
                         hit = model.find(nm, det.mask, top)
+                        target = model.stop_y(nm)
                         if hit:
+                            # The same test the drive uses (go_to): the center has come down to where it was, and a whole view is full size.
+                            yc = hit["y"] + hit["h"] / 2
+                            here = yc >= target - 1 and not (hit.get("whole") and hit["scale"] < landmarks.STOP_WHOLE_SCALE)
+                            left = max(lf.floor_cm(yc) - lf.floor_cm(target), 0.0)
+                            tag = "STOP HERE" if here else f"{left:.1f}cm to go"
                             cv2.rectangle(view, (hit["x"], hit["y"]), (hit["x"] + hit["w"], hit["y"] + hit["h"]), lf.C_AT, 2)
-                            lf.chip(view, f"{nm} {hit['score']:.2f}", hit["x"], max(hit["y"] - 22, 0), lf.C_AT, 0.4)
-                        lf.dashed_hline(view, int(model.stop_y(nm)), lf.C_AT, dash=10, gap=6)
+                            lf.chip(view, f"{nm} {hit['score']:.2f} {tag}", hit["x"], max(hit["y"] - 22, 0), lf.C_AT, 0.4)
+                            seen.append(f"{nm} {tag}")
+                        lf.dashed_hline(view, int(target), lf.C_AT, dash=10, gap=6)
+                    found = f"registering {name}  |  " + (", ".join(seen) if seen else "no point in view")
             side = np.zeros_like(frame)
             if kind == "light":
                 lines = [f"{s['color']}  area {s['area']}  hue {s['h'][0]}..{s['h'][1]}" for s in model.samples]
@@ -249,7 +257,9 @@ def main():
             elif kind == "line":
                 lines = [f"sample {k + 1}: edge {s['sharp']:.2f} width {s['width']:.2f} contrast {s['contrast']:.0f}" for k, s in enumerate(model.samples)]
             else:
-                lines = [f"{nm}: {len(model.points[nm]['views'])} views, stops at y {model.stop_y(nm):.0f}" for nm in model.names()] + [f"(next box: {name})"]
+                lines = [f"{nm}: {sum(1 for v in model.points[nm]['views'] if v.get('whole'))} whole + "
+                         f"{sum(1 for v in model.points[nm]['views'] if not v.get('whole'))} box views" for nm in model.names()]
+                lines += [f"(next: {name}  Space whole view / drag box)", "push the car by hand: the view", "shows how far to its stop"]
             for k, text in enumerate(lines[-10:]):
                 cv2.putText(side, text, (10, 30 + 26 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
             cv2.putText(view, f"{count()} registered  |  {found}", (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
