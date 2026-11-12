@@ -240,7 +240,7 @@ def main():
                     for nm in model.names():
                         pic, pic_top = landmarks.stop_view(frame, det.mask, top, model.top_y([nm]))
                         hit = model.find(nm, pic, pic_top)
-                        target = model.stop_y(nm)
+                        target = model.view_y(nm, hit["view"]) if hit else model.stop_y(nm)    # Each view's own place.
                         if hit:
                             # The same test the drive uses (go_to): the center has come down to where it was, and a whole view is full size.
                             yc = hit["y"] + hit["h"] / 2

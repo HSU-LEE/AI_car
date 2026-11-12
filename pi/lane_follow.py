@@ -2958,21 +2958,25 @@ class Driver:
         scale = CAMERA_F * LANE_CM / LANE_WIDTH_PX * max(342 - HORIZON_Y, 1.0)
         best = None
         # Boxes drawn above the line area are matched on the picture's edges there (only then is that computed).
+        top_line = top
         view, top = (landmarks.stop_view(frame, self.detect.mask, top, STOP_MODEL.top_y(names)) if frame is not None
                      else (self.detect.mask, top))
         for name in names:
             last = self.stop_last.get(name)
-            if last is None and self.stop_tick % 2:
-                found = None        # Not found yet: the whole-view search runs every other frame only (it is the costly one).
-            else:
-                found = STOP_MODEL.find(name, view, top, last)
-                if found is None and last is not None:
-                    found = STOP_MODEL.find(name, view, top)       # Lost it near the last place: look everywhere again.
+            # Every frame near each view's place (passing over it may take only 1-2 frames); the wide look from afar every other frame.
+            found = STOP_MODEL.find(name, view, top, last, wide=self.stop_tick % 2 == 0)
+            if found is None and last is not None:
+                found = STOP_MODEL.find(name, view, top)       # Lost it near the last place: look everywhere again.
             self.stop_last[name] = found
             # offset= cm farther (or nearer) than where it was registered: the floor distance of that place, moved.
-            dist = max(floor_cm(STOP_MODEL.stop_y(name)) - (step.get("stop_cm") or 0.0), 1.0)
+            # Each view comes to where its own box was (views of one point may be boxes on different things).
+            home_y = STOP_MODEL.view_y(name, found["view"]) if found is not None and "view" in found else STOP_MODEL.stop_y(name)
+            dist = max(floor_cm(home_y) - (step.get("stop_cm") or 0.0), 1.0)
             target = float(min(HORIZON_Y + scale / dist, FRAME_H - 2))
             y = None if found is None else found["y"] + found["h"] / 2      # Its center, like the registered one.
+            near = STOP_MODEL.near_views(name, top_line)
+            if y is not None and near and found.get("view") not in near:
+                y = min(y, target - 1)      # Found by a far view: it shows the point is ahead, but a near view decides the stop.
             if y is not None and not landmarks.StopModel.close_enough(found):
                 y = min(y, target - 1)      # Road area followed but not matched closely yet: still coming, not there yet.
             left = None if y is None else floor_cm(y) - floor_cm(target)

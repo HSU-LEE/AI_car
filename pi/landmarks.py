@@ -224,9 +224,13 @@ STOP_WHOLE_ROWS = (0.30, 0.85)  # Whole-view stop point (Space): this band of th
 STOP_WHOLE_COLS = (0.04, 0.96)  # ... across this much of the width. The room left above and at the sides lets it be found while still coming.
 STOP_WHOLE_MATCH = 0.9         # A road area is followed from afar like a box, but counts as reached only matching this well
 STOP_WHOLE_SCALE = 0.95         # ... and at about its registered size (farther, it looks smaller): a plain lane looks much the same all along.
+STOP_AROUND = (0.92, 1.0, 1.08)    # Sizes tried around a known one.
+STOP_HOME_PX = 24          # ... looked for this far (frame px) around where each view sits at the stop.
+STOP_REFINE_PX = 10        # The every-frame check near each view's place: after a quarter-size look, refined this close (frame px).
 STOP_TRACK_PX = 40          # Once found, the next frame looks only this far (half-size px) around it, at nearby sizes.
 
 
+STOP_NEAR_Y = 144          # Frame y where the line area starts (lane_follow ROI_TOP 0.4 of 360): views centered below it are near.
 STOP_EDGES = (60, 150)      # Above the line area there is no line mask: a box drawn up there is matched on the picture's edges (Canny).
 STOP_ABOVE_PAD = 40         # ... from this many px above the highest such box.
 
@@ -307,6 +311,9 @@ class StopModel:
         note = f"{name}: view {len(self.points[name]['views'])}"
         if plain:
             note += "  [warning] almost nothing to see in this box (no line or edge): it may never be found"
+        if y + h / 2 < STOP_NEAR_Y:
+            note += ("  [note] far box (above the lane area): far things hardly change as the car comes, so it only shows the point is ahead."
+                     " A box on the floor near the car decides the exact stop")
         return True, note
 
     @staticmethod
@@ -328,6 +335,17 @@ class StopModel:
         ys = [v["box"][1] for n in names if n in self.points for v in self.points[n]["views"][-STOP_MAX_VIEWS:]]
         return min(ys) if ys else None
 
+    def near_views(self, name, top=None):
+        """Views whose box center is in the line area (the floor near the car): they place the stop to the cm.
+        Views of far things (boxes drawn above it) hardly change as the car comes closer."""
+        top = STOP_NEAR_Y if top is None else top
+        return {vi for vi, (_, box, _) in enumerate(self.templates(name)) if box[1] + box[3] / 2 >= top}
+
+    def view_y(self, name, view):
+        """Frame y the center of this view's box had when the car stood at the stop."""
+        box = self.points[name]["views"][-STOP_MAX_VIEWS:][view]["box"]
+        return box[1] + box[3] / 2
+
     def stop_y(self, name):
         """Frame y the shape's center had when the car stood at the stop (median over views)."""
         return float(np.median([v["box"][1] + v["box"][3] / 2 for v in self.points[name]["views"]]))
@@ -339,7 +357,7 @@ class StopModel:
                                    for v in views]
         return self._patches[name]
 
-    def find(self, name, mask, top, last=None):
+    def find(self, name, mask, top, last=None, wide=True):
         """Look for point name in the picture from stop_view (mask) whose first row is frame row top. Returns {"x","y","w","h","score","scale"} in frame px, or None.
 
         last: the previous find, to look only around it at nearby sizes (cheaper, and it cannot jump to a look-alike elsewhere).
@@ -348,8 +366,25 @@ class StopModel:
         if name not in self.points:
             return None
         small = cv2.GaussianBlur(cv2.resize(mask, (mask.shape[1] // 2, mask.shape[0] // 2), interpolation=cv2.INTER_AREA), (5, 5), 0).astype(np.float32)
+        # Every view, every frame, only around where it sits when the car is at the stop, at about its size: cheap, and the
+        # moment the car passes over the place is never missed (at speed that is 1-2 frames), whichever view has its turn.
+        coarse = cv2.resize(small, (small.shape[1] // 2, small.shape[0] // 2), interpolation=cv2.INTER_AREA)
+        home = None
+        near = self.near_views(name)
+        for vi, (_, box, _) in enumerate(self.templates(name)):
+            if near and vi not in near:
+                continue        # Far views (above the line area) say little about where exactly the car is: the near ones decide.
+            spot = {"x": box[0], "y": box[1], "w": box[2], "h": box[3], "scale": 1.0, "view": vi}
+            hit = self._search(name, coarse, None, spot, factor=4, top=top, min_score=STOP_MATCH - 0.1, pad=STOP_HOME_PX)
+            if hit is not None and (home is None or hit["score"] > home["score"]):
+                home = hit
+        if home is not None:        # Refine the best at half size, close around it.
+            home = self._search(name, small, None, home, factor=2, top=top, min_score=STOP_MATCH, pad=STOP_REFINE_PX, around=(1.0,))
+        if home is not None and (last is None or home["score"] >= last.get("score", 0)):
+            return home
+        if last is None and not wide:
+            return None     # wide=False: only the every-frame check near each view's place (the drive does the wide look every other frame).
         if last is None:
-            coarse = cv2.resize(small, (small.shape[1] // 2, small.shape[0] // 2), interpolation=cv2.INTER_AREA)
             n = len(self.templates(name))
             k = self._turn.get(name, 0) % max(n, 1)
             self._turn[name] = k + STOP_VIEWS_PER_FRAME
@@ -360,7 +395,7 @@ class StopModel:
             last = guess
         return self._search(name, small, None, last, factor=2, top=top, min_score=STOP_MATCH)
 
-    def _search(self, name, img, scales, last, factor, top, min_score, views=None):
+    def _search(self, name, img, scales, last, factor, top, min_score, views=None, pad=None, around=STOP_AROUND):
         """Best match of point name in img (the line mask at 1/factor size). last: look only around it, at sizes near its scale,
         with the view it was found with. views: which views to try (all if None)."""
         SH, SW = img.shape
@@ -370,7 +405,7 @@ class StopModel:
             views = [last["view"]]
         for vi in (range(len(tpls)) if views is None else views):
             tpl = tpls[vi][0]
-            for sc in (scales if last is None else [last["scale"] * f for f in (0.92, 1.0, 1.08)]):
+            for sc in (scales if last is None else [last["scale"] * f for f in around]):
                 k = sc * 2 / factor             # Templates are kept at half size.
                 th, tw = int(tpl.shape[0] * k), int(tpl.shape[1] * k)
                 if th < 5 or tw < 5 or th > SH or tw > SW:
@@ -381,10 +416,10 @@ class StopModel:
                 if last is None:
                     rx0, ry0, region = 0, 0, img
                 else:
-                    pad = STOP_TRACK_PX * 2 // factor
+                    p = (STOP_TRACK_PX if pad is None else pad) * 2 // factor
                     cx, cy = (last["x"] + last["w"] / 2) / factor, (last["y"] - top + last["h"] / 2) / factor
-                    rx0, ry0 = int(max(cx - tw / 2 - pad, 0)), int(max(cy - th / 2 - pad, 0))
-                    region = img[ry0:int(min(cy + th / 2 + pad, SH)), rx0:int(min(cx + tw / 2 + pad, SW))]
+                    rx0, ry0 = int(max(cx - tw / 2 - p, 0)), int(max(cy - th / 2 - p, 0))
+                    region = img[ry0:int(min(cy + th / 2 + p, SH)), rx0:int(min(cx + tw / 2 + p, SW))]
                     if region.shape[0] < th or region.shape[1] < tw:
                         continue
                 res = cv2.matchTemplate(region, t, cv2.TM_CCOEFF_NORMED)
