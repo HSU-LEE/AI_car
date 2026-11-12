@@ -288,6 +288,7 @@ class StopModel:
         self.points = dict(points or {})
         self._patches = {}
         self._turn = {}         # Per point: which views the next search tries.
+        self._prep = None       # (picture, half, quarter) of the last picture looked in.
 
     @classmethod
     def load(cls, path=STOP_FILE):
@@ -323,7 +324,9 @@ class StopModel:
         plain = patch.std() < 8
         views = self.points.setdefault(name, {"views": []})["views"]
         views.append({"patch": _encode(patch), "box": [int(v) for v in box], **({"whole": True} if whole else {})})
-        del views[:-STOP_MAX_VIEWS]
+        while len(views) > STOP_MAX_VIEWS:      # Full: the oldest far view goes first (near ones place the stop), else the oldest.
+            far = [i for i, v in enumerate(views[:-1]) if v["box"][1] + v["box"][3] / 2 < STOP_NEAR_Y]
+            del views[far[0] if far else 0]
         self._patches.pop(name, None)
         note = f"{name}: view {len(self.points[name]['views'])}"
         if plain:
@@ -377,7 +380,7 @@ class StopModel:
                                    for v in views]
         return self._patches[name]
 
-    def find(self, name, mask, top, last=None, wide=True):
+    def find(self, name, mask, top, last=None, wide=True, key=None):
         """Look for point name in the picture from stop_view (mask) whose first row is frame row top. Returns {"x","y","w","h","score","scale"} in frame px, or None.
 
         last: the previous find, to look only around it at nearby sizes (cheaper, and it cannot jump to a look-alike elsewhere).
@@ -385,11 +388,9 @@ class StopModel:
         """
         if name not in self.points:
             return None
-        mask = drop_spots(mask, STOP_SPOT_PX)      # Glints off, as in the saved views.
-        small = cv2.GaussianBlur(cv2.resize(mask, (mask.shape[1] // 2, mask.shape[0] // 2), interpolation=cv2.INTER_AREA), (5, 5), 0).astype(np.float32)
+        small, coarse = self._prepare(mask, key)
         # Every view, every frame, only around where it sits when the car is at the stop, at about its size: cheap, and the
         # moment the car passes over the place is never missed (at speed that is 1-2 frames), whichever view has its turn.
-        coarse = cv2.resize(small, (small.shape[1] // 2, small.shape[0] // 2), interpolation=cv2.INTER_AREA)
         home = None
         near = self.near_views(name)
         for vi, (_, box, _) in enumerate(self.templates(name)):
@@ -418,6 +419,17 @@ class StopModel:
         if home is not None and (tracked is None or home["score"] > tracked["score"]):
             return home     # The near check found it even though following the last place did not.
         return tracked
+
+    def _prepare(self, mask, key=None):
+        """The picture at half and quarter size, glints off. key (the frame's number): kept for the same frame, so several
+        points, or a second look in one frame, do not redo it. No key: always made fresh."""
+        if key is not None and self._prep is not None and self._prep[0] == key:
+            return self._prep[1], self._prep[2]
+        clean = drop_spots(mask, STOP_SPOT_PX)      # Glints off, as in the saved views.
+        small = cv2.GaussianBlur(cv2.resize(clean, (clean.shape[1] // 2, clean.shape[0] // 2), interpolation=cv2.INTER_AREA), (5, 5), 0).astype(np.float32)
+        coarse = cv2.resize(small, (small.shape[1] // 2, small.shape[0] // 2), interpolation=cv2.INTER_AREA)
+        self._prep = (key, small, coarse)
+        return small, coarse
 
     def _search(self, name, img, scales, last, factor, top, min_score, views=None, pad=None, around=STOP_AROUND, x_free=False):
         """Best match of point name in img (the line mask at 1/factor size). last: look only around it, at sizes near its scale,

@@ -2965,9 +2965,9 @@ class Driver:
         for name in names:
             last = self.stop_last.get(name)
             # Every frame near each view's place (passing over it may take only 1-2 frames); the wide look from afar every other frame.
-            found = STOP_MODEL.find(name, view, top, last, wide=self.stop_tick % 2 == 0)
+            found = STOP_MODEL.find(name, view, top, last, wide=self.stop_tick % 2 == 0, key=self.stop_tick)
             if found is None and last is not None:
-                found = STOP_MODEL.find(name, view, top, wide=self.stop_tick % 2 == 0)     # Lost it near the last place: look again.
+                found = STOP_MODEL.find(name, view, top, wide=self.stop_tick % 2 == 0, key=self.stop_tick)     # Lost it near the last place: look again.
             self.stop_last[name] = found
             # offset= cm farther (or nearer) than where it was registered: the floor distance of that place, moved.
             # Each view comes to where its own box was (views of one point may be boxes on different things).

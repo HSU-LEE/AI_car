@@ -2901,6 +2901,53 @@ def test_line_and_stop_points():
         lf.LINE_MODEL, lf.STOP_MODEL, cs.STOP_POINTS_ON = old_line, old_stop, old_on
 
 
+def test_stop_point_details():
+    print("\n[stop points: glints, near/far views, any heading, full points, the stop log]")
+    import landmarks
+    import tune_landmark as tl
+    img = np.zeros((200, 300), np.uint8)
+    cv2.line(img, (20, 150), (280, 150), 255, 8)
+    cv2.ellipse(img, (150, 60), (10, 6), 0, 0, 360, 255, -1)
+    out = landmarks.drop_spots(img, landmarks.STOP_SPOT_PX)
+    check("glints: a small blob is dropped, a painted line is kept", out[60, 150] == 0 and out[150, 150] == 255)
+
+    def corner(y, x0):
+        f = lane_frame()
+        cv2.line(f, (x0, y), (x0 + 120, y), (235, 235, 235), 8)
+        cv2.line(f, (x0, y), (x0, min(y + 60, H - 1)), (235, 235, 235), 8)
+        return f
+    m = landmarks.StopModel()
+    box = (int(W * 0.25) - 20, 280, 160, 70)
+    m.add("A", tl.frame_mask(corner(300, int(W * 0.25))), box)
+    top = int(H * lf.ROI_TOP)
+    with quiet():
+        d = lf.LaneDetector()
+        for _ in range(3):
+            d(corner(300, int(W * 0.25) + 70), draw=False)
+    hit = m.find("A", d.mask, top, wide=False)
+    check("any heading: the same mark 70 px to the side, at its height, is found by the near check", hit is not None and abs(hit["y"] + hit["h"] / 2 - m.view_y("A", 0)) < 6, hit)
+    check("a clear match may count as the stop, a weak one may not",
+          landmarks.StopModel.close_enough({"score": 0.9, "scale": 1.0}) and not landmarks.StopModel.close_enough({"score": 0.8, "scale": 1.0}))
+    far = landmarks.StopModel()
+    mask = tl.frame_mask(corner(300, int(W * 0.25)))
+    for k in range(landmarks.STOP_MAX_VIEWS):
+        far.add("A", mask, (10 + k, 20, 200, 80))       # Far boxes (above the line area)...
+    far.add("A", mask, box)                             # ... then a near one.
+    far.add("A", mask, (12, 22, 200, 80))
+    near = far.near_views("A")
+    check("near / far: a box on the floor is near, one above the line area is far", len(near) == 1)
+    check("full point: far views go first, the near one is kept", len(far.points["A"]["views"]) == landmarks.STOP_MAX_VIEWS and len(near) == 1)
+    note = landmarks.StopModel().add("B", mask, (10, 20, 200, 80))[1]
+    check("a far box says it only shows the point is ahead", "far box" in note, note)
+    d = lf.Driver([finish()])
+    path = Path(tempfile.mkdtemp()) / "stops.csv"
+    d.save_stop_log(path)
+    check("stop log: nothing is written without go_to()", not path.exists())
+    d.stop_log.append("1.000,0,A,0,1,0.900,1.000,200.0,200.0,0.0,1")
+    d.save_stop_log(path)
+    check("stop log: written with its header", path.read_text().startswith("t,step,name,view,near,score"))
+
+
 def test_no_slowdown():
     print("\n[SLOWDOWN_ON = False: no slowing anywhere]")
     import course as cs
@@ -2921,7 +2968,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_no_slowdown):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
