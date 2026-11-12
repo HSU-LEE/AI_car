@@ -30,6 +30,7 @@ def main():
 
     run = Path(args.run)
     # The calibration and course of that run, saved with it. --set below still overrides. A Mac has no vision.json of its own.
+    lf.load_landmarks(run)      # The traffic light and crosswalk registered that day (none if the run has none).
     if (run / lf.VISION_FILE.name).exists():
         lf.load_vision(run / lf.VISION_FILE.name)
     else:

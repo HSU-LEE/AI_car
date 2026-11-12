@@ -119,6 +119,10 @@ menu_settings() {
         '6|신호등 인식 맞추기 (브라우저 보며)|$A tune-light' \
         'p|레고 사람 등록 / 인식 확인 (브라우저 보며)|$A person' \
         'a|레고 사람 더 등록 (이미 등록한 레고는 유지)|$A person add' \
+        'l|신호등 등록 (브라우저에서 빨간불·초록불에 상자)|$A light' \
+        'c|횡단보도 등록 (브라우저에서 줄무늬에 상자, _to_crosswalk용)|$A crosswalk' \
+        'i|차선 등록 (브라우저에서 선에 상자, 반사광 기준 자동)|$A line' \
+        't|정지 지점 등록 (차를 멈출 자리에 놓고 상자, go_to용)|$A stoppoint' \
         '-' \
         '7|주행 설정 편집 (lane_follow.py)|$A set'
 }

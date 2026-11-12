@@ -236,6 +236,55 @@ cmd_person() {
     run_tty "$(in_dir "LIBCAMERA_LOG_LEVELS=*:ERROR $PY tune_person.py $mode")"     # Without the camera's log lines over the instructions.
 }
 
+cmd_landmark() {
+    # Register the traffic light (light) or the crosswalk (crosswalk) by dragging boxes on the web page, like the figure.
+    local kind="$1" mode="${2:-}" key name point=""
+    case "$kind" in light) name="traffic light" ;; crosswalk) name="crosswalk" ;; line) name="lane lines" ;; stop) name="stop points" ;; esac
+    if [ -z "$mode" ]; then
+        echo
+        bold "$name registration"
+        echo "  1) new        replace the saved $name"
+        echo "  2) add        add to the saved $name"
+        if [ "$kind" = stop ]; then
+            echo "  3) more       more views of a registered stop point (A-Z)"
+        fi
+        echo
+        read -r -n 1 -p "Choose [1/2$([ "$kind" = stop ] && echo /3), other key = cancel]: " key; echo
+        case "$key" in 1) mode=new ;; 2) mode=add ;; 3) [ "$kind" = stop ] && mode=more || { echo "Cancelled"; return; } ;; *) echo "Cancelled"; return ;; esac
+    fi
+    if [ "$mode" = more ]; then
+        [ "$kind" = stop ] || die "Usage: aicar $kind [new|add]"
+        point="${3:-}"
+        if [ -z "$point" ]; then
+            host
+            echo "Registered: $(run "cat ~/$REMOTE/stops.json 2>/dev/null" | python3 -c 'import json,sys
+try:
+    p = json.load(sys.stdin)["points"]; print(", ".join(k + " (" + str(len(v["views"])) + " views)" for k, v in sorted(p.items())) or "none")
+except Exception:
+    print("none")')"
+            read -r -n 1 -p "Which stop point [A-Z]: " point; echo
+        fi
+        point=$(echo "$point" | tr '[:lower:]' '[:upper:]')
+        [[ "$point" =~ ^[A-Z]$ ]] || die "The stop point must be one letter A-Z"
+        mode="--add --point $point"
+    fi
+    case "$mode" in
+        new)
+            mode=""
+            echo "Warning: the saved $name will be replaced when you save."
+            read -r -n 1 -p "Continue? [y/n]: " key; echo
+            [ "$key" = y ] || [ "$key" = Y ] || { echo "Cancelled"; return; } ;;
+        add|--add) mode="--add" ;;
+        --add\ --point\ ?) ;;
+        *) die "Usage: aicar $kind [new|add$([ "$kind" = stop ] && echo "|more [A-Z]")]" ;;
+    esac
+    run "$DRIVING" && die "A drive has the camera. aicar stop first"
+    cmd_push >/dev/null || exit 1
+    run "bash ~/$REMOTE/stop_all.sh" >/dev/null     # Free the camera if Live View or another program has it.
+    open_stream
+    run_tty "$(in_dir "LIBCAMERA_LOG_LEVELS=*:ERROR $PY tune_landmark.py $kind $mode")"
+}
+
 cmd_calibrate() {
     # Venue calibration: track color, focus, exposure, lane width, horizon, and camera center.
     # Saved to vision.json on the Pi.
@@ -379,6 +428,14 @@ AICAR commands  (in a Mac terminal: aicar <command>)
   tune-white             set the line threshold (watching the browser, w/s, Enter saves)
   tune-light             set the traffic light thresholds (watching the browser, w/s e/d r/f, Enter saves)
   person [new|add]       register the LEGO figure anew / add views (asks if not given). Stand it in the box and turn it; views are taken by themselves, Enter saves. Stop position and delays are in course.py
+  light [new|add]        register the traffic light: on the web page, drag a box around the lit red lamp, then the green one. Enter saves.
+                         wait_green then looks only for lamps like these. With none registered, the color thresholds are used
+  crosswalk [new|add]    register the crosswalk: drag a box around its stripes, from 2-3 distances. Enter saves.
+                         Used by _to_crosswalk() / _pass_crosswalk() (to_crosswalk / pass_crosswalk stay as they are)
+  line [new|add]         register the lane lines: drag boxes around pieces of line in a few places. The reflection cut is then
+                         set to this venue's paint (the other filters stay on)
+  stoppoint [new|add|more X]   register stop points: stand the car where it should stop, drag a box around the line end / line across /
+                         corner ahead (n = next point, up to A-Z). more X: more views of point X. In course.py: go_to("A")
   set                    edit the driving settings file (lane_follow.py), then aicar push
 
 [camera / recordings]
@@ -397,7 +454,7 @@ EOF
 # --- Dispatch ---
 cmd="${1:-help}"; shift || true
 case "$cmd" in
-    help|-h|--help|course|set|test-vision|person|replay) ;;   # These run without a Pi connection, or ask something first and connect after.
+    help|-h|--help|course|set|test-vision|person|replay|light|crosswalk|line|stoppoint) ;;   # These run without a Pi connection, or ask something first and connect after.
     *) host ;;      # Look up the Pi once. Later commands reuse that address.
 esac
 case "$cmd" in
@@ -429,6 +486,10 @@ case "$cmd" in
     tune-white)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_white.py")" ;;
     tune-light)  cmd_push && open_stream && run_tty "$(in_dir "$PY tune_light.py")" ;;
     person)      cmd_person "$@" ;;
+    light)       cmd_landmark light "$@" ;;
+    crosswalk)   cmd_landmark crosswalk "$@" ;;
+    line)        cmd_landmark line "$@" ;;
+    stoppoint)   cmd_landmark stop "$@" ;;
     calibrate)   cmd_calibrate "$@" ;;
     gap-probe)   run "$DRIVING" && die "A drive is running. aicar stop first"
                  cmd_push && run "bash ~/$REMOTE/stop_all.sh" >/dev/null &&

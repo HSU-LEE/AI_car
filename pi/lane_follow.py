@@ -42,6 +42,7 @@ from car import STEER_LIMIT
 from course import COURSE, RED_BACK_ON, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_STOP, PERSON_ON, PERSON_RESUME_DELAY, PERSON_X
 import course as _course
 from person import AnyFigure, PERSON_FILE, PHOTO_DIR, PersonDetector, PersonWatch, figure_box
+import landmarks
 PERSON_IN_LANE = getattr(_course, "PERSON_IN_LANE", False)      # Same for this one.
 PERSON_LANE_MARGIN = 0.05   # PERSON_IN_LANE: a figure's center may be this far outside a lane line, as a share of the lane width, for one standing on the line.
 PERSON_ANY = getattr(_course, "PERSON_ANY", False)      # A course saved with an older run has no such line, and looked only for the registered figure.
@@ -309,6 +310,25 @@ def save_vision(**values):
 
 load_vision()
 
+LIGHT_MODEL = None      # Traffic light registered with aicar light (landmarks.LightModel), or None: the color thresholds above are used.
+XWALK_MODEL = None      # Crosswalk registered with aicar crosswalk (landmarks.CrosswalkModel), for _to_crosswalk / _pass_crosswalk.
+LINE_MODEL = None       # Lane lines registered with aicar line (landmarks.LineModel): sets the reflection cut to this venue's paint.
+STOP_MODEL = None       # Stop points registered with aicar stoppoint (landmarks.StopModel), for go_to("A").
+LANDMARK_FILES = (landmarks.LIGHT_FILE, landmarks.XWALK_FILE, landmarks.LINE_FILE, landmarks.STOP_FILE)
+
+
+def load_landmarks(folder=None):
+    """Load light.json, crosswalk.json, line.json and stops.json from this folder (a recording's, for a replay), or beside this file."""
+    global LIGHT_MODEL, XWALK_MODEL, LINE_MODEL, STOP_MODEL
+    folder = Path(folder) if folder else Path(__file__).parent
+    LIGHT_MODEL = landmarks.LightModel.load(folder / landmarks.LIGHT_FILE.name)
+    XWALK_MODEL = landmarks.CrosswalkModel.load(folder / landmarks.XWALK_FILE.name)
+    LINE_MODEL = landmarks.LineModel.load(folder / landmarks.LINE_FILE.name)
+    STOP_MODEL = landmarks.StopModel.load(folder / landmarks.STOP_FILE.name)
+
+
+load_landmarks()
+
 
 _ELLIPSE_RECTS = {}
 
@@ -414,6 +434,8 @@ class LaneDetector:
         self.reflections, self.reflect_boxes = [], []     # Blobs dropped as light reflections this frame, and their boxes in the ROI.
         self.sign_ids = []                      # Blobs dropped as part of a red sign on the floor this frame.
         self.signs = None                       # Mask of red-rimmed floor signs this frame (ROI size), or None.
+        self.xwalk2_y, self.xwalk2_boxes = None, []     # The registered crosswalk (aicar crosswalk): near edge y, stripe boxes (ROI px).
+        self.roi = None
         self.curve_t = None                     # Last time a line leaving its straight path was judged a curve of the whole lane.
         self.now, self.moving = None, False     # Set by Driver before each frame: time, and driving forward without a big steer (motion test).
         self.moving_since = None
@@ -523,6 +545,57 @@ class LaneDetector:
         cv2.fillConvexPoly(hull, cv2.convexHull(pts), 255)
         hull = cv2.dilate(hull, np.ones((3, 3), np.uint8))
         return cv2.resize(hull, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+    @staticmethod
+    def stripe_size(stats, i, top):
+        """A blob's width, height (in lane widths at its height) and how much of its box it fills."""
+        x, y, w, h, area = stats[i]
+        cy = top + y + h / 2
+        lane_w = max(LANE_WIDTH_PX * (cy - HORIZON_Y) / max(342 - HORIZON_Y, 1.0), 1.0)
+        return w / lane_w, h / lane_w, area / max(w * h, 1)
+
+    def find_registered_crosswalk(self, comps, top):
+        """The crosswalk registered with aicar crosswalk: enough blobs shaped like its stripes, between the lane lines.
+
+        Sets xwalk2_y (frame y of the near edge of the nearest stripe, or None) and xwalk2_boxes. Returns the stripe ids,
+        which are left out of the lane lines. The older crosswalk test (crosswalk_y) is not touched.
+        """
+        self.xwalk2_y, self.xwalk2_boxes = None, []
+        model = XWALK_MODEL
+        if model is None or model.w is None:
+            return []
+        n, labels, stats, cents = comps
+        H = labels.shape[0]
+        cand = []
+        for i in range(1, n):
+            x, y, w, h, area = (int(v) for v in stats[i])
+            if area < STRIPE_MIN_AREA or h >= REFLECT_LINE_H * H:
+                continue
+            if not model.like(*self.stripe_size(stats, i, top)):
+                continue
+            # Between the lane lines of the last frame at this height, when both are known.
+            band = min(max((H - (y + h // 2)) // max(H // SLICES, 1), 0), SLICES - 1)
+            l, r = self.left[band], self.right[band]
+            cx = x + w / 2
+            if l is not None and r is not None and not l < cx < r:
+                continue
+            cand.append(i)
+        if len(cand) < model.count:
+            return []
+        if model.sharp is not None and self.roi is not None:     # Crisp paint, not a soft ceiling-light reflection.
+            cand = [i for i in cand if (self.blob_sharpness(self.roi, comps, i) or 0.0) >= model.sharp]
+        rows = []
+        for i in cand:
+            x, y, w, h, _ = stats[i]
+            cy = top + y + h / 2
+            lane_w = max(LANE_WIDTH_PX * (cy - HORIZON_Y) / max(342 - HORIZON_Y, 1.0), 1.0)
+            rows.append((i, (x + w / 2) / lane_w, cy, h))
+        found = model.row(rows)
+        if len(found) < model.count:
+            return []
+        self.xwalk2_boxes = [tuple(int(v) for v in stats[i][:4]) for i in found]
+        self.xwalk2_y = max(top + stats[i][1] + stats[i][3] for i in found)
+        return found
 
     @staticmethod
     def sign_area(roi):
@@ -714,6 +787,11 @@ class LaneDetector:
         H = labels.shape[0]
         near = set(self.near_blobs(comps, short_only=True))
         cut = None if REFLECT_SHARP is None else min(REFLECT_SHARP, REFLECT_FALLBACK_MAX)
+        crisp = GLARE_SHARP_MAX
+        if LINE_MODEL is not None and REFLECT_SHARP is not None:
+            # Lane lines registered here (aicar line): cut just under this venue's softest paint, and protect anything as crisp as it.
+            cut = LINE_MODEL.reflect_cut()
+            crisp = min(GLARE_SHARP_MAX, LINE_MODEL.sharp * 0.95)
         out, self.paint_boxes = [], []
         for i in range(1, n):
             x, y, w, h, area = (int(v) for v in stats[i])
@@ -724,7 +802,7 @@ class LaneDetector:
             verdict = self.motion_verdict(gray, old, (x, y, w, h)) if old is not None else None
             if verdict == "glare" and not known:     # A spot already checked needs no second edge test: that keeps the cost down.
                 sharp = self.blob_sharpness(roi, comps, i)
-                if sharp is not None and sharp >= GLARE_SHARP_MAX:     # Crisp like tape: a piece of a lane line that only seemed to stand still.
+                if sharp is not None and sharp >= crisp:     # Crisp like tape: a piece of a lane line that only seemed to stand still.
                     verdict = None
             if verdict == "glare":
                 self.glare_spots.append((x, y, x + w, y + h, now))
@@ -1151,8 +1229,10 @@ class LaneDetector:
             mask[self.signs] = 0
         h = mask.shape[0] // SLICES
         comps = self.drop_reflections(frame[top:], mask)     # Once per frame, shared below.
+        self.roi = frame[top:]
+        reg_ids = self.find_registered_crosswalk(comps, top)
         stripe_ids, self.stripes = self.find_stripes(comps, mask.shape, top, frame[top:])
-        gone = stripe_ids + self.sign_ids + self.find_specks(comps, mask.shape, h)
+        gone = stripe_ids + reg_ids + self.sign_ids + self.find_specks(comps, mask.shape, h)
         labels, stats = comps[1], comps[2]
         if gone:        # Clear crosswalk stripes and off-track specks from the mask, and from the blob labels assign() reads.
             dead = np.zeros(comps[0], bool)
@@ -1170,9 +1250,13 @@ class LaneDetector:
             dashed_hline(dbg, top, C_DIM)       # Only below this line is used for lane detection.
             for bx, by, bw, bh in self.reflect_boxes:      # Light reflections left out of the lane lines.
                 cv2.rectangle(dbg, (bx, top + by), (bx + bw, top + by + bh), C_DIM, 1)
+            for bx, by, bw, bh in self.xwalk2_boxes:       # Stripes of the registered crosswalk.
+                cv2.rectangle(dbg, (bx, top + by), (bx + bw, top + by + bh), C_AT, 2)
         cx0 = int(FRAME_W * CAMERA_X)
         jy = int(FRAME_H * JUNCTION_Y)
         marks = {}                          # Junction and crosswalk labels, one per kind, drawn on top at the end.
+        if draw and self.xwalk2_y is not None:
+            marks["_CROSSWALK"] = (C_AT, self.xwalk2_y)
 
         junction = False
         self.crosswalk = self.crosswalk_any = False
@@ -1430,14 +1514,24 @@ class TrafficLight:
                     return True
                 return False
 
-            # 1. Color blobs.
-            for color, mask in (("red", strong & self.is_red(hue)), ("green", strong & self.is_green(hue))):
+            # 1. Color blobs. A registered light (aicar light) sets the colors to look for, instead of the thresholds.
+            model = LIGHT_MODEL
+            masks = []
+            for color, plain in (("red", strong & self.is_red(hue)), ("green", strong & self.is_green(hue))):
+                reg = model.color_mask(color, hue, sat, val) if model is not None else None
+                masks.append((color, plain if reg is None else reg))
+            for color, mask in masks:
                 mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
                 if self.keep_mask:
                     self.mask_vis[y0:y1, x0:x1][mask > 0] = (0, 0, 255) if color == "red" else (0, 255, 0)
                 _, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
                 for x, y, w, h, area in stats[1:]:
-                    if self.lamp_like(w, h, area, LIGHT_AREA_MIN) and not painted(color, x, y, w, h):
+                    if model is not None and color in model.colors():
+                        # Registered: its size and place, and a filled, roundish blob (a sign's ring is hollow and wide).
+                        ok = (0.5 <= w / h <= 2.0 and area >= 0.4 * w * h and model.fits(color, x0 + x, y0 + y, w, h, area, FRAME_W, FRAME_H))
+                    else:
+                        ok = self.lamp_like(w, h, area, LIGHT_AREA_MIN)
+                    if ok and not painted(color, x, y, w, h):
                         add(color, x0 + x, y0 + y, w, h, area)
 
             # 2. LED with a blown-out white center: color of the surrounding ring.
@@ -1458,6 +1552,8 @@ class TrafficLight:
                 h_ring = hue[sy, sx][colored]
                 color = ("red" if self.is_red(h_ring).mean() > 0.6 else
                          "green" if self.is_green(h_ring).mean() > 0.6 else None)
+                if color and model is not None and color in model.colors() and not model.fits(color, x0 + x, y0 + y, w, h, area, FRAME_W, FRAME_H, check_area=False):
+                    color = None        # Registered: only near where the lamp was.
                 if color and not painted(color, x, y, w, h):
                     add(color, x0 + x, y0 + y, w, h, area)
 
@@ -1686,14 +1782,18 @@ class CourseRunner:
 
     EVENT_NAMES = {"junction": "junction", "crosswalk": "crosswalk", "lane": "new lane",
                    "gap": "lane gap", "end": "end (junction line or lane gap)", "crossed": "crosswalk passed", "green": "green light", "obstacle": "obstacle", "clear": "obstacle cleared",
-                   "lost": "lane lost", "aligned": "aligned", "enter": "Enter"}
-    STATE_EVENTS = ("lane", "green", "clear", "aligned", "crossed")   # Judged as the current state: using one does not require it to count again. An obstacle counts again only after it goes away and comes back.
-    AT_EVENTS = ("junction", "crosswalk", "gap", "end")    # Events that can use at= (how far down the frame the line must come).
+                   "lost": "lane lost", "aligned": "aligned", "enter": "Enter",
+                   "_crosswalk": "registered crosswalk", "_crossed": "registered crosswalk passed", "_stop": "stop point"}
+    STATE_EVENTS = ("lane", "green", "clear", "aligned", "crossed", "_crossed")   # Judged as the current state: using one does not require it to count again. An obstacle counts again only after it goes away and comes back.
+    AT_EVENTS = ("junction", "crosswalk", "gap", "end", "_crosswalk")    # Events that can use at= (how far down the frame the line must come).
     # end: a junction line or a lane gap, whichever comes first (to_end). Its y is the nearer of the two.
 
     def __init__(self, course, start=1):
         from course import _flat
         self.course = _flat(course)     # Expand even if groups (lists) are mixed in, so COURSE does not have to call _flat.
+        # go() / to_junction() with neither cm= nor at=: the default lane-end distance, filled here (course.py cannot import this file).
+        self.course = [dict(s, cm=LANEEND_BASE_CM) if s.get("cm_default") and s.get("cm") is None and JUNCTION_REF == "laneend" else s
+                       for s in self.course]
         if isinstance(start, bool) or not isinstance(start, int) or start < 1 or start > max(len(self.course), 1):
             raise ValueError(f"the start number must be 1 to {max(len(self.course), 1)} ({start})")
         for n, step in enumerate(self.course, 1):      # A cm= the camera cannot read to is held at the nearest one it can.
@@ -1712,9 +1812,9 @@ class CourseRunner:
         # Per event: consecutive detection frames, and whether it is armed. Something visible from the start (the start line) or just consumed must disappear once before it counts again.
         # Green, and obstacle present or clear, must be accepted even if that was already the state, so they stay armed.
         self.hits = {"junction": 0, "crosswalk": 0, "lane": 0, "gap": 0, "end": 0, "crossed": 0, "green": 0, "obstacle": 0, "clear": 0,
-                     "lost": 0, "aligned": 0, "enter": 0}
+                     "lost": 0, "aligned": 0, "enter": 0, "_crosswalk": 0, "_crossed": 0, "_stop": 0}
         self.armed = {"junction": False, "crosswalk": False, "lane": True, "gap": False, "end": False, "crossed": True, "green": True,
-                      "obstacle": True, "clear": True, "lost": True, "aligned": True, "enter": True}
+                      "obstacle": True, "clear": True, "lost": True, "aligned": True, "enter": True, "_crosswalk": False, "_crossed": True, "_stop": False}
         self.since = {k: None for k in self.hits}   # Per event: time the current state started (used for hold_sec).
         self.miss = {k: 0 for k in self.hits}      # Per event: consecutive frames it was not seen. Used to arm during blind_sec.
         self.turn_clear = 0     # Consecutive frames during a turn with no horizontal line. Used for the exit decision.
@@ -1878,6 +1978,11 @@ class CourseRunner:
                 "end": ys["end"] is not None,
                 # crossed: no crosswalk anywhere in view, with the lane found. The crosswalk has gone under the car.
                 "crossed": ys.get("crosswalk") is None and det is not None,
+                # The registered crosswalk (aicar crosswalk): in the stop zone, and gone from view with the lane found.
+                "_crosswalk": ys.get("_crosswalk") is not None and ys["_crosswalk"] >= JUNCTION_Y * FRAME_H,
+                "_crossed": ys.get("_crosswalk") is None and det is not None,
+                # go_to("A"): the registered shape has come down to where it was when the car stood at the stop.
+                "_stop": ys.get("_stop") is not None and ys.get("_stop_target") is not None and ys["_stop"] >= ys["_stop_target"],
                 # Green: a green light near the red light anywhere in the frame, or the spot that was red has changed to green (cyan included).
                 "green": self.red_seen and ((light == "green" and green_here) or self.local_light == "green"),
                 "obstacle": bool(obstacle), "clear": not obstacle,
@@ -2627,6 +2732,9 @@ class Recorder:
                 shutil.copytree(PERSON_FILE.with_name(PHOTO_DIR), self.dir / PHOTO_DIR)
         if VISION_FILE.exists():                    # And the calibration of the day: the Mac has none of its own.
             shutil.copy(VISION_FILE, self.dir / VISION_FILE.name)
+        for f in LANDMARK_FILES:        # And the registered light, crosswalk, lines and stop points.
+            if f.exists():
+                shutil.copy(f, self.dir / f.name)
         shutil.copy(Path(__file__).with_name("course.py"), self.dir / "course.py")      # And the course as it was.
         (self.dir / "run.json").write_text(json.dumps({
             "base_speed": base_speed, "set": list(settings), "lane_follow_md5": hashlib.md5(Path(__file__).read_bytes()).hexdigest()}))
@@ -2686,6 +2794,9 @@ class Driver:
         self.light_tick = 0         # Frames since start, for LIGHT_VIEW_EVERY.
         self.red = None             # wait_green looking for red: action index, back-ups used, when this look began, back-up in progress.
         self.hline_t = None         # While aligning: last time heading said the horizontal line in view is a real one.
+        self.stop_found = None      # go_to("A"): where the registered shape was found this frame ({"x","y","w","h","score","scale"}), or None.
+        self.stop_y = self.stop_target = None   # Its center, and where the center must come to (frame y).
+        self.stop_idx, self.stop_last, self.stop_tick = -1, {}, 0
 
     def retrace_plan(self, seconds):
         """Recent forward driving played backwards: [(time it ends, steering angle)], up to this many seconds of reversing."""
@@ -2759,6 +2870,49 @@ class Driver:
         print(f"\n[back-up] lane lost -> backing up the way it came for {self.back['len']:.1f}s ({self.back_tries[course.idx]}/{LOST_BACK_TRIES})")
         return self.steering.output(plan[0][1], now, 0.0)
 
+    def find_stop(self, step, dbg):
+        """go_to("A") or go_to("A|B"): find the registered shapes in this frame's line mask, and where their center must come to.
+
+        With several names, the one nearest to its stop counts: the car stops at whichever comes first.
+        """
+        self.stop_found = self.stop_y = self.stop_target = None
+        names = step.get("stop") if step is not None and step["until"] == "_stop" else None
+        names = [n for n in ([names] if isinstance(names, str) else names or []) if STOP_MODEL is not None and n in STOP_MODEL.points]
+        if not names:
+            self.stop_idx = -1
+            return
+        top = int(FRAME_H * ROI_TOP)
+        if self.stop_idx != self.course.idx:
+            self.stop_last = {}
+        self.stop_idx = self.course.idx
+        self.stop_tick += 1
+        scale = CAMERA_F * LANE_CM / LANE_WIDTH_PX * max(342 - HORIZON_Y, 1.0)
+        best = None
+        for name in names:
+            last = self.stop_last.get(name)
+            if last is None and self.stop_tick % 2:
+                found = None        # Not found yet: the whole-view search runs every other frame only (it is the costly one).
+            else:
+                found = STOP_MODEL.find(name, self.detect.mask, top, last)
+                if found is None and last is not None:
+                    found = STOP_MODEL.find(name, self.detect.mask, top)       # Lost it near the last place: look everywhere again.
+            self.stop_last[name] = found
+            # offset= cm farther (or nearer) than where it was registered: the floor distance of that place, moved.
+            dist = max(floor_cm(STOP_MODEL.stop_y(name)) - (step.get("stop_cm") or 0.0), 1.0)
+            target = float(min(HORIZON_Y + scale / dist, FRAME_H - 2))
+            y = None if found is None else found["y"] + found["h"] / 2      # Its center, like the registered one.
+            left = None if y is None else floor_cm(y) - floor_cm(target)
+            if best is None or (left is not None and (best[3] is None or left < best[3])):
+                best = (name, found, target, left, y)
+            if dbg is not None and found is not None:
+                x, fy, w, h = found["x"], found["y"], found["w"], found["h"]
+                cv2.rectangle(dbg, (x, fy), (x + w, fy + h), C_AT, 2)
+                chip(dbg, f"{name} {max(left, 0):.1f}cm", x, max(fy - 22, 0), C_AT, 0.4)
+        name, found, self.stop_target, _, self.stop_y = best
+        self.stop_found = found
+        if dbg is not None:
+            dashed_hline(dbg, int(self.stop_target), C_AT, dash=10, gap=6)
+
     def stand_for_person(self, now):
         """Stand still for the LEGO figure. The action in progress waits as it is, so it carries on where it left off."""
         dt = now - self.last_t if self.last_t is not None else 0.0
@@ -2782,7 +2936,7 @@ class Driver:
         course = self.course
         step = course.step()
         slow = course.opt("slow")
-        if slow is None or step["until"] not in CourseRunner.AT_EVENTS or not course.final_approach():
+        if slow is None or step["until"] not in CourseRunner.AT_EVENTS + ("_stop",) or not course.final_approach():
             return base
         slow = min(max(slow, MIN_SPEED, APPROACH_MIN), base)      # Do not go below the speed that keeps the motor turning, nor speed up to get there.
         if course.run_out:      # cm=: stay slow for the last distance, even once the line has gone from view.
@@ -2797,14 +2951,14 @@ class Driver:
         if idx != course.idx:       # New action: start over.
             level, seen_t = 0.0, -1.0
         ends = [v for v in (self.detect.junction_y, self.detect.gap_y) if v is not None]
-        y = {"junction": self.detect.junction_y, "crosswalk": self.detect.crosswalk_y,
-             "gap": self.detect.gap_y, "end": max(ends) if ends else None}[step["until"]]
+        y = {"junction": self.detect.junction_y, "crosswalk": self.detect.crosswalk_y, "_crosswalk": self.detect.xwalk2_y,
+             "_stop": self.stop_y, "gap": self.detect.gap_y, "end": max(ends) if ends else None}[step["until"]]
         far = step["until"] in ("junction", "end")
         if y is None and far:
             y = self.detect.far_y       # Horizontal line seen in the distance, if it has not entered the ROI yet.
         if y is not None:
             start = FRAME_H * (FAR_TOP if far else ROI_TOP)
-            end = (course.opt("at") or JUNCTION_Y) * FRAME_H
+            end = self.stop_target if step["until"] == "_stop" and self.stop_target else (course.opt("at") or JUNCTION_Y) * FRAME_H
             level = max(level, float(np.clip((y - start) / max(end - start, 1.0), 0.0, 1.0)))
             seen_t = now
         elif now - seen_t > APPROACH_HOLD:
@@ -2816,7 +2970,7 @@ class Driver:
     PANEL_W = 240
     EVENT_EN = {"junction": "JUNCTION", "crosswalk": "CROSSWALK", "lane": "NEW LANE", "gap": "LANE ENDS", "end": "END (JUNCTION/GAP)", "crossed": "CROSSWALK PASSED",
                 "green": "GREEN LIGHT", "obstacle": "OBSTACLE", "clear": "CLEAR", "lost": "LANE LOST",
-                "aligned": "ALIGNED", "enter": "ENTER"}
+                "aligned": "ALIGNED", "enter": "ENTER", "_crosswalk": "_CROSSWALK", "_crossed": "_CROSSWALK PASSED", "_stop": "STOP POINT"}
     DO_EN = {"follow": "FOLLOW LANE", "straight": "STRAIGHT", "right": "TURN RIGHT", "left": "TURN LEFT",
              "curve": "CURVE", "stop": "STOP", "wait": "WAIT", "finish": "FINISH"}
 
@@ -2991,6 +3145,7 @@ class Driver:
             if detect.far_y is not None and show:
                 dashed_hline(dbg, detect.far_y, C_JUNC, dash=6, gap=6)
                 chip(dbg, "JUNCTION AHEAD", FRAME_W - 130, detect.far_y - 20, C_JUNC, 0.38)
+        self.find_stop(step, dbg)
         # Traffic light: every frame while waiting for green. For the view only, every LIGHT_VIEW_EVERY frames (the last result is shown between).
         need_light = course.needs_light()
         if need_light or (show and self.light_tick % LIGHT_VIEW_EVERY == 0):
@@ -3020,7 +3175,8 @@ class Driver:
         course.moving = self.speed > 0
         idx_before, ruler_before = course.idx, course.ruler      # Starting the next action replaces the ruler.
         course.update(junction, now, det, detect.crosswalk,
-                      {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y,
+                      {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y, "_crosswalk": detect.xwalk2_y,
+                       "_stop": self.stop_y, "_stop_target": self.stop_target,
                        "near": detect.near_line,
                        **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y,
                            "end_y": detect.lane_end() if CourseRunner.uses_laneend(step) else None} if step is not None and step.get("cm") is not None else {})},
@@ -3273,12 +3429,26 @@ def main():
         driver = Driver(COURSE, args.start, args.speed, obs, load_person())
     except ValueError as e:
         raise SystemExit(e)
+    wanted = {n for s in driver.course.course if s["until"] == "_stop" for n in ([s["stop"]] if isinstance(s["stop"], str) else s["stop"])}
+    missing = sorted(wanted - set(STOP_MODEL.names() if STOP_MODEL else []))
+    if missing:
+        car.close()
+        cam.stop()
+        raise SystemExit(f"go_to(): stop point(s) {', '.join(missing)} not registered (registered: {', '.join(STOP_MODEL.names()) if STOP_MODEL else 'none'}). Register: aicar stoppoint")
+    if XWALK_MODEL is None and any(s["until"] in ("_crosswalk", "_crossed") for s in driver.course.course):
+        car.close()
+        cam.stop()
+        raise SystemExit("_to_crosswalk / _pass_crosswalk need a registered crosswalk: aicar crosswalk (menu: register crosswalk)")
     pauses = any(s["until"] == "enter" for s in driver.course.course)
     if pauses and args.no_stream:
         raise SystemExit("a course with next() needs the web page (leave out --no-stream)")
     # Only a course with next() sends keys to the program, so other drives keep the page's own keys.
     stream = None if args.no_stream else Stream(args.port, "AICAR drive", "Enter next step (next)" if pauses else None)
     rec = Recorder(args.speed, args.set) if args.record else None
+    print("Traffic light:", f"registered ({', '.join(sorted(LIGHT_MODEL.colors()))})" if LIGHT_MODEL else "not registered (color thresholds)",
+          "| crosswalk:", f"registered ({len(XWALK_MODEL.views)} views)" if XWALK_MODEL else "not registered",
+          "| lines:", f"registered (reflection cut {LINE_MODEL.reflect_cut():.2f})" if LINE_MODEL else "not registered",
+          "| stop points:", ", ".join(STOP_MODEL.names()) if STOP_MODEL else "none")
     print("Motor", "ON" if args.drive else "OFF (steering only)",
           f"| course {len(COURSE)} steps, from {args.start} | Ctrl+C to stop")
 

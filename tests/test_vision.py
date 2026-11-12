@@ -390,6 +390,8 @@ def test_turn_align_stop():
         t = feed(c, 20, t, det=None)                    # 10.5 s.
     check("the turn ends by the 10 s safety limit when no lane is found", before == 0 and c.idx >= 1, f"{t:.1f}s, step {c.idx + 1}")
     check("tl(sec=0): turn -> align only, no slow drive", [s["do"] for s in cs._flat(cs.tl(sec=0))] == ["left", "follow"])
+    check("tr(align=False): turn -> slow drive, no aligning", [(s["do"], s["until"]) for s in cs._flat(cs.tr(align=False))] == [("right", "lane"), ("follow", None)])
+    check("tl(align=False, sec=0): the turn alone", [s["do"] for s in cs._flat(cs.tl(align=False, sec=0))] == ["left"])
 
     with quiet():   # A leftover lane crossing at an angle during a turn may look like a horizontal line, but a new lane still ends the turn.
         c = lf.CourseRunner([cs.tl(sec=0), finish()])
@@ -402,7 +404,7 @@ def test_turn_align_stop():
     with quiet():   # Pointed along the exit lane but off to one side (offset 0.55): end the turn, alignment fixes the offset.
         c = lf.CourseRunner([cs.tr(sec=0), finish()])
         t = feed(c, 6, 0.0, det=(0.05, 0.05))
-        t = feed(c, 30, t, det=None)
+        t = feed(c, max(30, pre), t, det=None)
         for _ in range(lf.TURN_END_FRAMES):
             c.update(False, t, (0.55, 0.1), False, {"near": True}); t += 0.05
     check("turn: ends on a lane pointing the right way but off to the side (0.55)", c.idx == 1, f"step {c.idx + 1}")
@@ -448,11 +450,12 @@ def feed_junc(course, frames, t, on, det=(0.0, 0.0)):
 def test_blind_and_bundles():
     print("[blind_sec / grouped actions]")
     import course as cs
-    with quiet():   # Quick turn: the old lane goes away and the new lane comes back, all inside the 1 second blind period.
+    first = cs._flat(cs.tr())[0]
+    with quiet():   # Quick turn: the old lane goes away and the new lane comes back, all inside the blind period.
         c = lf.CourseRunner([cs.tr(sec=0), finish()])
         t = feed(c, 6, 0.0, det=(0.05, 0.05))
         t = feed(c, 10, t, det=None)
-        t = feed(c, 30, t, det=(0.05, 0.05))
+        t = feed(c, max(30, int(first["min"] / 0.05) + 4), t, det=(0.05, 0.05))     # Until past min_sec, whatever course.py sets it to.
     check("turn: a new lane found during blind ends the turn when blind is over (no 3 s wait)", c.idx >= 1 and c.course[c.idx]["until"] == "aligned"
           or c.idx >= 2, f"step {c.idx + 1}")
     with quiet():   # A near junction comes into view at 0.8 s and is still in view when the 1.5 second blind period ends.
@@ -1490,7 +1493,9 @@ def test_set_speed():
     follows = [s["speed"] for s in bundles if s["do"] == "follow" and s["until"] not in ("aligned", None)]
     straights = [s["speed"] for s in bundles if s["do"] == "straight" and s["until"] == "lane"]
     check("grouped action: the lane following inside changes", set(follows) == {0.33}, follows)
-    check("grouped action: the straight inside is kept", set(straights) == {cs.SPEED}, straights)
+    gap_cross = [s["speed"] for s in cs._flat([cs.set_speed(0.33), cs.cross_gap()]) if s["do"] == "straight"]
+    cross_line = [s["speed"] for s in cs._flat([cs.set_speed(0.33), cs.cross()]) if s["do"] == "straight"]
+    check("grouped action: cross_gap's straight follows set_speed, cross()'s straight is kept", gap_cross == [0.33] and cross_line == [cs.SPEED], (gap_cross, cross_line))
     defaults = cs._flat([cs.to_end(), cs.uturn("left"), cs.follow(1)])
     check("to_end: time limit with max_sec", cs.to_end(max_sec=8)["max"] == 8 and cs.to_end()["max"] is None)
     check("without set_speed the default is kept", (defaults[0]["speed"], defaults[1]["speed"], defaults[-1]["speed"]) == (0.3, 0.4, cs.SPEED))
@@ -1766,7 +1771,9 @@ def _test_end_cm():
         check(f"cm=: error when {name}", ok)
     lf.JUNCTION_REF, ref = "laneend", lf.JUNCTION_REF
     try:
-        check("to_junction(): without cm, LANEEND_BASE_CM; with at=, as before", cs.to_junction()["cm"] == lf.LANEEND_BASE_CM and cs.to_junction(0.8)["cm"] is None and cs.to_end()["cm"] is None)
+        with quiet():
+            filled = [s["cm"] for s in lf.CourseRunner([cs.to_junction(), cs.to_junction(0.8), cs.to_end(), finish()]).course[:3]]
+        check("to_junction(): without cm, LANEEND_BASE_CM (filled when the drive starts); with at=, as before", filled == [lf.LANEEND_BASE_CM, None, None], filled)
     finally:
         lf.JUNCTION_REF = ref
     check("describe: shows cm", "+10cm" in cs.describe(cs.to_junction(cm=10)))
@@ -2729,10 +2736,153 @@ def test_glare_motion():
     check("light: the whole width is searched, so a light straight ahead is found", lf.TrafficLight.regions()[0][2] >= W // 2)
 
 
+def test_landmarks():
+    print("[registered traffic light and crosswalk]")
+    import landmarks
+    import course as cs
+    import tune_landmark as tl
+    old_light, old_xwalk = lf.LIGHT_MODEL, lf.XWALK_MODEL
+    try:
+        # Light: a red lamp registered at its place. A sign ring elsewhere and a hollow ring are not taken; the lamp is.
+        lamp = np.full((H, W, 3), 40, np.uint8)
+        cv2.circle(lamp, (520, 110), 9, (40, 40, 255), -1)
+        sample, note = landmarks.LightModel.sample(lamp, (500 / W, 90 / H, 540 / W, 130 / H))
+        check("light: a lit lamp in the box is registered with its color", sample is not None and sample["color"] == "red", note)
+        empty, why = landmarks.LightModel.sample(np.full((H, W, 3), 40, np.uint8), (0.1, 0.1, 0.3, 0.3))
+        check("light: an unlit box is refused with a reason", empty is None and "lamp" in why)
+        lf.LIGHT_MODEL = landmarks.LightModel([sample])
+        t = lf.TrafficLight()
+        check("light: the registered lamp is found", t(lamp) == "red")
+        far = np.full((H, W, 3), 40, np.uint8)
+        cv2.circle(far, (90, 200), 9, (40, 40, 255), -1)          # The same lamp, far from where it was registered.
+        ring = np.full((H, W, 3), 40, np.uint8)
+        cv2.circle(ring, (520, 120), 30, (40, 40, 230), 6)        # A red ring (a sign) where the lamp was.
+        check("light: a red spot far from the registered place, and a red ring, are not the lamp", t(far) is None and t(ring) is None)
+        lf.LIGHT_MODEL = None
+        check("light: with none registered, the old thresholds find a lamp anywhere", lf.TrafficLight()(far) == "red")
+
+        # Crosswalk: stripes registered from a box. Alike stripes in a row are found; scattered pieces are not.
+        def stripes(xs, y=250, h=30, w=16):
+            img = lane_frame()
+            for x in xs:
+                cv2.rectangle(img, (x, y), (x + w, y + h), (235, 235, 235), -1)
+            return img
+        row = [int(W * 0.40) + k * 30 for k in range(4)]
+        view, note = tl.crosswalk_view(stripes(row), (0.36, 230 / H, 0.62, 300 / H))
+        check("crosswalk: the stripes in the box are registered", view is not None and len(view) == 4, note)
+        lf.XWALK_MODEL = landmarks.CrosswalkModel([{"stripes": view}])
+        with quiet():
+            d = lf.LaneDetector()
+            for _ in range(3):
+                d(stripes(row), draw=False)
+        found = d.xwalk2_y
+        scattered = stripes([])
+        for (x, y) in ((int(W * 0.40), 200), (int(W * 0.47), 260), (int(W * 0.55), 320)):     # Same size, not in a row.
+            cv2.rectangle(scattered, (x, y), (x + 16, y + 30), (235, 235, 235), -1)
+        with quiet():
+            d2 = lf.LaneDetector()
+            for _ in range(3):
+                d2(scattered, draw=False)
+        check("crosswalk: the registered crosswalk is found, scattered pieces are not", found is not None and d2.xwalk2_y is None, (found, d2.xwalk2_y))
+
+        # Course: _to_crosswalk ends when the registered crosswalk reaches at=, _pass_crosswalk when it is gone.
+        steps = cs._flat([cs._to_crosswalk(0.6), cs._pass_crosswalk(), finish()])
+        check("course: _to_crosswalk / _pass_crosswalk use the registered crosswalk", [s["until"] for s in steps[:2]] == ["_crosswalk", "_crossed"])
+        with quiet():
+            c = lf.CourseRunner(steps)
+            t = 0.0
+            for _ in range(6):
+                c.update(False, t, (0.0, 0.0), False, {"_crosswalk": None, "near": True}); t += 0.05
+            for _ in range(lf.JUNCTION_FRAMES + 1):
+                c.update(False, t, (0.0, 0.0), False, {"_crosswalk": int(H * 0.7), "near": True}); t += 0.05
+            reached = c.idx
+            for _ in range(20):
+                c.update(False, t, (0.0, 0.0), False, {"_crosswalk": None, "near": True}); t += 0.05
+        check("course: ends at the registered crosswalk, then once it is passed", reached == 1 and c.idx == 2, (reached, c.idx))
+        try:
+            cs._to_crosswalk(sec=-1)
+            refused = False
+        except ValueError:
+            refused = True
+        check("course: _to_crosswalk checks its options", refused)
+    finally:
+        lf.LIGHT_MODEL, lf.XWALK_MODEL = old_light, old_xwalk
+
+
+def test_line_and_stop_points():
+    print("[registered lane lines and stop points]")
+    import landmarks
+    import course as cs
+    import tune_landmark as tl
+    old_line, old_stop = lf.LINE_MODEL, lf.STOP_MODEL
+    try:
+        img = lane_frame()
+        l, r = lane_x(300)
+        sample, note = tl.line_sample(img, ((l - 20) / W, 280 / H, (l + 20) / W, 330 / H))
+        check("line: a painted line in the box is measured", sample is not None and sample["sharp"] >= tl.LINE_SHARP_MIN, note)
+        soft = reflection_frame(blobs=((W // 2, 300),))
+        refused, why = tl.line_sample(soft, ((W // 2 - 30) / W, 260 / H, (W // 2 + 30) / W, 340 / H))
+        check("line: a soft reflection is refused", refused is None and "reflection" in why, why)
+        m = landmarks.LineModel([sample])
+        check("line: the reflection cut sits under the registered paint", m.reflect_cut() < sample["sharp"])
+        lf.LINE_MODEL = m
+        with quiet():
+            d = lf.LaneDetector()
+            for _ in range(3):
+                det, _, _ = d(reflection_frame(), draw=False)
+        check("line: with lines registered, the reflection is still left out", d.reflections and det is not None)
+        lf.LINE_MODEL = old_line
+
+        # Stop point: an L corner registered where the car stood; replayed as it comes closer, go_to ends there.
+        def corner(y):
+            img = lane_frame()
+            x = int(W * 0.25)
+            cv2.line(img, (x, y), (x + 120, y), (235, 235, 235), 8)
+            cv2.line(img, (x, y), (x, min(y + 60, H - 1)), (235, 235, 235), 8)
+            return img
+        stop_y = 300
+        model = landmarks.StopModel()
+        ok, note = model.add("A", tl.frame_mask(corner(stop_y)), (int(W * 0.25) - 20, stop_y - 20, 160, 70))
+        check("stop: a corner is registered", ok, note)
+        bad, why = landmarks.StopModel().add("B", np.zeros((H, W), np.uint8), (100, 200, 80, 60))
+        check("stop: an empty box is refused", not bad and "no line" in why)
+        lf.STOP_MODEL = model
+        steps = cs._flat([cs.go_to("A", blind_sec=0), finish()])
+        with quiet():
+            dr = lf.Driver(steps)
+            ended = None
+            for k, y in enumerate(range(200, 330, 4)):
+                dr.tick(corner(y), k / 30)
+                if ended is None and dr.course.idx >= 1:
+                    ended = y
+        check("stop: go_to ends when the corner comes to where it was registered", ended is not None and abs(ended - stop_y) <= 16, ended)
+        plus = lane_frame()
+        cv2.line(plus, (int(W * 0.6), 260), (int(W * 0.6) + 80, 260), (235, 235, 235), 8)
+        cv2.line(plus, (int(W * 0.6) + 40, 230), (int(W * 0.6) + 40, 300), (235, 235, 235), 8)
+        model.add("B", tl.frame_mask(plus), (int(W * 0.6) - 20, 220, 120, 90))
+        with quiet():
+            dr = lf.Driver(cs._flat([cs.go_to("b|a", blind_sec=0), finish()]))
+            either = None
+            for k, y in enumerate(range(200, 330, 4)):
+                dr.tick(corner(y), k / 30)
+                if either is None and dr.course.idx >= 1:
+                    either = y
+        check('stop: go_to("b|a") stops at whichever comes first (here A)', either is not None and abs(either - stop_y) <= 16, either)
+        try:
+            cs.go_to("")
+            refused = False
+        except ValueError:
+            refused = True
+        check("stop: go_to needs a name", refused)
+        check("stop: go_to keeps the name and offset", [(s["until"], s["stop"], s["stop_cm"]) for s in cs._flat([cs.go_to("B", offset=3)])] == [("_stop", "B", 3)])
+    finally:
+        lf.LINE_MODEL, lf.STOP_MODEL = old_line, old_stop
+
+
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
