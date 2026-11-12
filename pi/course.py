@@ -2,7 +2,7 @@
 # --- 주행 ---
 REFLECT_MOTION_ON = False    # 반사광을 움직임으로 구별 (반짝이는 매트용). False = 끄고 가장자리 날카로움으로만 판단 (반사 없는 경기장이면 결과 같고 더 빠름)
 STOP_POINTS_ON = True       # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
-SPEED = 0.75                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
+SPEED = 0.7                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 STEER_MAX = 8            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
 
 # --- 신호등 ---
@@ -11,7 +11,7 @@ RED_BACK_ON = True          # wait_green에서 빨간불을 못 찾으면 후진
 # --- 레고 사람 (등록: Tune Person.command) ---
 PERSON_ON = True            # 사람을 보고 멈출지
 PERSON_AT = 0.55            # 이 선(화면 높이 0.4~0.95)보다 발이 아래로 와야 사람으로 봄. 0.55 = 약 40 cm, 0.5 = 약 46 cm. 위쪽(먼 곳)은 무시. 아래쪽은 색만 맞으면 크기, 윤곽, 위치와 상관없이 바로 정지. None = 등록한 위치
-PERSON_RESUME_DELAY = 3.5   # 사람이 전혀 안 보인 뒤 출발까지 기다리는 시간 (초). 그 사이 한 번이라도 보이면 다시 기다림
+PERSON_RESUME_DELAY = 2   # 사람이 전혀 안 보인 뒤 출발까지 기다리는 시간 (초). 그 사이 한 번이라도 보이면 다시 기다림
 PERSON_MIN_STOP = 2.0       # 최소 정지 시간 (초)
 PERSON_MAX_WAIT = None      # 사람이 있어도 출발하는 시간 (초). None = 없어질 때까지 대기
 PERSON_X = (0.0, 1.0)       # 사람을 찾을 가로 범위: 왼쪽 0 ~ 오른쪽 1. 전체 = 화면에 잡히면 어디든
@@ -245,7 +245,7 @@ def _gap(gap, nth, name):
         raise ValueError(f"{name}(): gap must be 0 to 60 seconds, or a list of them ({gap!r})")
     n = nth or 1
     if n < 2:
-        raise ValueError(f"{name}(): gap= needs nth=2 or more (it is the wait between sightings)")
+        return None     # nth=1: 지나치는 것이 없어 틈도 없음 (gap= 무시)
     if isinstance(gap, (list, tuple)) and len(gaps) != n - 1:
         raise ValueError(f"{name}(): nth={n} has {n - 1} gaps, so gap needs {n - 1} numbers ({gap!r})")
     return [float(g) for g in gaps] if len(gaps) > 1 else [float(gaps[0])] * (n - 1)
@@ -283,23 +283,24 @@ def go(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None
     return dict(step, cm_default=True) if cm is None and at is None else step
 
 
-def to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1, gap=None):
+def to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1, gap=None, blind_sec=0.0):
     # sec=3: 횡단보도에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽). steer=15: 최대 조향각
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"to_crosswalk(): sec must be 0 to 600 ({sec})")
-    return _auto(follow(until="crosswalk", nth=_nth(nth, "to_crosswalk"), gap=gap, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
+    return _auto(follow(until="crosswalk", nth=_nth(nth, "to_crosswalk"), gap=gap, blind_sec=blind_sec, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
 
 
-def pass_crosswalk():
-    return cross(line="crosswalk", approach=False)
+def pass_crosswalk(speed=None, steer=None, shift=None, min_speed=None):
+    # 횡단보도를 지나갈 때까지 차선 따라 주행 (최대 5초). speed, steer, shift, min_speed는 go()와 같음
+    return [_auto(follow(until="crossed", hold_sec=0.3, min_sec=0.5, max_sec=5, speed=speed, steer=steer, shift=shift, min_speed=min_speed), speed, SPEED)]
 
 
 # 등록한 횡단보도(aicar crosswalk)로 판단하는 버전. 위의 to_crosswalk / pass_crosswalk는 그대로 두고 함께 쓸 수 있음
-def _to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1, gap=None):
+def _to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1, gap=None, blind_sec=0.0):
     # 등록한 횡단보도가 at 높이까지 오면 끝. sec=3: 횡단보도에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽). steer=15: 최대 조향각
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"_to_crosswalk(): sec must be 0 to 600 ({sec})")
-    return _auto(follow(until="_crosswalk", nth=_nth(nth, "_to_crosswalk"), gap=gap, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
+    return _auto(follow(until="_crosswalk", nth=_nth(nth, "_to_crosswalk"), gap=gap, blind_sec=blind_sec, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
 
 
 def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, min_speed=None, blind_sec=0.5, shift=None, gap=None, cm=None):
@@ -328,16 +329,23 @@ def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, mi
     return _auto(dict(step, stop=name, stop_cm=offset), speed, SPEED)
 
 
-def _pass_crosswalk(speed=None, steer=None):
-    # 등록한 횡단보도를 지나갈 때까지 차선 따라 주행 (화면에서 사라지면 끝, 최대 5초)
-    return _auto(follow(until="_crossed", hold_sec=0.3, min_sec=0.5, max_sec=5, speed=speed, steer=steer), speed, SPEED)
+def _pass_crosswalk(speed=None, steer=None, shift=None, min_speed=None, sec=5):
+    # 등록한 횡단보도를 지나갈 때까지 차선 따라 주행 (화면에서 사라지면 끝, 최대 sec초)
+    if _bad_num(sec, 0.5, 600):
+        raise ValueError(f"_pass_crosswalk(): sec must be 0.5 to 600 ({sec})")
+    return _auto(follow(until="_crossed", hold_sec=0.3, min_sec=0.5, max_sec=sec, speed=speed, steer=steer, shift=shift, min_speed=min_speed), speed, SPEED)
 
-def to_gap(at=0.85, slow=None, speed=None, steer=None, min_speed=None, shift=None):
-    return _auto(follow(until="gap", shift=shift, speed=speed, at=at, slow=slow, steer=steer, min_speed=min_speed), speed, SPEED)
+def to_gap(at=0.85, slow=None, speed=None, steer=None, min_speed=None, shift=None, sec=None, blind_sec=0.0, nth=1, gap=None):
+    return _auto(follow(until="gap", shift=shift, speed=speed, at=at, slow=slow, steer=steer, min_speed=min_speed, max_sec=sec,
+                        blind_sec=blind_sec, nth=_nth(nth, "to_gap"), gap=gap), speed, SPEED)
 
 
-def to_end(at=0.5, slow=None, blind_sec=0.0, speed=None, shift=None, cm=None, max_sec=None):
-    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift, cm=cm, max_sec=max_sec), speed, 0.3)
+def to_end(at=0.5, slow=None, blind_sec=0.0, speed=None, shift=None, cm=None, max_sec=None, steer=None, min_speed=None, sec=None):
+    # sec=는 max_sec=와 같음 (다른 함수와 맞춤)
+    if sec is not None and max_sec is not None:
+        raise ValueError("to_end(): give sec= or max_sec=, not both")
+    return _auto(follow(until="end", speed=speed, at=at, slow=slow, blind_sec=blind_sec, shift=shift, cm=cm,
+                        max_sec=max_sec if sec is None else sec, steer=steer, min_speed=min_speed), speed, 0.3)
 
 
 def _turn_fn(direction):
@@ -359,8 +367,8 @@ def cross_gap(at=0.85, angle=0, speed=None, steer=None, sec=None):
     return [to_gap(at, speed=speed, steer=steer), _auto(cross, speed, SPEED)]
 
 
-def traffic(at=0.73, max_sec=10, speed=None):
-    return [to_crosswalk(at, speed=speed), wait_green(max_sec=max_sec)]
+def traffic(at=0.73, max_sec=10, speed=None, steer=None, shift=None):
+    return [to_crosswalk(at, speed=speed, steer=steer, shift=shift), wait_green(max_sec=max_sec)]
 
 
 def cross(at=None, line="junction", speed=None, approach=True):
@@ -462,6 +470,94 @@ def _flat(steps):
     return out
 
 
+# --- 공통 옵션: 모든 동작 함수에서 [공통 옵션]을 쓸 수 있게 ---
+# 함수가 따로 받지 않는 공통 옵션은 여기서 받아 단계에 넣음.
+#   speed, steer, shift, side, style, min_speed: 묶음 동작이면 모든 단계에
+#   at, slow, until, nth, gap, hold_sec, blind_sec, min_sec, max_sec, cm: 끝 조건이 있는 첫 단계(묶음의 핵심 단계)에
+COMMON = ("at", "slow", "speed", "blind_sec", "min_sec", "max_sec", "side", "shift", "style", "steer",
+          "nth", "gap", "min_speed", "hold_sec", "until", "cm")
+_EVERY_STEP = ("speed", "steer", "shift", "side", "style", "min_speed")
+_STEP_KEY = {"blind_sec": "blind", "min_sec": "min", "max_sec": "max", "hold_sec": "hold"}
+
+
+def _apply_common(name, out, extra):
+    bad = [k for k in extra if k not in COMMON]
+    if bad:
+        raise ValueError(f"{name}(): no option {bad[0]}={_hint(bad[0], COMMON)} (common options: {', '.join(COMMON)})")
+    steps = _expand(out) if isinstance(out, list) else [out]
+    if not steps:
+        return out
+    main = ([st for st in steps if st.get("until") is not None] or steps)[0]     # (next() is the course action here, not the builtin)
+    until = extra.get("until", main.get("until"))
+    if "until" in extra and main.get("sec"):
+        raise ValueError(f"{name}(): until= cannot be used with a timed step (sec); leave out sec")
+    nth = extra.get("nth", main.get("nth"))
+    # Check the values with the same rules as every other action.
+    check = {k: v for k, v in extra.items() if k not in ("until", "gap")}
+    check["nth"] = nth
+    _step(name, 0.0, None, until if until is not None else "junction",
+          **{k: v for k, v in check.items() if k in OPTIONS})
+    if "nth" in extra:
+        nth = None if nth is None or nth <= 1 else nth
+    gap = _gap(extra["gap"], nth, name) if "gap" in extra else main.get("gap")
+    new = []
+    for st in steps:
+        st = dict(st)
+        is_main = _same(st, main)
+        for k, v in extra.items():
+            if not is_main and k not in _EVERY_STEP:
+                continue
+            if k == "nth":
+                v = nth
+            elif k == "gap":
+                v = gap
+            elif k in ("blind_sec", "min_sec", "hold_sec") and v is None:
+                v = 0.0
+            st[_STEP_KEY.get(k, k)] = v
+            if k == "speed" and v is not None:
+                st.pop("auto", None)        # A speed given here is kept: set_speed() does not change it.
+        if is_main and (extra.get("until", "junction") != "junction" or "cm" in extra or "at" in extra):
+            st.pop("cm_default", None)      # The lane-end default only fits a junction end with no other distance given.
+        if is_main and "nth" in extra and "gap" not in extra and nth is None:
+            st["gap"] = None
+        new.append(st)
+    return new if isinstance(out, list) else new[0]
+
+
+def _same(st, main):
+    return st.get("_id") == main.get("_id")
+
+
+def _with_common(fn):
+    import functools
+    import inspect
+    params = inspect.signature(fn).parameters
+    own = set(params)
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        own |= set(OPTIONS)         # follow(), straight() ... already take these through **opt.
+
+    @functools.wraps(fn)
+    def run(*args, **kw):
+        extra = {k: kw.pop(k) for k in list(kw) if k not in own}
+        out = fn(*args, **kw)
+        if not extra:
+            return out
+        steps = _expand(out) if isinstance(out, list) else [out]
+        tagged = [dict(st, _id=i) for i, st in enumerate(steps)]
+        res = _apply_common(fn.__name__, tagged if isinstance(out, list) else tagged[0], extra)
+        res = res if isinstance(res, list) else [res]
+        for st in res:
+            st.pop("_id", None)
+        return res if isinstance(out, list) else res[0]
+    return run
+
+
+for _name in ("follow", "straight", "push", "right", "left", "turn", "curve", "back", "stop", "wait", "wait_green", "start_gate",
+              "to_junction", "go", "to_crosswalk", "pass_crosswalk", "_to_crosswalk", "_pass_crosswalk", "go_to", "to_gap", "to_end",
+              "cross_gap", "traffic", "cross", "corner", "uturn", "tr", "tl"):
+    globals()[_name] = _with_common(globals()[_name])
+
+
 def describe(step):
     names = {"junction": "junction", "crosswalk": "crosswalk", "lane": "new lane", "gap": "lane gap", "end": "end (junction line / gap)", "crossed": "crosswalk passed", "_crosswalk": "registered crosswalk", "_crossed": "registered crosswalk passed", "_stop": "stop point",
              "green": "green light", "lost": "lane lost", "obstacle": "obstacle", "clear": "obstacle cleared",
@@ -510,21 +606,22 @@ def describe(step):
 #                           go(cm=25): 화면의 LANE END 거리가 25cm가 되면 끝 (차로 선이 교차로에서 끝나는 곳까지 거리)
 #                                            거리는 차 앞쪽 기준. 4.5보다 작게 주면 선이 화면에서 안 보여 4.5에서 끝냄. 화면 값과 줄자 값이 다르면 lane_follow.py LANEEND_OFFSET_CM
 # to_crosswalk(at, nth)     횡단보도 앞까지 가서 끝
-# to_gap(at)                차선이 끊기는 곳 앞까지 가서 끝
-# to_end(at)                바로 앞 끝에서 끝: 교차로선(가로선)이든 차선 끊김이든 먼저 오는 쪽
+# to_gap(at, nth)          차선이 끊기는 곳 앞까지 가서 끝
+# to_end(at)                바로 앞 끝에서 끝: 교차로선(가로선)이든 차선 끊김이든 먼저 오는 쪽 (기본 속도 0.3, sec=는 max_sec=와 같음)
 #                           to_end(cm=10): 선을 자로 재서 기준 위치에서 10cm 더 간 뒤 끝. cm=0은 선이 카메라 앞 38cm일 때
-# pass_crosswalk()          횡단보도 지나가기
-# _to_crosswalk(at, nth) / _pass_crosswalk()   위와 같지만 등록한 횡단보도(aicar crosswalk, 메뉴 c)로 판단. 기존 것과 함께 쓸 수 있음
+# pass_crosswalk()          횡단보도를 지나갈 때까지 차선 따라 주행 (최대 5초)
+# _to_crosswalk(at, nth) / _pass_crosswalk(sec)   위와 같지만 등록한 횡단보도(aicar crosswalk, 메뉴 c)로 판단. 기존 것과 함께 쓸 수 있음
 # go_to("A", offset, nth)   등록한 정지 지점 A(aicar stoppoint, 메뉴 t)까지 가서 정지. offset=3: 3cm 더 가서 / -3: 덜 가서. sec=10: 못 찾아도 10초 뒤 끝
 #                           go_to("A|B"): A 또는 B 중 먼저 오는 곳에서 정지 (소문자 "a|b"도 됨)
-#                           STOP_POINTS_ON = False면 go()처럼 차선 끝에서 정지
-# nth=, gap=                (go, to_junction, to_crosswalk, _to_crosswalk, go_to)
+#                           STOP_POINTS_ON = False면 go()처럼 차선 끝에서 정지 (이때 go_to("A", cm=12)는 go(cm=12)와 같음)
+# nth=, gap=                (모든 함수. 주로 go, to_junction, to_crosswalk, _to_crosswalk, to_gap, go_to)
 #                           nth=3: 앞의 2개는 지나치고 세 번째에서 끝
 #                           gap=[1, 2.5]: 하나 지나칠 때마다 다음 인식까지 쉬는 초. 첫 틈 1초, 둘째 틈 2.5초 (개수 = nth-1) / gap=1.5: 모든 틈 1.5초
+#                           nth=1이면 지나치는 것이 없어 gap=은 무시. 쉬는 동안은 정지 지점 검색도 쉼
 #
 # [묶음 동작 (여러 단계)]
 # cross_gap(at, angle)      끊긴 곳까지 간 뒤 새 차선이 잡힐 때까지 직진 (sec=1.5: 1.5초만 직진, steer=15: 최대 조향각)
-# traffic(at, max_sec)      횡단보도 앞에 서서 초록불에 출발
+# traffic(at, max_sec)      횡단보도 앞에 서서 초록불에 출발 (to_crosswalk + wait_green)
 # cross(at, line, approach) 교차로선까지 가서 정면으로 건넘 / line="crosswalk": 차선 따라 횡단보도 건넘 (approach=False: 이미 앞에 서 있을 때)
 # corner(direction, wide)   교차로 선까지 가서 go_sec초 더 간 뒤 꺾고 정렬·주행 (to_junction + straight + tr/tl)
 # uturn(direction)          교차로 선 앞에서 최대 조향으로 돌아 정렬·주행 (blind_sec 동안 새 차선 안 봄)
@@ -533,7 +630,10 @@ def describe(step):
 #                           tr(align=False) / tl(align=False): 회전 뒤 차로 가운데 맞추기(정렬)를 건너뜀
 #                           tr()/tl() 속도: 감속 없음. speed=를 주면 그 속도, 없으면 set_speed() 또는 SPEED 그대로
 #
-# [공통 옵션]
+# [공통 옵션]  모든 동작 함수에서 쓸 수 있음 (예: tr(steer=12), traffic(nth=2, gap=1), go(until="crosswalk"))
+#            묶음 동작(tr, tl, traffic, cross, corner ...)은 speed, steer, shift, side, style, min_speed는 모든 단계에,
+#            나머지(at, slow, until, nth, gap, cm, *_sec)는 끝 조건이 있는 첫 단계에 들어감
+#            말이 안 되는 조합은 에러로 알려줌: slow=, cm=은 교차로/횡단보도/끊김/끝까지 가는 동작만, until=은 sec(시간) 동작과 함께 못 씀
 # at=        감지 위치 (0.4~1.0, 클수록 가까이)     slow=      선에 가까워질수록 이 속도까지 감속 (없으면 감속 안 함)
 # speed=     주행 속도                              blind_sec= 시작 후 이 시간 동안 감지 안 함
 # min_sec=   최소 진행 시간                         max_sec=   최대 진행 시간
@@ -579,58 +679,31 @@ def describe(step):
 # --- 코스 ---
 
 COURSE = _flat([
-    # start_gate(2),
-    # follow(8,shift=3),
-    # go(steer=8,cm=12),
-    # follow(5),
-    # _to_crosswalk(0.85, nth=2, gap=1.5),
-    # wait_green(max_sec=20),
-    # stop(1.5),
-    # pass_crosswalk(),
+    set_speed(0.75),
+    start_gate(2),
 
 
-
-
-
+    follow(8,shift=3),
+    go(steer=8,cm=12),
+    _to_crosswalk(0.85, nth=1, gap=1.5),
+    wait_green(max_sec=20),
+    stop(1.5),
+    pass_crosswalk(),
     go(steer=8,cm=20,nth=2,shift=2),
     follow(1),
     go_to("A", cm=15),
-
-
-    next(),
-
-    back(2.25),
+    stop(0.5),    
+    back(5.25),
     tl(),
-
-
-
-
-
-    set_speed(0.5),
     go(steer=8,cm=12),
-
-    set_speed(0.75),
     stop(0.5),
-    follow(0.75),
     tr(),
-    set_speed(0.5),
     go(steer=8,cm=20),
-    next(),
-
-    stop(1),
-    back(2),
-    next(),
-    
-    set_speed(0.75),
+    stop(0.5),
+    back(4.25),
     tr(),
-
-
-
-
-
-
-
-
+    follow(3),
+    to_crosswalk(0.8),
     finish(),
  
 
