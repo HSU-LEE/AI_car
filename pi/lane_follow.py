@@ -2862,6 +2862,7 @@ class Driver:
         self.stop_found = None      # go_to("A"): where the registered shape was found this frame ({"x","y","w","h","score","scale"}), or None.
         self.stop_y = self.stop_target = None   # Its center, and where the center must come to (frame y).
         self.stop_idx, self.stop_last, self.stop_tick, self.stop_hist = -1, {}, 0, {}
+        self.stop_log = []      # go_to(): one row per frame and point, saved with a recording as stops.csv (what was matched, how well, how far).
 
     def retrace_plan(self, seconds):
         """Recent forward driving played backwards: [(time it ends, steering angle)], up to this many seconds of reversing."""
@@ -2983,12 +2984,17 @@ class Driver:
             hist = self.stop_hist.setdefault(name, [])
             if left is None or now is None:
                 hist.clear()
-            elif landmarks.StopModel.close_enough(found) and found["score"] >= STOP_LEAD_SCORE:
+            elif landmarks.StopModel.close_enough(found) and found["score"] >= STOP_LEAD_SCORE and (not near or found.get("view") in near):
                 need = STOP_WHOLE_FRAMES if found.get("whole") else JUNCTION_FRAMES
                 if left <= stop_lead(hist, now, left, need):
                     y = max(y, target)      # Close enough at this speed: counted now, so the car comes to rest on it.
             else:
                 stop_lead(hist, now, left, 1)   # Still keeps the speed reading going.
+            if now is not None and len(self.stop_log) < 100000:
+                f = found or {}
+                self.stop_log.append(f"{now:.3f},{self.course.idx},{name},{f.get('view', '')},{int(f.get('view') in near) if f else ''},"
+                                     f"{f.get('score', 0):.3f},{f.get('scale', 0):.3f},{'' if y is None else round(y, 1)},{target:.1f},"
+                                     f"{'' if left is None else round(left, 2)},{int(y is not None and y >= target)}")
             if best is None or (left is not None and (best[3] is None or left < best[3])):
                 best = (name, found, target, left, y)
             if dbg is not None and found is not None:
@@ -2999,6 +3005,11 @@ class Driver:
         self.stop_found = found
         if dbg is not None:
             dashed_hline(dbg, int(self.stop_target), C_AT, dash=10, gap=6)
+
+    def save_stop_log(self, path):
+        """go_to() matches of this drive, as stops.csv. Nothing is written when there was no go_to()."""
+        if self.stop_log:
+            Path(path).write_text("t,step,name,view,near,score,scale,y,target,left_cm,reached\n" + "\n".join(self.stop_log) + "\n")
 
     def stand_for_person(self, now):
         """Stand still for the LEGO figure. The action in progress waits as it is, so it carries on where it left off."""
@@ -3637,7 +3648,7 @@ def main():
         for name, fn in (("save_bias", lambda: (car.save_bias(), print(f"\nAuto trim saved: {car.bias:+.1f} deg")) if AUTO_TRIM and args.drive else None),
                          ("camera", cam.stop),
                          ("obstacle", lambda: obs.close() if obs else None),
-                         ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"),
+                         ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
                                                          print(f"Recording saved: {rec.dir} ({rec.n} frames)")))):
             try:
                 fn()

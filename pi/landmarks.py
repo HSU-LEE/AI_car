@@ -252,6 +252,23 @@ def stop_view(frame, roi_mask, top, from_y=None):
     return np.vstack([edges_above(frame, y0, top), roi_mask]), y0
 
 
+STOP_SPOT_PX = 34          # Blobs smaller than this every way (frame px) are dropped from stop-point pictures: ceiling-light glints
+                            # on a glossy mat, which a car standing still to register cannot tell from paint, and which move when it drives.
+STOP_DECIDE = 0.85          # A match this good (a mark box) is needed for the stop itself; weaker ones only follow the point while coming.
+
+
+def drop_spots(img, px):
+    """img (0/255 or blurred) without its small blobs (smaller than px every way): glints, not painted lines."""
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((img > 127).astype(np.uint8), connectivity=8)
+    small = np.zeros(n, bool)
+    small[1:] = np.maximum(stats[1:, cv2.CC_STAT_WIDTH], stats[1:, cv2.CC_STAT_HEIGHT]) < px
+    if not small.any():
+        return img
+    out = img.copy()
+    out[small[labels]] = 0
+    return out
+
+
 def _encode(img):
     return cv2.imencode(".png", img)[1].tobytes().hex()
 
@@ -320,6 +337,8 @@ class StopModel:
     def close_enough(found):
         """A find that may count as the stop: a road area must match strictly and be at about full size
         (it is followed loosely while still coming, but a plain lane looks much the same all along)."""
+        if found["score"] < STOP_DECIDE:
+            return False
         return not (found.get("whole") and (found["score"] < STOP_WHOLE_MATCH or found["scale"] < STOP_WHOLE_SCALE))
 
     def undo(self, name):
@@ -353,7 +372,8 @@ class StopModel:
     def templates(self, name):
         if name not in self._patches:
             views = self.points[name]["views"][-STOP_MAX_VIEWS:]     # A file from before the limit may hold more: the newest count.
-            self._patches[name] = [(cv2.GaussianBlur(_decode(v["patch"]), (5, 5), 0).astype(np.float32), v["box"], bool(v.get("whole")))
+            self._patches[name] = [(cv2.GaussianBlur(drop_spots(_decode(v["patch"]), STOP_SPOT_PX // 2), (5, 5), 0).astype(np.float32),
+                                    v["box"], bool(v.get("whole")))
                                    for v in views]
         return self._patches[name]
 
@@ -365,6 +385,7 @@ class StopModel:
         """
         if name not in self.points:
             return None
+        mask = drop_spots(mask, STOP_SPOT_PX)      # Glints off, as in the saved views.
         small = cv2.GaussianBlur(cv2.resize(mask, (mask.shape[1] // 2, mask.shape[0] // 2), interpolation=cv2.INTER_AREA), (5, 5), 0).astype(np.float32)
         # Every view, every frame, only around where it sits when the car is at the stop, at about its size: cheap, and the
         # moment the car passes over the place is never missed (at speed that is 1-2 frames), whichever view has its turn.
@@ -375,7 +396,7 @@ class StopModel:
             if near and vi not in near:
                 continue        # Far views (above the line area) say little about where exactly the car is: the near ones decide.
             spot = {"x": box[0], "y": box[1], "w": box[2], "h": box[3], "scale": 1.0, "view": vi}
-            hit = self._search(name, coarse, None, spot, factor=4, top=top, min_score=STOP_MATCH - 0.1, pad=STOP_HOME_PX)
+            hit = self._search(name, coarse, None, spot, factor=4, top=top, min_score=STOP_MATCH - 0.1, pad=STOP_HOME_PX, x_free=True)
             if hit is not None and (home is None or hit["score"] > home["score"]):
                 home = hit
         if home is not None:        # Refine the best at half size, close around it.
@@ -395,7 +416,7 @@ class StopModel:
             last = guess
         return self._search(name, small, None, last, factor=2, top=top, min_score=STOP_MATCH)
 
-    def _search(self, name, img, scales, last, factor, top, min_score, views=None, pad=None, around=STOP_AROUND):
+    def _search(self, name, img, scales, last, factor, top, min_score, views=None, pad=None, around=STOP_AROUND, x_free=False):
         """Best match of point name in img (the line mask at 1/factor size). last: look only around it, at sizes near its scale,
         with the view it was found with. views: which views to try (all if None)."""
         SH, SW = img.shape
@@ -418,8 +439,9 @@ class StopModel:
                 else:
                     p = (STOP_TRACK_PX if pad is None else pad) * 2 // factor
                     cx, cy = (last["x"] + last["w"] / 2) / factor, (last["y"] - top + last["h"] / 2) / factor
-                    rx0, ry0 = int(max(cx - tw / 2 - p, 0)), int(max(cy - th / 2 - p, 0))
-                    region = img[ry0:int(min(cy + th / 2 + p, SH)), rx0:int(min(cx + tw / 2 + p, SW))]
+                    rx0, ry0 = (0 if x_free else int(max(cx - tw / 2 - p, 0))), int(max(cy - th / 2 - p, 0))
+                    # x_free: any place across (the car may come to the stop pointed a little differently), only the height is held.
+                    region = img[ry0:int(min(cy + th / 2 + p, SH)), rx0:(SW if x_free else int(min(cx + tw / 2 + p, SW)))]
                     if region.shape[0] < th or region.shape[1] < tw:
                         continue
                 res = cv2.matchTemplate(region, t, cv2.TM_CCOEFF_NORMED)

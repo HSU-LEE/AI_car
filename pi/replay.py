@@ -109,6 +109,9 @@ def main():
     s = np.array(steers)
     print(f"\nframes {len(rows)}  LOST {lost} ({100 * lost / max(len(rows), 1):.0f}%)  junctions {junctions}")
     print(f"frames with a lane gap {gaps}  traffic light red {lights['red']} / green {lights['green']} frames")
+    if driver.stop_log:     # go_to() matches, the same columns as the stops.csv a drive saves.
+        driver.save_stop_log(run / "replay_stops.csv")
+        print(f"stop point matches: {run / 'replay_stops.csv'}")
     print(f"steering mean {s.mean():+.1f}  std {s.std():.1f}  "
           f"mean change per frame {np.abs(np.diff(s)).mean() if len(s) > 1 else 0:.2f} deg (larger is more zigzag)")
     if not np.isnan(diffs).all():
