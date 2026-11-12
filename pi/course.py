@@ -131,6 +131,13 @@ def set_steer(deg=None):
     return {"do": "set_steer", "steer": deg}
 
 
+def set_style(style=None):
+    # 이 뒤 차선 주행 조향 성향을 style로 ("soft"/"normal"/"sharp"). set_style()은 기본으로 되돌림
+    if style not in STYLES:
+        raise ValueError(f'set_style(): style must be "soft" / "normal" / "sharp"{_hint(style, STYLES)}')
+    return {"do": "set_style", "style": style}
+
+
 def set_speed(speed=None):
     if speed is not None and (isinstance(speed, bool) or not isinstance(speed, (int, float)) or not 0 < speed <= 1):
         raise ValueError(f"set_speed(): speed must be more than 0 and at most 1 ({speed})")
@@ -453,10 +460,12 @@ def _expand(steps):
 
 
 def _flat(steps):
-    out, cruise, steer = [], None, STEER_MAX
+    out, cruise, steer, style = [], None, STEER_MAX, None
     for s in _expand(steps):
         if s["do"] == "set_speed":
             cruise = s["speed"]
+        elif s["do"] == "set_style":
+            style = s["style"]
         elif s["do"] == "set_steer":
             steer = STEER_MAX if s["steer"] is None else s["steer"]
         else:
@@ -466,6 +475,8 @@ def _flat(steps):
                     s["blind"] = round(TURN_BLIND * TURN_BLIND_SPEED / max(cruise, TURN_BLIND_SPEED), 2)
             if steer is not None and s.get("auto") and s["do"] == "follow" and s.get("steer") is None and not s.get("turn_part"):
                 s = dict(s, steer=steer)
+            if style is not None and s.get("auto") and s["do"] == "follow" and s.get("style") is None and not s.get("turn_part"):
+                s = dict(s, style=style)
             out.append(s)
     return out
 
@@ -597,6 +608,7 @@ def describe(step):
 # start_gate(hold_sec)      출발선 앞 장애물이 치워지고 hold_sec초 지나면 출발
 # finish()                  코스 끝, 정지
 # set_speed(v)              이 뒤 주행 속도를 v로 (턴, straight, 직접 준 speed= 제외). set_speed()는 기본값으로 되돌림
+# set_style(style)          이 뒤 차선 주행 조향 성향을 "soft"/"normal"/"sharp"로 (턴, straight, 직접 준 style= 제외). set_style()은 기본으로 되돌림
 # set_steer(deg)            이 뒤 차선 주행 최대 조향각을 deg도로 (턴, straight, 직접 준 steer= 제외). set_steer()는 STEER_MAX로 되돌림
 # back(sec, angle)          sec초 동안 후진 (차선은 안 봄). angle=10: 바퀴를 오른쪽으로 10도 꺾고 후진, speed=0.5: 후진 속도
 # 
