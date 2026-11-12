@@ -168,6 +168,10 @@ LANE_CM = 20.0          # Real lane width.
 END_BASE_CM = 38.0      # cm=0 is where the line sits this far ahead of the camera, about where to_junction() ends without cm=.
 END_SPEED_SEC = 0.25    # cm=: the car's speed is measured from how the line moved over the last this many seconds. Short, because the car is still slowing down.
 END_LEAD_SEC = 0.05     # cm=: end this much early (at the measured speed). The reading is about 2 frames old by the time it is acted on.
+STOP_LEAD = True        # go_to(): count the stop point as reached a little early, by the measured speed: the frames it must hold
+                        # in a row and the reading's age would otherwise carry the car past it (about 2-4 cm at 0.7).
+STOP_LEAD_MAX_CM = 4.0  # ... never more than this early,
+STOP_LEAD_SCORE = 0.85  # ... and only on a clear match (a borderline one may be a look-alike just short of the place).
 END_MIN_SPEED = 3.0     # cm=: a measured speed below this (cm/s), on a car that is being driven, is a bad reading. END_DEFAULT_SPEED is used instead.
 END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measured. About what the lowest motor command gives.
 END_SWITCH_FRAMES = 3   # cm=: before the end line is reached, this many readings in a row that agree with each other replace a reading they jump away from.
@@ -1653,6 +1657,27 @@ class YawMeter:
         return self.total
 
 
+def stop_lead(hist, now, left, need):
+    """go_to(): how far before the stop (cm) to count it as reached, so the car stops on it, not past it.
+
+    hist: [(t, cm left)] of this stop point, newest last (this frame's added here). need: frames it must hold in a row.
+    The speed comes from how the cm left fell over the last END_SPEED_SEC; with too few readings there is no lead.
+    """
+    hist.append((now, left))
+    while len(hist) > 2 and now - hist[0][0] > END_SPEED_SEC:
+        hist.pop(0)
+    if not STOP_LEAD or len(hist) < 3 or now - hist[0][0] < 0.05:
+        return 0.0
+    speed = (hist[0][1] - left) / (now - hist[0][0])
+    if not END_MIN_SPEED <= speed <= 80:
+        return 0.0
+    steps = [a[1] - b[1] for a, b in zip(hist, hist[1:])]
+    if min(steps) < -1.0 or max(steps) > 2 * (sum(steps) / len(steps)) + 1.5:
+        return 0.0      # Readings that jump about (a look-alike, a misread): no speed to trust.
+    frame = (now - hist[0][0]) / (len(hist) - 1)
+    return min(speed * (END_LEAD_SEC + (need - 1) * frame), STOP_LEAD_MAX_CM)
+
+
 def floor_cm(y):
     """Floor distance ahead of the camera for a point at height y on screen: the lane is LANE_CM wide, and narrows to nothing at the horizon."""
     return CAMERA_F * LANE_CM / LANE_WIDTH_PX * (max(342 - HORIZON_Y, 1.0)) / max(y - HORIZON_Y, 1.0)
@@ -2836,7 +2861,7 @@ class Driver:
         self.hline_t = None         # While aligning: last time heading said the horizontal line in view is a real one.
         self.stop_found = None      # go_to("A"): where the registered shape was found this frame ({"x","y","w","h","score","scale"}), or None.
         self.stop_y = self.stop_target = None   # Its center, and where the center must come to (frame y).
-        self.stop_idx, self.stop_last, self.stop_tick = -1, {}, 0
+        self.stop_idx, self.stop_last, self.stop_tick, self.stop_hist = -1, {}, 0, {}
 
     def retrace_plan(self, seconds):
         """Recent forward driving played backwards: [(time it ends, steering angle)], up to this many seconds of reversing."""
@@ -2927,7 +2952,7 @@ class Driver:
             return      # blind_sec / gap=: the stop is not counted now, so it is not searched for either (saves fps).
         top = int(FRAME_H * ROI_TOP)
         if self.stop_idx != self.course.idx:
-            self.stop_last = {}
+            self.stop_last, self.stop_hist = {}, {}
         self.stop_idx = self.course.idx
         self.stop_tick += 1
         scale = CAMERA_F * LANE_CM / LANE_WIDTH_PX * max(342 - HORIZON_Y, 1.0)
@@ -2951,6 +2976,15 @@ class Driver:
             if y is not None and not landmarks.StopModel.close_enough(found):
                 y = min(y, target - 1)      # Road area followed but not matched closely yet: still coming, not there yet.
             left = None if y is None else floor_cm(y) - floor_cm(target)
+            hist = self.stop_hist.setdefault(name, [])
+            if left is None or now is None:
+                hist.clear()
+            elif landmarks.StopModel.close_enough(found) and found["score"] >= STOP_LEAD_SCORE:
+                need = STOP_WHOLE_FRAMES if found.get("whole") else JUNCTION_FRAMES
+                if left <= stop_lead(hist, now, left, need):
+                    y = max(y, target)      # Close enough at this speed: counted now, so the car comes to rest on it.
+            else:
+                stop_lead(hist, now, left, 1)   # Still keeps the speed reading going.
             if best is None or (left is not None and (best[3] is None or left < best[3])):
                 best = (name, found, target, left, y)
             if dbg is not None and found is not None:
