@@ -219,11 +219,11 @@ STOP_SCALES = (0.45, 0.55, 0.65, 0.75, 0.85, 1.0, 1.15)   # Sizes the registered
 STOP_MATCH = 0.78           # How well (normalized correlation of the line masks) the shape must match.
 STOP_VIEWS_PER_FRAME = 2    # Not found yet: this many views are tried per frame, in turn, so many views do not slow the drive.
 STOP_MAX_VIEWS = 8          # Views kept per point (the newest). More only cost time.
-STOP_WIDE = 0.6             # A box wider than this share of the frame takes in more than the place: refused.
+STOP_WIDE = 0.6             # A box wider than this share of the frame is a road area, not one mark: it gets the whole-view rules below.
 STOP_WHOLE_ROWS = (0.30, 0.85)  # Whole-view stop point (Space): this band of the line area (0 = its top, 1 = the frame bottom).
 STOP_WHOLE_COLS = (0.04, 0.96)  # ... across this much of the width. The room left above and at the sides lets it be found while still coming.
-STOP_WHOLE_MATCH = 0.9         # A whole view must match better than a box: a plain lane looks much the same all along.
-STOP_WHOLE_SCALE = 0.95         # ... and at about its registered size before it counts as reached (farther, it looks smaller).
+STOP_WHOLE_MATCH = 0.9         # A road area is followed from afar like a box, but counts as reached only matching this well
+STOP_WHOLE_SCALE = 0.95         # ... and at about its registered size (farther, it looks smaller): a plain lane looks much the same all along.
 STOP_TRACK_PX = 40          # Once found, the next frame looks only this far (half-size px) around it, at nearby sizes.
 
 
@@ -272,11 +272,11 @@ class StopModel:
     def add(self, name, mask, box, whole=False):
         """Add a view of point name: mask is the frame-size line mask (0/255), box (x, y, w, h) in frame px.
 
-        whole: the box is the whole view (whole_box), so the wide-box limit does not apply.
+        whole: a road area (a wide box drawn over the road): matched more strictly, and only near full size.
+        A box wider than STOP_WIDE is taken as one.
         """
         x, y, w, h = box
-        if not whole and w > STOP_WIDE * mask.shape[1]:
-            return False, "the box is too wide: draw it around just the mark, or press Space to register the whole view"
+        whole = whole or w > STOP_WIDE * mask.shape[1]
         patch = cv2.resize(mask[y:y + h, x:x + w], (max(w // 2, 4), max(h // 2, 4)), interpolation=cv2.INTER_AREA)
         if patch.std() < 8:
             return False, "no line inside the box (draw it around the line end, line across or corner)"
@@ -285,6 +285,12 @@ class StopModel:
         del views[:-STOP_MAX_VIEWS]
         self._patches.pop(name, None)
         return True, f"{name}: view {len(self.points[name]['views'])}"
+
+    @staticmethod
+    def close_enough(found):
+        """A find that may count as the stop: a road area must match strictly and be at about full size
+        (it is followed loosely while still coming, but a plain lane looks much the same all along)."""
+        return not (found.get("whole") and (found["score"] < STOP_WHOLE_MATCH or found["scale"] < STOP_WHOLE_SCALE))
 
     def undo(self, name):
         views = self.points.get(name, {}).get("views", [])
@@ -356,7 +362,7 @@ class StopModel:
                 res = cv2.matchTemplate(region, t, cv2.TM_CCOEFF_NORMED)
                 _, score, _, loc = cv2.minMaxLoc(res)
                 if tpls[vi][2] and score < min_score + (STOP_WHOLE_MATCH - STOP_MATCH):
-                    continue        # Whole view: the stricter match.
+                    continue        # Road area: the stricter match (a plain lane looks much the same all along).
                 if best is None or score > best["score"]:
                     best = {"score": float(score), "scale": sc, "x": factor * (rx0 + loc[0]), "y": top + factor * (ry0 + loc[1]),
                             "w": factor * tw, "h": factor * th, "view": vi, "whole": tpls[vi][2]}

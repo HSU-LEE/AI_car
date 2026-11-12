@@ -14,7 +14,8 @@ Line: drag boxes around lane lines, in a few places (straight, curve, under brig
        cut is then set to how crisp this venue's paint is. The other filters stay on.
 Stop: stand the car exactly where it should stop, and drag a box around what marks the place ahead (the
        lane's line end, the line across, a corner). That is stop point A. Move it 1-2 cm and drag again for a
-       surer match. n starts the next point (B, C, ...). In course.py: go_to("A").
+       surer match. Or drag a wide box over just the road part (leave out people and things beside it):
+       that road area is matched as a whole. n starts the next point (B, C, ...). In course.py: go_to("A").
 
 Left: camera with what is found now. Right: the registered views so far.
 """
@@ -50,9 +51,9 @@ HELP = {
   Stand the car exactly where it should stop. Drag a box around what marks the place ahead:
   the lane's line end, the line across, or a corner. Move the car 1-2 cm and drag again (2-3 views).
   Then n for the next stop point, and so on. Use them in course.py as go_to("A").
-  Or press Space: the whole view is registered (no box). Good where no one mark stands out.
+  Or drag a wide box over just the road part (not people or things beside the road): that road
+  area is matched as a whole, more strictly. Good where no one mark stands out.
 
-    Space           register the whole view as a view of this point
     n               next stop point (A, B, C, ...)
     Enter (twice)   save and quit         u   undo the last view
     q (twice)       quit without saving
@@ -202,7 +203,7 @@ def main():
         print("  [warning] Exposure is not locked. Run aicar calibrate first for steadier results.\n")
 
     cam = lf.open_camera()
-    keys = "drag a box or Space whole view · n next point · u undo · Enter twice save · q twice quit" if kind == "stop" else "drag a box · u undo · Enter twice save · q twice quit without saving"
+    keys = "drag a box (a mark, or the road area) · n next point · u undo · Enter twice save · q twice quit" if kind == "stop" else "drag a box · u undo · Enter twice save · q twice quit without saving"
     stream = lf.Stream(8000, f"AICAR {kind}", keys, confirm="\nq", drag_share=0.5)
     traffic, det = lf.TrafficLight(), lf.LaneDetector()
 
@@ -241,7 +242,7 @@ def main():
                         if hit:
                             # The same test the drive uses (go_to): the center has come down to where it was, and a whole view is full size.
                             yc = hit["y"] + hit["h"] / 2
-                            here = yc >= target - 1 and not (hit.get("whole") and hit["scale"] < landmarks.STOP_WHOLE_SCALE)
+                            here = yc >= target - 1 and landmarks.StopModel.close_enough(hit)
                             left = max(lf.floor_cm(yc) - lf.floor_cm(target), 0.0)
                             tag = "STOP HERE" if here else f"{left:.1f}cm to go"
                             cv2.rectangle(view, (hit["x"], hit["y"]), (hit["x"] + hit["w"], hit["y"] + hit["h"]), lf.C_AT, 2)
@@ -257,9 +258,9 @@ def main():
             elif kind == "line":
                 lines = [f"sample {k + 1}: edge {s['sharp']:.2f} width {s['width']:.2f} contrast {s['contrast']:.0f}" for k, s in enumerate(model.samples)]
             else:
-                lines = [f"{nm}: {sum(1 for v in model.points[nm]['views'] if v.get('whole'))} whole + "
+                lines = [f"{nm}: {sum(1 for v in model.points[nm]['views'] if v.get('whole'))} road area + "
                          f"{sum(1 for v in model.points[nm]['views'] if not v.get('whole'))} box views" for nm in model.names()]
-                lines += [f"(next: {name}  Space whole view / drag box)", "push the car by hand: the view", "shows how far to its stop"]
+                lines += [f"(next: {name}  drag a mark or the road area)", "push the car by hand: the view", "shows how far to its stop"]
             for k, text in enumerate(lines[-10:]):
                 cv2.putText(side, text, (10, 30 + 26 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
             cv2.putText(view, f"{count()} registered  |  {found}", (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
@@ -298,16 +299,9 @@ def main():
                         ok, note = model.add(name, frame_mask(shot), (x0, y0, x1 - x0, y1 - y0))
                         if ok:
                             added.append(name)
-                            note = f"Added: {note}  (stop where its bottom is at y {model.stop_y(name):.0f})"
+                            note = f"Added {'road area' if model.points[name]['views'][-1].get('whole') else 'mark'}: {note}"
             for key in stream.read_keys(terminal=False).lower() + (sys.stdin.read(1).lower() if lf.select.select([sys.stdin], [], [], 0)[0] else ""):
-                if key == " " and kind == "stop":
-                    shot = grab(cam, VIEW_FRAMES)
-                    mask = frame_mask(shot)
-                    ok, note = model.add(name, mask, landmarks.StopModel.whole_box(mask.shape, int(lf.FRAME_H * lf.ROI_TOP)), whole=True)
-                    if ok:
-                        added.append(name)
-                        note = f"Added whole view: {note}"
-                elif key == "n" and kind == "stop":
+                if key == "n" and kind == "stop":
                     if name in model.points:
                         nxt = next_name(model)
                         if nxt is None:

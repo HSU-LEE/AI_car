@@ -197,6 +197,7 @@ END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is 
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
 JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a junction (a fork).
+STOP_WHOLE_FRAMES = 2   # go_to(): frames a road-area stop point must match in a row (strict match; a mark box needs JUNCTION_FRAMES).
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
 JUNCTION_LATCH_FRAMES = 2   # A junction line seen this many frames in a row, low in the frame, is remembered.
 JUNCTION_GONE_FRAMES = 2    # Remembered, then missing this many frames: it went under the car, so it counts the same as JUNCTION_FRAMES.
@@ -1805,6 +1806,7 @@ class CourseRunner:
     Each action ends on sec (a fixed time) or until (junction, crosswalk, new lane, lane gap, or green light),
     and stays inside min_sec to max_sec. speed applies only during that action.
     """
+    stop_whole = False      # Before the first action begins.
 
     EVENT_NAMES = {"junction": "junction", "crosswalk": "crosswalk", "lane": "new lane",
                    "gap": "lane gap", "end": "end (junction line or lane gap)", "crossed": "crosswalk passed", "green": "green light", "obstacle": "obstacle", "clear": "obstacle cleared",
@@ -1884,6 +1886,7 @@ class CourseRunner:
         self.entered = False    # next(): Enter counts only once this action is running.
         self.count = 0          # nth=: how many of this action's until events have passed so far.
         self.gap_end = None     # gap=: after passing one, the next is not looked at until this time.
+        self.stop_whole = False     # go_to(): the stop point found this frame is a road area (see STOP_WHOLE_FRAMES).
         self.hits["lane"] = 0
         self.turn_clear = 0
         self.hold = None
@@ -2176,6 +2179,8 @@ class CourseRunner:
             need = TURN_END_FRAMES
         else:
             need = {"lane": TURN_CLEAR_FRAMES, "aligned": ALIGN_FRAMES}.get(event, JUNCTION_FRAMES)
+            if event == "_stop" and self.stop_whole:
+                need = STOP_WHOLE_FRAMES        # A road area matches only close to its place: fewer frames, or a quick car would pass it.
         held = hold <= 0 or (self.since[event] is not None and now - self.since[event] >= hold)
         return self.armed[event] and self.hits[event] >= need and held
 
@@ -2940,8 +2945,8 @@ class Driver:
             dist = max(floor_cm(STOP_MODEL.stop_y(name)) - (step.get("stop_cm") or 0.0), 1.0)
             target = float(min(HORIZON_Y + scale / dist, FRAME_H - 2))
             y = None if found is None else found["y"] + found["h"] / 2      # Its center, like the registered one.
-            if y is not None and found.get("whole") and found["scale"] < landmarks.STOP_WHOLE_SCALE:
-                y = min(y, target - 1)      # Whole view still smaller than registered: still coming, not there yet.
+            if y is not None and not landmarks.StopModel.close_enough(found):
+                y = min(y, target - 1)      # Road area followed but not matched closely yet: still coming, not there yet.
             left = None if y is None else floor_cm(y) - floor_cm(target)
             if best is None or (left is not None and (best[3] is None or left < best[3])):
                 best = (name, found, target, left, y)
@@ -3187,6 +3192,7 @@ class Driver:
                 dashed_hline(dbg, detect.far_y, C_JUNC, dash=6, gap=6)
                 chip(dbg, "JUNCTION AHEAD", FRAME_W - 130, detect.far_y - 20, C_JUNC, 0.38)
         self.find_stop(step, dbg, now)
+        course.stop_whole = bool(self.stop_found and self.stop_found.get("whole"))
         # Traffic light: every frame while waiting for green. For the view only, every LIGHT_VIEW_EVERY frames (the last result is shown between).
         need_light = course.needs_light()
         if need_light or (show and self.light_tick % LIGHT_VIEW_EVERY == 0):
