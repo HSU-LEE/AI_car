@@ -157,11 +157,12 @@ def line_sample(frame, box):
 
 
 def frame_mask(frame):
-    """The detector's line mask for this frame, frame size (0 above the area used for lines)."""
+    """What stop points are matched on, frame size: the detector's line mask, and the picture's edges above it."""
     det = settled(frame)
     top = int(lf.FRAME_H * lf.ROI_TOP)
     full = np.zeros(frame.shape[:2], np.uint8)
     full[top:] = det.mask
+    full[:top] = landmarks.edges_above(frame, 0, top)
     return full
 
 
@@ -237,7 +238,8 @@ def main():
                     top = int(lf.FRAME_H * lf.ROI_TOP)
                     seen = []
                     for nm in model.names():
-                        hit = model.find(nm, det.mask, top)
+                        pic, pic_top = landmarks.stop_view(frame, det.mask, top, model.top_y([nm]))
+                        hit = model.find(nm, pic, pic_top)
                         target = model.stop_y(nm)
                         if hit:
                             # The same test the drive uses (go_to): the center has come down to where it was, and a whole view is full size.
@@ -291,15 +293,14 @@ def main():
                 else:
                     x0, y0 = int(box[0] * lf.FRAME_W), int(box[1] * lf.FRAME_H)
                     x1, y1 = int(box[2] * lf.FRAME_W), int(box[3] * lf.FRAME_H)
-                    top = int(lf.FRAME_H * lf.ROI_TOP)
-                    if y1 <= top + 8:
-                        note = "The box is above the area used for lines: drag around something lower in the view"
-                    else:
-                        y0 = max(y0, top)
-                        ok, note = model.add(name, frame_mask(shot), (x0, y0, x1 - x0, y1 - y0))
-                        if ok:
-                            added.append(name)
-                            note = f"Added {'road area' if model.points[name]['views'][-1].get('whole') else 'mark'}: {note}"
+                    # Any box: inside the line area it is matched on the lines, above it on the picture's edges.
+                    x0, x1 = sorted((min(max(x0, 0), lf.FRAME_W - 8), min(max(x1, 0), lf.FRAME_W)))
+                    y0, y1 = sorted((min(max(y0, 0), lf.FRAME_H - 8), min(max(y1, 0), lf.FRAME_H)))
+                    x1, y1 = max(x1, x0 + 8), max(y1, y0 + 8)
+                    ok, note = model.add(name, frame_mask(shot), (x0, y0, x1 - x0, y1 - y0))
+                    if ok:
+                        added.append(name)
+                        note = f"Added {'road area' if model.points[name]['views'][-1].get('whole') else 'mark'}: {note}"
             for key in stream.read_keys(terminal=False).lower() + (sys.stdin.read(1).lower() if lf.select.select([sys.stdin], [], [], 0)[0] else ""):
                 if key == "n" and kind == "stop":
                     if name in model.points:

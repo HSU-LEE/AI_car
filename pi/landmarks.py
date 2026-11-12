@@ -227,6 +227,27 @@ STOP_WHOLE_SCALE = 0.95         # ... and at about its registered size (farther,
 STOP_TRACK_PX = 40          # Once found, the next frame looks only this far (half-size px) around it, at nearby sizes.
 
 
+STOP_EDGES = (60, 150)      # Above the line area there is no line mask: a box drawn up there is matched on the picture's edges (Canny).
+STOP_ABOVE_PAD = 40         # ... from this many px above the highest such box.
+
+
+def edges_above(frame, y0, y1):
+    """Edge picture (0/255) of frame rows y0..y1: what a stop point box above the line area is matched on."""
+    gray = cv2.cvtColor(frame[y0:y1], cv2.COLOR_BGR2GRAY)
+    return cv2.dilate(cv2.Canny(cv2.GaussianBlur(gray, (5, 5), 0), *STOP_EDGES), np.ones((3, 3), np.uint8))
+
+
+def stop_view(frame, roi_mask, top, from_y=None):
+    """What stop points are found in: the line mask, plus the edges above it when a box reaches up there (from_y).
+
+    Returns (picture, its top row in the frame). Boxes all inside the line area use the line mask only, as before.
+    """
+    if from_y is None or from_y >= top:
+        return roi_mask, top
+    y0 = max(int(from_y) - STOP_ABOVE_PAD, 0)
+    return np.vstack([edges_above(frame, y0, top), roi_mask]), y0
+
+
 def _encode(img):
     return cv2.imencode(".png", img)[1].tobytes().hex()
 
@@ -278,13 +299,15 @@ class StopModel:
         x, y, w, h = box
         whole = whole or w > STOP_WIDE * mask.shape[1]
         patch = cv2.resize(mask[y:y + h, x:x + w], (max(w // 2, 4), max(h // 2, 4)), interpolation=cv2.INTER_AREA)
-        if patch.std() < 8:
-            return False, "no line inside the box (draw it around the line end, line across or corner)"
+        plain = patch.std() < 8
         views = self.points.setdefault(name, {"views": []})["views"]
         views.append({"patch": _encode(patch), "box": [int(v) for v in box], **({"whole": True} if whole else {})})
         del views[:-STOP_MAX_VIEWS]
         self._patches.pop(name, None)
-        return True, f"{name}: view {len(self.points[name]['views'])}"
+        note = f"{name}: view {len(self.points[name]['views'])}"
+        if plain:
+            note += "  [warning] almost nothing to see in this box (no line or edge): it may never be found"
+        return True, note
 
     @staticmethod
     def close_enough(found):
@@ -300,6 +323,11 @@ class StopModel:
             self.points.pop(name, None)
         self._patches.pop(name, None)
 
+    def top_y(self, names):
+        """Highest frame y any view of these points reaches (for stop_view)."""
+        ys = [v["box"][1] for n in names if n in self.points for v in self.points[n]["views"][-STOP_MAX_VIEWS:]]
+        return min(ys) if ys else None
+
     def stop_y(self, name):
         """Frame y the shape's center had when the car stood at the stop (median over views)."""
         return float(np.median([v["box"][1] + v["box"][3] / 2 for v in self.points[name]["views"]]))
@@ -312,7 +340,7 @@ class StopModel:
         return self._patches[name]
 
     def find(self, name, mask, top, last=None):
-        """Look for point name in the ROI line mask (0/255, ROI size). Returns {"x","y","w","h","score","scale"} in frame px, or None.
+        """Look for point name in the picture from stop_view (mask) whose first row is frame row top. Returns {"x","y","w","h","score","scale"} in frame px, or None.
 
         last: the previous find, to look only around it at nearby sizes (cheaper, and it cannot jump to a look-alike elsewhere).
         With no last, a coarse search at quarter size over the whole ROI picks the place, then it is refined there at half size.

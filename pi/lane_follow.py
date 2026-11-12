@@ -2910,7 +2910,7 @@ class Driver:
         print(f"\n[back-up] lane lost -> backing up the way it came for {self.back['len']:.1f}s ({self.back_tries[course.idx]}/{LOST_BACK_TRIES})")
         return self.steering.output(plan[0][1], now, 0.0)
 
-    def find_stop(self, step, dbg, now=None):
+    def find_stop(self, step, dbg, now=None, frame=None):
         """go_to("A") or go_to("A|B"): find the registered shapes in this frame's line mask, and where their center must come to.
 
         With several names, the one nearest to its stop counts: the car stops at whichever comes first.
@@ -2932,14 +2932,17 @@ class Driver:
         self.stop_tick += 1
         scale = CAMERA_F * LANE_CM / LANE_WIDTH_PX * max(342 - HORIZON_Y, 1.0)
         best = None
+        # Boxes drawn above the line area are matched on the picture's edges there (only then is that computed).
+        view, top = (landmarks.stop_view(frame, self.detect.mask, top, STOP_MODEL.top_y(names)) if frame is not None
+                     else (self.detect.mask, top))
         for name in names:
             last = self.stop_last.get(name)
             if last is None and self.stop_tick % 2:
                 found = None        # Not found yet: the whole-view search runs every other frame only (it is the costly one).
             else:
-                found = STOP_MODEL.find(name, self.detect.mask, top, last)
+                found = STOP_MODEL.find(name, view, top, last)
                 if found is None and last is not None:
-                    found = STOP_MODEL.find(name, self.detect.mask, top)       # Lost it near the last place: look everywhere again.
+                    found = STOP_MODEL.find(name, view, top)       # Lost it near the last place: look everywhere again.
             self.stop_last[name] = found
             # offset= cm farther (or nearer) than where it was registered: the floor distance of that place, moved.
             dist = max(floor_cm(STOP_MODEL.stop_y(name)) - (step.get("stop_cm") or 0.0), 1.0)
@@ -3191,7 +3194,7 @@ class Driver:
             if detect.far_y is not None and show:
                 dashed_hline(dbg, detect.far_y, C_JUNC, dash=6, gap=6)
                 chip(dbg, "JUNCTION AHEAD", FRAME_W - 130, detect.far_y - 20, C_JUNC, 0.38)
-        self.find_stop(step, dbg, now)
+        self.find_stop(step, dbg, now, frame)
         course.stop_whole = bool(self.stop_found and self.stop_found.get("whole"))
         # Traffic light: every frame while waiting for green. For the view only, every LIGHT_VIEW_EVERY frames (the last result is shown between).
         need_light = course.needs_light()

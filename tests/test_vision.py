@@ -2861,7 +2861,10 @@ def test_line_and_stop_points():
         ok, note = model.add("A", tl.frame_mask(corner(stop_y)), (int(W * 0.25) - 20, stop_y - 20, 160, 70))
         check("stop: a corner is registered", ok, note)
         bad, why = landmarks.StopModel().add("B", np.zeros((H, W), np.uint8), (100, 200, 80, 60))
-        check("stop: an empty box is refused", not bad and "no line" in why)
+        check("stop: an empty box is kept, with a warning (no limit on what is dragged)", bad and "warning" in why, why)
+        hi = tl.frame_mask(corner(stop_y))
+        ok2, why2 = landmarks.StopModel().add("C", hi, (10, 5, 200, 80))
+        check("stop: a box above the line area is taken (matched on edges)", ok2, why2)
         lf.STOP_MODEL = model
         steps = cs._flat([cs.go_to("A", blind_sec=0), finish()])
         with quiet():
