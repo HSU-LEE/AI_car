@@ -404,7 +404,7 @@ class StopModel:
         if home is not None and (last is None or home["score"] >= last.get("score", 0)):
             return home
         if last is None and not wide:
-            return None     # wide=False: only the every-frame check near each view's place (the drive does the wide look every other frame).
+            return home     # wide=False: only the every-frame check near each view's place (the drive does the wide look every other frame).
         if last is None:
             n = len(self.templates(name))
             k = self._turn.get(name, 0) % max(n, 1)
@@ -412,9 +412,12 @@ class StopModel:
             views = [(k + j) % n for j in range(min(STOP_VIEWS_PER_FRAME, n))]
             guess = self._search(name, coarse, STOP_SCALES, None, factor=4, top=top, min_score=STOP_MATCH - 0.15, views=views)
             if guess is None:
-                return None
+                return home
             last = guess
-        return self._search(name, small, None, last, factor=2, top=top, min_score=STOP_MATCH)
+        tracked = self._search(name, small, None, last, factor=2, top=top, min_score=STOP_MATCH)
+        if home is not None and (tracked is None or home["score"] > tracked["score"]):
+            return home     # The near check found it even though following the last place did not.
+        return tracked
 
     def _search(self, name, img, scales, last, factor, top, min_score, views=None, pad=None, around=STOP_AROUND, x_free=False):
         """Best match of point name in img (the line mask at 1/factor size). last: look only around it, at sizes near its scale,

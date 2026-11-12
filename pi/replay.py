@@ -35,15 +35,20 @@ def main():
         lf.load_vision(run / lf.VISION_FILE.name)
     else:
         print(f"[warning] This recording has no {lf.VISION_FILE.name}: analysed with the current settings (line color {lf.LINE_COLOR}). If wrong, set --set LINE_COLOR=black etc.")
-    course_list = lf.COURSE
+    course_list, module = lf.COURSE, None
     if (run / "course.py").exists():
         spec = importlib.util.spec_from_file_location("run_course", run / "course.py")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        course_list = module.COURSE
+        try:
+            spec.loader.exec_module(module)
+            course_list = module.COURSE
+            lf._course = module     # Switches read while driving (SLOWDOWN_ON ...) come from that day's course too.
+        except Exception as e:      # A course from an older version of the code may not load any more.
+            print(f"[warning] The recording's course.py does not load with this code ({type(e).__name__}: {e}): the current course is used")
+            module = None
     else:
         print("[warning] This recording has no course.py: the current course is used")
-    if (run / "course.py").exists():
+    if module is not None:
         for name in dir(module):        # The figure's settings are read from the course file too.
             if name.startswith("PERSON_") or name == "RED_BACK_ON":
                 setattr(lf, name, getattr(module, name))
