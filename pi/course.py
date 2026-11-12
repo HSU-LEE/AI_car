@@ -1,7 +1,7 @@
 
 # --- 주행 ---
 REFLECT_MOTION_ON = False    # 반사광을 움직임으로 구별 (반짝이는 매트용). False = 끄고 가장자리 날카로움으로만 판단 (반사 없는 경기장이면 결과 같고 더 빠름)
-STOP_POINTS_ON = False      # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
+STOP_POINTS_ON = True       # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
 SPEED = 0.75                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 STEER_MAX = 8            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
 
@@ -302,7 +302,8 @@ def _to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_spee
     return _auto(follow(until="_crosswalk", nth=_nth(nth, "_to_crosswalk"), gap=gap, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
 
 
-def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, min_speed=None, blind_sec=0.5, shift=None, gap=None):
+def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, min_speed=None, blind_sec=0.5, shift=None, gap=None, cm=None):
+    # cm=12: STOP_POINTS_ON = False일 때 go(cm=12)처럼 차선 끝 12cm에서 정지 (켜져 있으면 등록 위치에서 정지, 앞뒤 조절은 offset=)
     # 등록한 정지 지점(aicar stoppoint, 메뉴 t)까지 가서 정지. 차를 그 자리에 놓고 등록한 모양이 등록 때 위치에 오면 끝
     # offset=3: 등록 위치보다 3cm 더 가서 / -3: 덜 가서.  nth=2: 같은 모양을 하나 지나치고 두 번째에서
     # sec=10: 못 찾아도 10초가 지나면 끝.  감속 없이 지정 속도로 가서 정지 (slow=0.3을 주면 다가가며 감속). steer, speed, min_speed, blind_sec는 go()와 같음
@@ -319,7 +320,9 @@ def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, mi
     if sec is not None and _bad_num(sec, 0, 600):
         raise ValueError(f"go_to(): sec must be 0 to 600 ({sec})")
     if not STOP_POINTS_ON:      # 꺼져 있으면 go()와 같이 차선 끝(기본 10cm)에서 정지
-        return go(slow=slow, blind_sec=blind_sec, speed=speed, nth=nth, gap=gap, steer=steer, sec=sec, min_speed=min_speed, shift=shift)
+        return go(cm=cm, slow=slow, blind_sec=blind_sec, speed=speed, nth=nth, gap=gap, steer=steer, sec=sec, min_speed=min_speed, shift=shift)
+    if cm is not None:
+        print(f'[warning] go_to("{"|".join(names)}", cm={cm}): cm= is only used when STOP_POINTS_ON = False. The stop point stops where it was registered (move it with offset=)')
     step = follow(until="_stop", shift=shift, speed=speed, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed,
                   blind_sec=blind_sec, nth=nth if nth > 1 else None, gap=gap)
     return _auto(dict(step, stop=name, stop_cm=offset), speed, SPEED)
@@ -576,42 +579,55 @@ def describe(step):
 # --- 코스 ---
 
 COURSE = _flat([
-    start_gate(2),
-    follow(8,shift=3),
-    go(steer=8,cm=12),
-    follow(5),
-    _to_crosswalk(0.85, nth=2, gap=1.5),
-    wait_green(max_sec=20),
-    stop(1.5),
-    pass_crosswalk(),
-    go(steer=8,cm=8,nth=3,shift=2),
-    follow(0.25),
-    tl(),
+    # start_gate(2),
+    # follow(8,shift=3),
+    # go(steer=8,cm=12),
+    # follow(5),
+    # _to_crosswalk(0.85, nth=2, gap=1.5),
+    # wait_green(max_sec=20),
+    # stop(1.5),
+    # pass_crosswalk(),
 
 
 
-    set_speed(0.5),
-    go(steer=8,cm=12),
-
-    set_speed(0.75),
-    stop(0.5),
-    follow(0.5),
-    tr(),
 
 
-    set_speed(0.5),
-    go(steer=8,cm=7),
+    go(steer=8,cm=20,nth=2,shift=2),
+    follow(1),
+    go_to("A", cm=15),
 
 
     next(),
 
+    back(2.25),
+    tl(),
 
 
+
+
+
+    set_speed(0.5),
+    go(steer=8,cm=12),
 
     set_speed(0.75),
     stop(0.5),
-    follow(1),
+    follow(0.75),
     tr(),
+    set_speed(0.5),
+    go(steer=8,cm=20),
+    next(),
+
+    stop(1),
+    back(2),
+    next(),
+    
+    set_speed(0.75),
+    tr(),
+
+
+
+
+
 
 
 

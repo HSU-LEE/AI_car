@@ -254,6 +254,7 @@ LIGHT_NEAR = 4          # wait_green: green must lie within (red lamp size times
 
 LENS_POSITION = 6.67    # Manual focus in diopters (1/distance in m). 6.67 is about 15 cm, the near floor where the lane and its ends are read. Always this value: a lens_position in vision.json is ignored. None means autofocus.
                         # calibrate.py measures sharpness over the lane region and saves it in vision.json.
+LUX_WARN_RATIO = 1.6    # Warn at the start when the room is this many times brighter or darker than at calibration (vision.json camera_lock Lux).
 CAMERA_LOCK = None      # Locked exposure, gain, and white balance {"ExposureTime": us, "AnalogueGain": x, "ColourGains": [r, b]}.
                         # None leaves the camera automatic. calibrate.py measures the venue lighting and saves it in vision.json.
 VISION_FILE = Path(__file__).with_name("vision.json")
@@ -2904,7 +2905,7 @@ class Driver:
         print(f"\n[back-up] lane lost -> backing up the way it came for {self.back['len']:.1f}s ({self.back_tries[course.idx]}/{LOST_BACK_TRIES})")
         return self.steering.output(plan[0][1], now, 0.0)
 
-    def find_stop(self, step, dbg):
+    def find_stop(self, step, dbg, now=None):
         """go_to("A") or go_to("A|B"): find the registered shapes in this frame's line mask, and where their center must come to.
 
         With several names, the one nearest to its stop counts: the car stops at whichever comes first.
@@ -2915,6 +2916,10 @@ class Driver:
         if not names:
             self.stop_idx = -1
             return
+        c = self.course
+        if now is not None and c.step_start is not None and (
+                now - c.step_start < (step.get("blind") or 0) or (c.gap_end is not None and now < c.gap_end)):
+            return      # blind_sec / gap=: the stop is not counted now, so it is not searched for either (saves fps).
         top = int(FRAME_H * ROI_TOP)
         if self.stop_idx != self.course.idx:
             self.stop_last = {}
@@ -3179,7 +3184,7 @@ class Driver:
             if detect.far_y is not None and show:
                 dashed_hline(dbg, detect.far_y, C_JUNC, dash=6, gap=6)
                 chip(dbg, "JUNCTION AHEAD", FRAME_W - 130, detect.far_y - 20, C_JUNC, 0.38)
-        self.find_stop(step, dbg)
+        self.find_stop(step, dbg, now)
         # Traffic light: every frame while waiting for green. For the view only, every LIGHT_VIEW_EVERY frames (the last result is shown between).
         need_light = course.needs_light()
         if need_light or (show and self.light_tick % LIGHT_VIEW_EVERY == 0):
@@ -3339,22 +3344,38 @@ def open_camera(locked=True):
     from picamera2 import Picamera2
 
     cam = Picamera2()
+    start = {"FrameRate": CAMERA_FPS}
+    lock = locked and CAMERA_LOCK
+    if lock:
+        # Lock the values measured under venue lighting so brightness and color do not swing with mat reflections or a person's shadow.
+        # Given at configure time, so they hold from the very first frame after every power-on (not auto for the first frames).
+        start.update({"AeEnable": False, "AwbEnable": False,
+                      "ExposureTime": int(CAMERA_LOCK["ExposureTime"]),
+                      "AnalogueGain": float(CAMERA_LOCK["AnalogueGain"]),
+                      "ColourGains": tuple(CAMERA_LOCK["ColourGains"])})
+    if LENS_POSITION is not None:
+        start.update({"AfMode": controls.AfModeEnum.Manual, "LensPosition": LENS_POSITION})
     cam.configure(cam.create_video_configuration(
         main={"size": (FRAME_W, FRAME_H), "format": "RGB888"},   # OpenCV BGR order.
         sensor={"output_size": CAMERA_SENSOR},
         transform=Transform(hflip=HFLIP, vflip=VFLIP),
-        controls={"FrameRate": CAMERA_FPS}))
+        controls=start))
     cam.start()
     if LENS_POSITION is None:
         cam.set_controls({"AfMode": controls.AfModeEnum.Continuous})
-    else:
-        cam.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": LENS_POSITION})
-    if locked and CAMERA_LOCK:
-        # Lock the values measured under venue lighting so brightness and color do not swing with mat reflections or a person's shadow.
-        cam.set_controls({"AeEnable": False, "AwbEnable": False,
-                          "ExposureTime": int(CAMERA_LOCK["ExposureTime"]),
-                          "AnalogueGain": float(CAMERA_LOCK["AnalogueGain"]),
-                          "ColourGains": tuple(CAMERA_LOCK["ColourGains"])})
+    if lock:
+        # Wait until the sensor reports the locked exposure and gain (at most about 1 s), so the first frames used match every run.
+        want_exp, want_gain = int(CAMERA_LOCK["ExposureTime"]), float(CAMERA_LOCK["AnalogueGain"])
+        for _ in range(30):
+            md = cam.capture_metadata()
+            if abs(md.get("ExposureTime", 0) - want_exp) <= want_exp * 0.05 and abs(md.get("AnalogueGain", 0) - want_gain) <= want_gain * 0.05:
+                lux, was = md.get("Lux"), CAMERA_LOCK.get("Lux")
+                if lux and was and not 1 / LUX_WARN_RATIO <= lux / was <= LUX_WARN_RATIO:
+                    print(f"[warning] lighting is {'brighter' if lux > was else 'darker'} than at calibration (lux {lux:.0f}, was {was:.0f}). "
+                          f"Lines and colors may read differently: run Calibrate again for this lighting")
+                break
+        else:
+            print(f"[warning] camera lock not reached: exposure {md.get('ExposureTime')} us gain {md.get('AnalogueGain', 0):.2f} (wanted {want_exp} us, {want_gain:.2f})")
     return cam
 
 

@@ -212,8 +212,11 @@ def calibrate_exposure(cam):
             gain = max(1.0, gain * 0.8)
         else:
             exp *= 0.8
-    return {"ExposureTime": int(exp), "AnalogueGain": round(gain, 3),
-            "ColourGains": [round(g, 4) for g in gains]}, clipped
+    lux = cam.capture_metadata().get("Lux")     # Room brightness at calibration: a drive warns when the lighting is very different.
+    lock = {"ExposureTime": int(exp), "AnalogueGain": round(gain, 3), "ColourGains": [round(g, 4) for g in gains]}
+    if lux:
+        lock["Lux"] = round(float(lux), 1)
+    return lock, clipped
 
 
 HORIZON_RANGE = (-80, 130)      # A vanishing point outside this (frame y) means the lines were misread (a curve, a reflection, a crosswalk).
