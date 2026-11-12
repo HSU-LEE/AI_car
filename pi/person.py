@@ -105,8 +105,8 @@ CLOSE = np.ones((5, 3), np.uint8)   # Bridges thin gaps such as a neck or a belt
 AUTO_STILL = 0.7        # Auto capture: the view must stay still this long before a shot, in seconds.
 AUTO_MOVE_PX = 0.002    # Auto capture: share of pixels around the guide box that may change and still count as still.
 AUTO_SAME = 0.92        # Auto capture: a side that already matches this well, in both color and outline, is not taken again.
-MAX_VIEWS = 64          # No view is taken past this many, by any means. 63 views cost the real drive about 4 ms a frame.
-AUTO_MAX = MAX_VIEWS    # Auto capture stops at this many views.
+MAX_VIEWS = None        # No limit on views (None). A number caps them. About 63 views cost the real drive 4 ms a frame; more cost more.
+AUTO_MAX = MAX_VIEWS    # Auto capture stops at this many views (None: no limit; it still takes only sides not already matched).
 MATCH_MIN, SHAPE_MIN = 0.5, 0.7     # auto_tune never goes looser. At 0.1 and 0.3 on the real track: a figure with the same hair, a desk, and a drawer all matched.
 TUNE_COLOR, TUNE_MATCH_MAX = 0.25, 0.75     # auto_tune: the color threshold is this far below the lowest match between views, and at most this. The real figure elsewhere on the mat: 0.71 and up.
 TUNE_BOX, TUNE_SHAPE_MAX = 0.1, 0.78        # auto_tune: the outline threshold is this far above a box of the figure's size, and at most this. The real figure elsewhere: 0.75 and up, far away less.
@@ -284,7 +284,7 @@ class PersonDetector:
 
     def add_view(self, frame):
         """Add one view of the figure standing in the guide box. Returns (added, message)."""
-        if len(self.views) >= MAX_VIEWS:
+        if MAX_VIEWS is not None and len(self.views) >= MAX_VIEWS:
             return False, f"Already {MAX_VIEWS} views. Stop and press Enter to save (front, side and back are enough)"
         small = self._half(frame)
         if self.marked:
@@ -901,7 +901,7 @@ class AutoViews:
         if not self.ready or now - self.still_since < AUTO_STILL:
             return None
         self.ready = False
-        if len(self.detector.views) >= AUTO_MAX:
+        if AUTO_MAX is not None and len(self.detector.views) >= AUTO_MAX:
             return f"All {AUTO_MAX} views taken. Press Enter to save"
         q, ring, seen = ring_colors(small, self.detector.box)
         if self.around is not None and (~self.around[q[ring]]).mean() > AUTO_HAND:

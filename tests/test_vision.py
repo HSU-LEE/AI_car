@@ -903,12 +903,15 @@ def test_person_detect():
     check("auto: undoing the last view brings the thresholds back", (tuned.shape, tuned.match) == before)
     keys_left = tune_person.HELP
     check("auto: no help for manual threshold keys", "+ / -" not in keys_left)
-    check("the view limit is large enough", person.MAX_VIEWS >= 60 and person.AUTO_MAX == person.MAX_VIEWS)
+    check("no view limit (None), auto capture neither", person.MAX_VIEWS is None and person.AUTO_MAX is None)
 
     print("  -- keeping bad registrations out")
+    old_max = person.MAX_VIEWS
+    person.MAX_VIEWS = 64       # A limit, when one is set, still holds.
     full = PersonDetector(lf.HORIZON_Y)
     full.views = [{}] * person.MAX_VIEWS
-    check("register: refused past the limit", not full.add_view(navy_fig)[0] and len(full.views) == person.MAX_VIEWS)
+    check("register: refused past a set limit", not full.add_view(navy_fig)[0] and len(full.views) == person.MAX_VIEWS)
+    person.MAX_VIEWS = old_max
     loose_path = Path(tempfile.mkdtemp()) / "person.json"
     navy_det.match, navy_det.shape = 0.1, 0.3
     navy_det.save(loose_path)
@@ -2928,6 +2931,8 @@ def test_stop_point_details():
     check("any heading: the same mark 70 px to the side, at its height, is found by the near check", hit is not None and abs(hit["y"] + hit["h"] / 2 - m.view_y("A", 0)) < 6, hit)
     check("a clear match may count as the stop, a weak one may not",
           landmarks.StopModel.close_enough({"score": 0.9, "scale": 1.0}) and not landmarks.StopModel.close_enough({"score": 0.8, "scale": 1.0}))
+    old_max = landmarks.STOP_MAX_VIEWS
+    landmarks.STOP_MAX_VIEWS = 8        # A limit, when one is set: far views go first.
     far = landmarks.StopModel()
     mask = tl.frame_mask(corner(300, int(W * 0.25)))
     for k in range(landmarks.STOP_MAX_VIEWS):
@@ -2937,6 +2942,14 @@ def test_stop_point_details():
     near = far.near_views("A")
     check("near / far: a box on the floor is near, one above the line area is far", len(near) == 1)
     check("full point: far views go first, the near one is kept", len(far.points["A"]["views"]) == landmarks.STOP_MAX_VIEWS and len(near) == 1)
+    landmarks.STOP_MAX_VIEWS = old_max
+    many = landmarks.StopModel()
+    for k in range(20):
+        many.add("A", mask, (box[0] + k % 5, box[1], box[2], box[3]))
+    check("no view limit: all 20 views are kept", len(many.points["A"]["views"]) == 20 and len(many.templates("A")) == 20)
+    picks = [many._home_views("A", list(range(20))) for _ in range(3)]
+    check("many views: the near check tries STOP_HOME_PER_FRAME a frame, and over frames all of them",
+          all(len(p) == landmarks.STOP_HOME_PER_FRAME for p in picks) and len(set(sum(picks, []))) >= 16, picks)
     note = landmarks.StopModel().add("B", mask, (10, 20, 200, 80))[1]
     check("a far box says it only shows the point is ahead", "far box" in note, note)
     d = lf.Driver([finish()])

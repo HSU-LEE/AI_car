@@ -218,7 +218,8 @@ STOP_FILE = Path(__file__).with_name("stops.json")
 STOP_SCALES = (0.45, 0.55, 0.65, 0.75, 0.85, 1.0, 1.15)   # Sizes the registered shape is looked for at: from farther away it looks smaller.
 STOP_MATCH = 0.78           # How well (normalized correlation of the line masks) the shape must match.
 STOP_VIEWS_PER_FRAME = 2    # Not found yet: this many views are tried per frame, in turn, so many views do not slow the drive.
-STOP_MAX_VIEWS = 8          # Views kept per point (the newest). More only cost time.
+STOP_MAX_VIEWS = None       # Views kept per point: no limit (None). A number keeps only that many (far ones dropped first).
+STOP_HOME_PER_FRAME = 8     # The every-frame near check tries this many views a frame: the best of the last frames, then the rest in turn.
 STOP_WIDE = 0.6             # A box wider than this share of the frame is a road area, not one mark: it gets the whole-view rules below.
 STOP_WHOLE_ROWS = (0.30, 0.85)  # Whole-view stop point (Space): this band of the line area (0 = its top, 1 = the frame bottom).
 STOP_WHOLE_COLS = (0.04, 0.96)  # ... across this much of the width. The room left above and at the sides lets it be found while still coming.
@@ -269,6 +270,11 @@ def drop_spots(img, px):
     return out
 
 
+def _kept(views):
+    """The views that count: all, or the newest STOP_MAX_VIEWS when there is a limit."""
+    return views if STOP_MAX_VIEWS is None else views[-STOP_MAX_VIEWS:]
+
+
 def _encode(img):
     return cv2.imencode(".png", img)[1].tobytes().hex()
 
@@ -289,6 +295,7 @@ class StopModel:
         self._patches = {}
         self._turn = {}         # Per point: which views the next search tries.
         self._prep = None       # (picture, half, quarter) of the last picture looked in.
+        self._rank, self._home_turn = {}, {}    # Near check with many views: last scores per view, and whose turn it is.
 
     @classmethod
     def load(cls, path=STOP_FILE):
@@ -324,7 +331,7 @@ class StopModel:
         plain = patch.std() < 8
         views = self.points.setdefault(name, {"views": []})["views"]
         views.append({"patch": _encode(patch), "box": [int(v) for v in box], **({"whole": True} if whole else {})})
-        while len(views) > STOP_MAX_VIEWS:      # Full: the oldest far view goes first (near ones place the stop), else the oldest.
+        while STOP_MAX_VIEWS is not None and len(views) > STOP_MAX_VIEWS:      # Full: the oldest far view goes first (near ones place the stop), else the oldest.
             far = [i for i, v in enumerate(views[:-1]) if v["box"][1] + v["box"][3] / 2 < STOP_NEAR_Y]
             del views[far[0] if far else 0]
         self._patches.pop(name, None)
@@ -354,7 +361,7 @@ class StopModel:
 
     def top_y(self, names):
         """Highest frame y any view of these points reaches (for stop_view)."""
-        ys = [v["box"][1] for n in names if n in self.points for v in self.points[n]["views"][-STOP_MAX_VIEWS:]]
+        ys = [v["box"][1] for n in names if n in self.points for v in _kept(self.points[n]["views"])]
         return min(ys) if ys else None
 
     def near_views(self, name, top=None):
@@ -365,7 +372,7 @@ class StopModel:
 
     def view_y(self, name, view):
         """Frame y the center of this view's box had when the car stood at the stop."""
-        box = self.points[name]["views"][-STOP_MAX_VIEWS:][view]["box"]
+        box = _kept(self.points[name]["views"])[view]["box"]
         return box[1] + box[3] / 2
 
     def stop_y(self, name):
@@ -374,7 +381,7 @@ class StopModel:
 
     def templates(self, name):
         if name not in self._patches:
-            views = self.points[name]["views"][-STOP_MAX_VIEWS:]     # A file from before the limit may hold more: the newest count.
+            views = _kept(self.points[name]["views"])
             self._patches[name] = [(cv2.GaussianBlur(drop_spots(_decode(v["patch"]), STOP_SPOT_PX // 2), (5, 5), 0).astype(np.float32),
                                     v["box"], bool(v.get("whole")))
                                    for v in views]
@@ -392,13 +399,15 @@ class StopModel:
         # Every view, every frame, only around where it sits when the car is at the stop, at about its size: cheap, and the
         # moment the car passes over the place is never missed (at speed that is 1-2 frames), whichever view has its turn.
         home = None
+        tpls = self.templates(name)
         near = self.near_views(name)
-        for vi, (_, box, _) in enumerate(self.templates(name)):
-            if near and vi not in near:
-                continue        # Far views (above the line area) say little about where exactly the car is: the near ones decide.
+        # Far views (above the line area) say little about where exactly the car is: the near ones decide.
+        for vi in self._home_views(name, [vi for vi in range(len(tpls)) if not near or vi in near]):
+            box = tpls[vi][1]
             spot = {"x": box[0], "y": box[1], "w": box[2], "h": box[3], "scale": 1.0, "view": vi}
-            hit = self._search(name, coarse, None, spot, factor=4, top=top, min_score=STOP_MATCH - 0.1, pad=STOP_HOME_PX, x_free=True)
-            if hit is not None and (home is None or hit["score"] > home["score"]):
+            hit = self._search(name, coarse, None, spot, factor=4, top=top, min_score=STOP_MATCH - 0.25, pad=STOP_HOME_PX, x_free=True)
+            self._rank.setdefault(name, {})[vi] = 0.0 if hit is None else hit["score"]
+            if hit is not None and hit["score"] >= STOP_MATCH - 0.1 and (home is None or hit["score"] > home["score"]):
                 home = hit
         if home is not None:        # Refine the best at half size, close around it.
             home = self._search(name, small, None, home, factor=2, top=top, min_score=STOP_MATCH, pad=STOP_REFINE_PX, around=(1.0,))
@@ -419,6 +428,18 @@ class StopModel:
         if home is not None and (tracked is None or home["score"] > tracked["score"]):
             return home     # The near check found it even though following the last place did not.
         return tracked
+
+    def _home_views(self, name, views):
+        """Which views the near check tries this frame. All when few; with many, those that came closest lately
+        (as the car nears the place they climb), then the others in turn, STOP_HOME_PER_FRAME in all."""
+        if len(views) <= STOP_HOME_PER_FRAME:
+            return views
+        rank = self._rank.get(name, {})
+        best = sorted(views, key=lambda v: -rank.get(v, 0.0))[:STOP_HOME_PER_FRAME // 2]
+        rest = [v for v in views if v not in best]
+        k = self._home_turn.get(name, 0) % len(rest)
+        self._home_turn[name] = k + STOP_HOME_PER_FRAME - len(best)
+        return best + [rest[(k + j) % len(rest)] for j in range(min(STOP_HOME_PER_FRAME - len(best), len(rest)))]
 
     def _prepare(self, mask, key=None):
         """The picture at half and quarter size, glints off. key (the frame's number): kept for the same frame, so several
