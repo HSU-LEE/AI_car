@@ -34,7 +34,7 @@ VIEW_FRAMES = 5
 LINE_SHARP_MIN = 0.3    # A "line" softer than this is a ceiling-light reflection (they measure 0.17-0.33, paint 0.37-0.5).
 HELP = {
     "light": """
-  Turn the red lamp on and drag a box tightly around it on the web page. Then the green lamp, the same way.
+  Turn the red lamp on and drag a box tightly around it on the web page (a yellow or orange lamp counts as red: stop). Then the green lamp, the same way.
   Each box is one lamp. More boxes (from where the car may stop) make it surer.
 
     Enter (twice)   save and quit         u   undo the last lamp

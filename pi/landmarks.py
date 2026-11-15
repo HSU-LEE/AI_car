@@ -16,6 +16,7 @@ import numpy as np
 LIGHT_FILE = Path(__file__).with_name("light.json")
 XWALK_FILE = Path(__file__).with_name("crosswalk.json")
 
+LIGHT_RED_HUE_MAX = 34      # Registering a lamp: hues up to this (OpenCV 0-180) are "red", so orange-red and yellow lamps join red (stop).
 LIGHT_HUE_PAD = 5       # Hue margin around what was registered.
 LIGHT_S_PAD, LIGHT_V_PAD = 30, 40   # Saturation / value margin below what was registered (a lamp looks a little dimmer from farther away).
 LIGHT_AREA_RANGE = (0.2, 5.0)       # A lamp this many times smaller / larger than registered still counts (nearer or farther).
@@ -65,10 +66,10 @@ class LightModel:
         hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
         hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
         lit = (sat >= 60) & (val >= 120)
-        red = lit & ((hue < 12) | (hue > 168))
+        red = lit & ((hue <= LIGHT_RED_HUE_MAX) | (hue > 168))     # Red, orange-red and yellow lamps all count as "red" (stop).
         green = lit & (hue >= 35) & (hue <= 100)
         if max(red.sum(), green.sum()) < 6:
-            return None, "no lit red or green lamp in the box (is the lamp on?)"
+            return None, "no lit red/yellow or green lamp in the box (is the lamp on?)"
         color, mask = ("red", red) if red.sum() >= green.sum() else ("green", green)
         n, lab, st, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
         area = int(st[1:, 4].max()) if n > 1 else int(mask.sum())
@@ -76,7 +77,7 @@ class LightModel:
         h = red_hue(hue[keep]) if color == "red" else hue[keep].astype(np.int16)
         s, v = sat[keep], val[keep]
         lo, hi = int(np.percentile(h, 5)) - LIGHT_HUE_PAD, int(np.percentile(h, 95)) + LIGHT_HUE_PAD
-        lo, hi = (max(lo, -15), min(hi, 12)) if color == "red" else (max(lo, 38), min(hi, 100))     # Never orange or yellow (a lamp housing).
+        lo, hi = (max(lo, -15), min(hi, LIGHT_RED_HUE_MAX)) if color == "red" else (max(lo, 38), min(hi, 100))
         return {"color": color,
                 "h": [lo, hi],
                 "s_min": int(max(40, np.percentile(s, 10) - LIGHT_S_PAD)),
