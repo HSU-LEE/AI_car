@@ -1,13 +1,13 @@
 
 # --- 주행 ---
 REFLECT_MOTION_ON = False    # 반사광을 움직임으로 구별 (반짝이는 매트용). False = 끄고 가장자리 날카로움으로만 판단 (반사 없는 경기장이면 결과 같고 더 빠름)
-STOP_POINTS_ON = True       # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
+STOP_POINTS_ON = False       # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
 SLOWDOWN_ON = False         # 감속. False = 모든 감속 없음: slow= 무시, 차선 놓쳐도 그 속도, uturn·to_end도 SPEED (True = 예전처럼 감속)
-SPEED = 0.7                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
-STEER_MAX = 8            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
+SPEED = 0.75                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
+STEER_MAX = 10            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
 
 # --- 신호등 ---
-RED_BACK_ON = True          # wait_green에서 빨간불을 못 찾으면 후진해서 다시 찾을지 (True / False)
+RED_BACK_ON = False          # wait_green에서 빨간불을 못 찾으면 후진해서 다시 찾을지 (True / False)
 
 # --- 레고 사람 (등록: Tune Person.command) ---
 PERSON_ON = True            # 사람을 보고 멈출지
@@ -715,15 +715,40 @@ def describe(step):
 # --- 코스 ---
 
 COURSE = _flat([
-    set_speed(0.75),
+    set_speed(0.95),
     set_style("soft"),
     start_gate(2),
+    
+    follow(4),
+    _to_crosswalk(0.85, nth=1, gap=1.5),
+    follow(0.25),
+    stop(6.5),
+    pass_crosswalk(),
+    follow(0.75),
+    stop(1),
+    go(steer=8,cm=25),
+    follow(2.5),
+    tl(),
+    
+    go(steer=8,cm=25),
+    follow(2.5),
+    tr(align=False),
 
-
-
-
-
-
+    stop(1),
+    back(1.5),
+    stop(1),
+    
+    go(steer=8,cm=25),
+    follow(2.5),
+    tr(),
+    
+    go(steer=8,cm=25),
+    follow(2.5),
+    tr(),
+    
+    go(steer=8,cm=25),
+    follow(11), 
+    stop(1),
     finish(),
  
 
