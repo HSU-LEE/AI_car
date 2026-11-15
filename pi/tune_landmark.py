@@ -328,6 +328,11 @@ def main():
                     model.save()
                     extra = f" ({', '.join(model.names())})" if kind == "stop" else ""
                     print(f"\n\n  Saved: {count()} in {path.name}{extra}. Used from the next drive.")
+                    if kind == "light":
+                        missing = {"red", "green"} - model.colors()
+                        if missing:
+                            print(f"  [warning] No {' or '.join(sorted(missing))} lamp registered: that color is found by the plain thresholds."
+                                  f" Add it with --add (red includes yellow and orange lamps).")
                     if kind == "line" and len(model.samples) < 2:
                         print("  [warning] Only one place registered: add one or two more (a curve, under bright lights) with --add.")
                     return

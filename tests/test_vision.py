@@ -2763,6 +2763,15 @@ def test_landmarks():
     import tune_landmark as tl
     old_light, old_xwalk = lf.LIGHT_MODEL, lf.XWALK_MODEL
     try:
+        # Yellow and orange-red lamps register as red (stop); green stays green.
+        for h, want in ((2, "red"), (15, "red"), (28, "red"), (60, "green")):
+            pic = np.full((120, 160, 3), 30, np.uint8)
+            px = cv2.cvtColor(np.array([[[h, 220, 230]]], np.uint8), cv2.COLOR_HSV2BGR)[0, 0]
+            cv2.circle(pic, (80, 60), 8, tuple(int(c) for c in px), -1)
+            got, why = landmarks.LightModel.sample(pic, (0.3, 0.3, 0.7, 0.7))
+            hsv = cv2.split(cv2.cvtColor(pic, cv2.COLOR_BGR2HSV))
+            seen = got and landmarks.LightModel([got]).color_mask(got["color"], *hsv).sum()
+            check(f"light: a lamp of hue {h} registers as {want} and is found again", got and got["color"] == want and seen > 100, (got, why))
         # Light: a red lamp registered at its place. A sign ring elsewhere and a hollow ring are not taken; the lamp is.
         lamp = np.full((H, W, 3), 40, np.uint8)
         cv2.circle(lamp, (520, 110), 9, (40, 40, 255), -1)
