@@ -17,8 +17,9 @@ autoconnect-priority=100
 [wifi]
 mode=ap
 ssid=${APSSID:-04}
-band=bg
-channel=6
+band=a
+channel=36
+powersave=2
 
 [wifi-security]
 key-mgmt=wpa-psk
@@ -63,6 +64,9 @@ touch $B/ssh
 # --- Wi-Fi regulatory domain, I2C/SPI ---
 grep -q ieee80211_regdom $B/cmdline.txt || sed -i '1 s/$/ cfg80211.ieee80211_regdom=KR/' $B/cmdline.txt
 grep -q '^dtparam=i2c_arm=on' $B/config.txt || printf '\n# AICAR\ndtparam=i2c_arm=on\ndtparam=spi=on\n' >> $B/config.txt
+# Hardware PWM: channel 0 on GPIO18 (steering servo), channel 1 on GPIO13 (motor speed, 20 kHz in car.py). Camera Module 3.
+grep -q '^dtoverlay=pwm' $B/config.txt || printf 'dtoverlay=pwm-2chan,pin=18,func=2,pin2=13,func2=4\n' >> $B/config.txt
+grep -q '^dtoverlay=imx708' $B/config.txt || printf 'dtoverlay=imx708\n' >> $B/config.txt
 grep -q '^i2c-dev' $R/etc/modules || echo i2c-dev >> $R/etc/modules
 
 chroot $R systemctl enable ssh avahi-daemon NetworkManager >/dev/null 2>&1
