@@ -2,7 +2,7 @@
 
 Wiring (TB6612FNG channel A):
   Servo signal -> GPIO18 (physical pin 12)
-  PWMA         -> GPIO13 (physical pin 33)
+  PWMA         -> GPIO13 (physical pin 33), hardware PWM at MOTOR_PWM_HZ
   AIN1         -> GPIO23 (physical pin 16)
   AIN2         -> GPIO24 (physical pin 18)
   STBY, VCC    -> 3.3V
@@ -46,26 +46,29 @@ STEER_TRIM = load_trim()
 BIAS_MAX = 8    # Largest automatic center correction, in degrees.
 
 
-class HardwareServo:
-    """Servo driven by the GPIO18 hardware PWM (sysfs), steady below 1 degree.
+MOTOR_PWM_HZ = 20_000   # Motor speed PWM on GPIO13 in hardware: steady whatever the CPU is doing, and above hearing.
+                        # (The old gpiozero software PWM ran at 100 Hz and wavered while the vision code kept the CPU busy.)
 
-    Requires `dtoverlay=pwm,pin=18,func=2` in /boot/firmware/config.txt.
+
+class SysfsPWM:
+    """One channel of the Pi's hardware PWM (sysfs). Channel 0 is GPIO18, channel 1 is GPIO13.
+
+    Requires `dtoverlay=pwm-2chan,pin=18,func=2,pin2=13,func2=4` in /boot/firmware/config.txt.
     """
-    PERIOD_NS = 20_000_000   # 50 Hz.
 
-    def __init__(self, min_angle=-90, max_angle=90,
-                 min_pulse_width=0.0005, max_pulse_width=0.0025):
+    def __init__(self, channel, period_ns):
         chips = sorted(Path("/sys/class/pwm").glob("pwmchip*"))
         if not chips:
             raise OSError("No hardware PWM (check the overlay in config.txt)")
-        self.chip = chips[0]
-        self.pwm = self.chip / "pwm0"
+        self.chip, self.channel = chips[0], channel
+        if int((self.chip / "npwm").read_text()) <= channel:
+            raise OSError(f"No hardware PWM channel {channel}")
+        self.pwm = self.chip / f"pwm{channel}"
         if not self.pwm.exists():
-            (self.chip / "export").write_text("0")
-        self._write("period", self.PERIOD_NS)
-        self.min_angle, self.max_angle = min_angle, max_angle
-        self.min_ns, self.max_ns = min_pulse_width * 1e9, max_pulse_width * 1e9
-        self._angle = None
+            (self.chip / "export").write_text(str(channel))
+        self._write("duty_cycle", 0)        # A period shorter than the old duty cycle is refused, so clear it first.
+        self._write("period", period_ns)
+        self.period_ns = period_ns
 
     def _write(self, name, value):
         # Right after export, udev may not have granted write access yet.
@@ -76,6 +79,30 @@ class HardwareServo:
             except PermissionError:
                 sleep(0.02)
         (self.pwm / name).write_text(str(value))
+
+    def duty(self, ns):
+        self._write("duty_cycle", int(ns))
+        self._write("enable", 1)
+
+    def close(self):
+        try:
+            self._write("duty_cycle", 0)
+            self._write("enable", 0)
+            (self.chip / "unexport").write_text(str(self.channel))
+        except OSError:
+            pass
+
+
+class HardwareServo(SysfsPWM):
+    """Servo driven by the GPIO18 hardware PWM (channel 0), steady below 1 degree."""
+    PERIOD_NS = 20_000_000   # 50 Hz.
+
+    def __init__(self, min_angle=-90, max_angle=90,
+                 min_pulse_width=0.0005, max_pulse_width=0.0025):
+        super().__init__(0, self.PERIOD_NS)
+        self.min_angle, self.max_angle = min_angle, max_angle
+        self.min_ns, self.max_ns = min_pulse_width * 1e9, max_pulse_width * 1e9
+        self._angle = None
 
     @property
     def angle(self):
@@ -89,12 +116,45 @@ class HardwareServo:
         self._write("enable", 1)
         self._angle = value
 
+
+class HardwareMotor:
+    """TB6612 channel A: speed on PWMA (GPIO13 hardware PWM, MOTOR_PWM_HZ), direction on AIN1 / AIN2.
+
+    Behaves like gpiozero Motor(forward, backward, enable): forward(speed), backward(speed), stop() (both inputs low).
+    """
+
+    def __init__(self):
+        from gpiozero import DigitalOutputDevice
+        self.pwm = SysfsPWM(1, round(1e9 / MOTOR_PWM_HZ))
+        self.in1, self.in2 = DigitalOutputDevice(MOTOR_IN1), DigitalOutputDevice(MOTOR_IN2)
+
+    def _run(self, a, b, speed):
+        self.in1.value, self.in2.value = a, b
+        self.pwm.duty(max(0.0, min(1.0, speed)) * self.pwm.period_ns)
+
+    def forward(self, speed=1.0):
+        self._run(1, 0, speed)
+
+    def backward(self, speed=1.0):
+        self._run(0, 1, speed)
+
+    def stop(self):
+        self._run(0, 0, 0.0)
+
     def close(self):
-        try:
-            self._write("enable", 0)
-            (self.chip / "unexport").write_text("0")
-        except OSError:
-            pass
+        self.stop()
+        self.pwm.close()
+        self.in1.close()
+        self.in2.close()
+
+
+def make_motor():
+    try:
+        return HardwareMotor()
+    except OSError as e:
+        print(f"[warning] {e} -> motor on software PWM (100 Hz, speed wavers while the CPU is busy)")
+        from gpiozero import Motor
+        return Motor(forward=MOTOR_IN1, backward=MOTOR_IN2, enable=MOTOR_PWM, pwm=True)
 
 
 def make_servo():
@@ -109,12 +169,10 @@ def make_servo():
 
 class Car:
     def __init__(self):
-        from gpiozero import Motor   # Imported late so replay.py can load this file on a Mac.
         self.servo = make_servo()
         self.bias = 0.0     # Learned center offset. Used only when lane_follow.AUTO_TRIM is on.
         self.trim = STEER_TRIM      # Servo center. A newly saved one takes effect here at once, also for the centering in close().
-        self.motor = Motor(forward=MOTOR_IN1, backward=MOTOR_IN2,
-                           enable=MOTOR_PWM, pwm=True)
+        self.motor = make_motor()
 
     @property
     def bias(self):

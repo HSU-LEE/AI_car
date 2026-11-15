@@ -24,6 +24,7 @@ import course as _course_settings  # noqa: E402
 _course_settings.STEER_MAX = None
 _course_settings.REFLECT_MOTION_ON = True
 _course_settings.SLOWDOWN_ON = True     # The slowdown code is tested as it works when switched on.
+_course_settings.RED_BACK_ON = lf.RED_BACK_ON = True      # wait_green backing up is tested as it works when switched on.
 from course import COURSE, finish, follow, stop, straight, wait_green  # noqa: E402
 import person  # noqa: E402
 from person import AutoViews, PersonDetector  # noqa: E402
