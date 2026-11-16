@@ -21,12 +21,13 @@ its colors are compared (NEAR_COLOR), and only something far bigger than a figur
 
 Saved to person.json on the Pi. `aicar push` does not overwrite it.
 """
-import json
 import shutil
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+from safe_io import read_json, write_json
 
 PERSON_FILE = Path(__file__).with_name("person.json")
 PHOTO_DIR = "person_photos"     # Beside person.json: the picture of each registered view.
@@ -779,13 +780,13 @@ class PersonDetector:
             if photo is not None and photo.size:
                 view["photo"] = f"{i:03d}.jpg"
                 cv2.imwrite(str(folder / view["photo"]), photo, [cv2.IMWRITE_JPEG_QUALITY, 100, cv2.IMWRITE_JPEG_SAMPLING_FACTOR, cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444])
-        Path(path).write_text(json.dumps({"rule": RULE, "match": self.match, "shape": self.shape, "views": self.views, "background": self.background.tolist()}))
+        write_json(path, {"rule": RULE, "match": self.match, "shape": self.shape, "views": self.views, "background": self.background.tolist()})
 
     @classmethod
     def load(cls, horizon, path=PERSON_FILE):
         """The saved figure, or None if nothing usable is saved."""
         try:
-            data = json.loads(Path(path).read_text())
+            data = read_json(path)
             if data.get("rule") != RULE:        # Counted another way: must be registered again.
                 return None
             det = cls(horizon)

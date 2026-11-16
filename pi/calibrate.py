@@ -220,6 +220,55 @@ def calibrate_exposure(cam):
 
 
 HORIZON_RANGE = (-80, 130)      # A vanishing point outside this (frame y) means the lines were misread (a curve, a reflection, a crosswalk).
+LANE_WIDTH_RANGE = (0.3, 1.3)   # Lane width at y=342 as a share of the frame width. Outside this, two other lines were read (or the car is not in a lane).
+GEOMETRY_KEYS = ("lane_width_px", "horizon_y", "camera_x")      # What the check must pass for: the lane model the driving relies on.
+LANE_SEEN_MIN = 0.3             # Both lane lines in fewer check frames than this share: the car is not looking at a lane, whatever was fitted.
+
+
+def lane_was_found(geo_ok, both):
+    """Whether the car really stood on a lane: the model could be fitted and the check then saw both lines often enough.
+
+    A fit alone is not proof: any few bright or dark edges (a floor, a wall, furniture) can give a plausible-looking model.
+    """
+    return bool(geo_ok and both >= LANE_SEEN_MIN)
+
+
+def geometry_problem(geo):
+    """Why a fitted lane model cannot be right, as a message, or None when it is plausible."""
+    if not HORIZON_RANGE[0] <= geo["horizon_y"] <= HORIZON_RANGE[1]:
+        return (f"the vanishing point came out at {geo['horizon_y']} (expected {HORIZON_RANGE[0]} to {HORIZON_RANGE[1]}): the lines were misread. "
+                "Use a straight lane with no crosswalk or bright reflection in front, and run again")
+    lo, hi = LANE_WIDTH_RANGE[0] * lf.FRAME_W, LANE_WIDTH_RANGE[1] * lf.FRAME_W
+    if not lo <= geo["lane_width_px"] <= hi:
+        return (f"the lane width came out at {geo['lane_width_px']}px (expected {lo:.0f} to {hi:.0f}): two other lines were read. "
+                "Put the car in the middle of one straight lane, and run again")
+    return None
+
+
+def keep_checked(saved, ok, lane_found=True):
+    """What to save. Returns (values to save, names left out).
+
+    Check passed: everything. Check failed with the lane found: the lane model just measured is not proven, so the saved
+    one stays, while track color, exposure and the reflection cut (measured on the lane) are saved.
+    No lane found at all: the car is not on the track, so the light was measured on some other scene. Nothing is saved.
+    """
+    if ok:
+        return dict(saved), []
+    if not lane_found:
+        return {}, list(saved)
+    dropped = [k for k in GEOMETRY_KEYS if k in saved]
+    return {k: v for k, v in saved.items() if k not in GEOMETRY_KEYS}, dropped
+
+
+def exposure_notes(lock, clipped):
+    """Warnings about the light the lock could not fix."""
+    notes = []
+    if clipped > CLIP_RATIO:
+        notes.append(f"Light: the white line is still blown out ({clipped:.1%} of the lane area) at the shortest setting. "
+                     "A lamp shines straight on the mat: shade it or move the car, lines there lose their edges")
+    if lock["AnalogueGain"] >= MAX_GAIN - 0.01 and lock["ExposureTime"] >= MAX_EXPOSURE_US:
+        notes.append("Light: the venue is dark, so the camera is at its highest gain (grainy picture). More light on the track helps detection")
+    return notes
 CROSSWALK_MAX = 0.3             # A crosswalk (or what looks like one) in more than this share of the check frames: the place is not a plain lane.
 
 
@@ -284,6 +333,7 @@ def main():
         print("[3/7] Light (exposure / gain / white balance) ...", flush=True)
         lock, clipped = calibrate_exposure(cam)
         saved["camera_lock"] = lock
+        notes += exposure_notes(lock, clipped)
         print(f"      exposure {lock['ExposureTime']} us  gain {lock['AnalogueGain']}  "
               f"white balance R{lock['ColourGains'][0]} B{lock['ColourGains'][1]}  (clipped pixels {clipped:.1%})")
 
@@ -304,9 +354,8 @@ def main():
 
         print("[5/7] Lane width / vanishing point ...", flush=True)
         geo = fit_geometry(measure_lanes(frames))
-        if not isinstance(geo, str) and not HORIZON_RANGE[0] <= geo["horizon_y"] <= HORIZON_RANGE[1]:
-            geo = (f"the vanishing point came out at {geo['horizon_y']} (expected {HORIZON_RANGE[0]} to {HORIZON_RANGE[1]}): the lines were misread. "
-                   "Use a straight lane with no crosswalk or bright reflection in front, and run again")
+        if not isinstance(geo, str):
+            geo = geometry_problem(geo) or geo
         geo_ok = not isinstance(geo, str)
         if not geo_ok:
             notes.append("Lane: " + geo)
@@ -343,6 +392,13 @@ def main():
         print(f"      both lines seen {both:.0%}  position error {off_txt}  crosswalk {xwalk:.0%}  -> {'OK' if ok else 'check'}")
         if not ok:
             notes.append("Check: detection is unsteady -> see calib_view.jpg and check the car position and light")
+        saved, dropped = keep_checked(saved, ok, lane_was_found(geo_ok, both))
+        if not saved and dropped:
+            notes.append("No lane was found, so NOTHING was saved: the calibration stays as it was. Put the car in the middle of a straight lane and run again")
+        elif dropped:
+            notes.append(f"Check failed, so the lane model was NOT saved ({', '.join(dropped)} stay as they were). Fix the above and run again")
+        if saved:
+            saved["calibrated"] = {"at": time.strftime("%Y-%m-%d %H:%M"), "check": "ok" if ok else "failed"}
         annotate(dbg, [f"CALIBRATION {'OK' if ok else 'CHECK'}  both lines {both:.0%}  offset {off_txt}",
                        f"track {color}  lane {saved.get('lane_width_px', lf.LANE_WIDTH_PX)}px  "
                        f"horizon {saved.get('horizon_y', lf.HORIZON_Y)}  cam_x {saved.get('camera_x', lf.CAMERA_X)}",
@@ -356,10 +412,13 @@ def main():
     if args.dry:
         print("\n--dry: nothing saved")
     else:
-        if lf.VISION_FILE.exists():
-            shutil.copy(lf.VISION_FILE, lf.VISION_FILE.with_suffix(".json.bak"))
-        lf.save_vision(**saved)
-        print(f"\nSaved: {lf.VISION_FILE}  (previous: vision.json.bak)")
+        if not saved:
+            print(f"\nNothing saved: {lf.VISION_FILE} is unchanged")
+        else:
+            if lf.VISION_FILE.exists():
+                shutil.copy(lf.VISION_FILE, lf.VISION_FILE.with_suffix(".json.bak"))
+            lf.save_vision(**saved)
+            print(f"\nSaved: {lf.VISION_FILE}  (previous: vision.json.bak)")
     print(json.dumps(saved, ensure_ascii=False))
     for n in notes:
         print("[warning] " + n)

@@ -16,7 +16,6 @@ Usage:
   python car.py test            Steer, then forward and reverse.
   python car.py trim -4.2       Shift the saved center trim by -4.2 degrees.
 """
-import json
 import os
 import signal
 import subprocess
@@ -24,6 +23,8 @@ import sys
 import threading
 from pathlib import Path
 from time import sleep
+
+from safe_io import read_json, write_json
 
 SERVO_PIN = 18
 MOTOR_PWM, MOTOR_IN1, MOTOR_IN2 = 13, 23, 24
@@ -36,7 +37,7 @@ CALIB_FILE = Path(__file__).with_name("calib.json")
 
 def load_calib():
     try:
-        return json.loads(CALIB_FILE.read_text())
+        return read_json(CALIB_FILE)
     except (OSError, ValueError):
         return {}
 
@@ -269,7 +270,7 @@ class Car:
     def save_bias(self):
         data = load_calib()
         data["steer_bias"] = round(self.bias, 2)
-        CALIB_FILE.write_text(json.dumps(data))
+        write_json(CALIB_FILE, data)
 
     def steer(self, angle):
         angle = max(-STEER_LIMIT, min(STEER_LIMIT, (angle + self.bias) * STEER_SCALE))
@@ -335,7 +336,7 @@ def main():
             data = load_calib()
             old = float(data.get("steer_trim", 0.0))
             data["steer_trim"] = round(old + float(sys.argv[2]), 1)
-            CALIB_FILE.write_text(json.dumps(data))
+            write_json(CALIB_FILE, data)
             print(f"trim {old:+.1f} -> {data['steer_trim']:+.1f} deg saved")
             car.trim = data["steer_trim"]
             car.center()    # Move to the new center so it can be checked.

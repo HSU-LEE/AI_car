@@ -10,12 +10,12 @@ The value is saved in calib.json and car.py loads it on the next run.
   s       Save and quit
   q       Quit without saving
 """
-import json
 import sys
 import termios
 import tty
 
 from car import CALIB_FILE, Car, load_calib, load_trim, stop_on_signals
+from safe_io import write_json
 
 MAX_TRIM = 20
 
@@ -50,7 +50,7 @@ def main():
                 # A new center makes the learned running bias stale, so clear it.
                 data = load_calib()     # Keep other saved values.
                 data.update(steer_trim=trim, steer_bias=0.0)
-                CALIB_FILE.write_text(json.dumps(data))
+                write_json(CALIB_FILE, data)
                 car.trim, car.bias = trim, 0.0
                 print(f"\nSaved: {CALIB_FILE} (steer_trim = {trim:+.1f})")
                 break

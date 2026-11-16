@@ -342,6 +342,44 @@ def test_calibration():
         lf.LINE_COLOR = old
     check("same measurement on a white floor with black lines", isinstance(geo_b, dict) and abs(geo_b["lane_width_px"] - true_w) < 8,
           geo_b["lane_width_px"] if isinstance(geo_b, dict) else geo_b)
+    # What is saved: a lane model is kept only when it is plausible and the final check passed.
+    check("a plausible lane model has no problem", ok and cal.geometry_problem(geo) is None)
+    check("an impossible lane width is refused (two other lines were read)",
+          "lane width" in (cal.geometry_problem(dict(geo, lane_width_px=90.0)) or "") and "lane width" in (cal.geometry_problem(dict(geo, lane_width_px=1200.0)) or ""))
+    check("an impossible vanishing point is refused", "vanishing point" in (cal.geometry_problem(dict(geo, horizon_y=300.0)) or ""))
+    measured = {"line_color": "white", "camera_lock": {"ExposureTime": 5000}, "reflect_sharp": 0.3, "lane_width_px": 430.0, "horizon_y": 70.0, "camera_x": 0.52, "white_thr": None}
+    kept, dropped = cal.keep_checked(measured, True)
+    check("check passed: everything measured is saved", kept == measured and dropped == [])
+    kept, dropped = cal.keep_checked(measured, False)
+    check("check failed: the lane model is not saved, the light and track color still are",
+          dropped == ["lane_width_px", "horizon_y", "camera_x"] and not set(dropped) & set(kept) and kept["camera_lock"] == measured["camera_lock"]
+          and kept["line_color"] == "white" and kept["reflect_sharp"] == 0.3 and "lane_width_px" in measured)
+    check("lane found: only with a fitted model and both lines in enough check frames (a floor with no lane can still be fitted)",
+          cal.lane_was_found(True, 0.9) and cal.lane_was_found(True, cal.LANE_SEEN_MIN) and not cal.lane_was_found(True, 0.0)
+          and not cal.lane_was_found(True, cal.LANE_SEEN_MIN - 0.01) and not cal.lane_was_found(False, 1.0))
+    kept, dropped = cal.keep_checked(measured, False, lane_found=False)
+    check("no lane found at all (car not on the track): nothing is saved, the old calibration stays", kept == {} and set(dropped) == set(measured))
+    fine = cal.exposure_notes({"ExposureTime": 5000, "AnalogueGain": 2.0}, 0.001)
+    blown = cal.exposure_notes({"ExposureTime": 900, "AnalogueGain": 1.0}, 0.05)
+    dark = cal.exposure_notes({"ExposureTime": cal.MAX_EXPOSURE_US, "AnalogueGain": cal.MAX_GAIN}, 0.0)
+    check("light warnings: none when fine, blown-out line, dark venue", fine == [] and len(blown) == 1 and "blown out" in blown[0] and len(dark) == 1 and "dark" in dark[0])
+    with tempfile.TemporaryDirectory() as tmp:
+        vf = Path(tmp) / "vision.json"
+        none = lf.calibration_note(vf)
+        vf.write_text(json.dumps({"camera_x": 0.5}))
+        undated = lf.calibration_note(vf)
+        vf.write_text(json.dumps({"calibrated": {"at": "2026-11-13 08:21", "check": "ok"}}))
+        same_day, three = lf.calibration_note(vf, today="2026-11-13"), lf.calibration_note(vf, today="2026-11-16")
+        vf.write_text(json.dumps({"calibrated": {"at": "2026-11-15 20:00", "check": "failed"}}))
+        failed = lf.calibration_note(vf, today="2026-11-16")
+        vf.write_text(json.dumps({"calibrated": {"at": "garbage", "check": "ok"}}))
+        garbage = lf.calibration_note(vf)
+        vf.write_text("{not json")
+        broken = lf.calibration_note(vf)
+    check("drive start says when the calibration was made", "none saved" in none and "date unknown" in undated and "(today)" in same_day
+          and "calibrate again" not in same_day and "(3 days ago)" in three and "calibrate again" in three, f"{same_day} | {three}")
+    check("drive start says when its check failed, and survives a bad file", "(yesterday)" in failed and "FAILED" in failed and "(?)" in garbage and "none saved" in broken,
+          f"{failed} | {garbage}")
     # Sharpness measured on the Pi at each lens position (far, middle, near). The near-weighted choice must be 4.5.
     table = {1.5: [349, 159, 92], 3.0: [506, 356, 216], 3.75: [495, 447, 319], 4.5: [408, 462, 418],
              5.25: [305, 388, 467], 6.0: [217, 292, 445], 7.5: [111, 133, 277]}
@@ -2695,6 +2733,95 @@ def test_drive_log():
         check("drive log: a fault in the log never stops the drive", survived)
 
 
+def test_safe_settings():
+    print("[settings files survive a power cut]")
+    import os
+    import safe_io
+    import landmarks as lm
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "vision.json"
+        bak = safe_io.backup_of(f)
+        safe_io.write_json(f, {"a": 1})
+        first = (json.loads(f.read_text()), bak.exists())
+        safe_io.write_json(f, {"a": 2})
+        check("write: the new content is in the file, the previous one beside it as .bak, nothing else left behind",
+              first == ({"a": 1}, False) and json.loads(f.read_text()) == {"a": 2} and json.loads(bak.read_text()) == {"a": 1}
+              and sorted(x.name for x in Path(tmp).iterdir()) == ["vision.json", "vision.json.bak"])
+
+        # The power goes during the write: json.dumps is done, the temporary file is half written, nothing was swapped in.
+        real_fsync = os.fsync
+
+        def power_cut(fd):
+            raise OSError("power cut")
+        os.fsync = power_cut
+        try:
+            safe_io.write_json(f, {"a": 3, "big": "x" * 5000})
+            cut = False
+        except OSError:
+            cut = True
+        finally:
+            os.fsync = real_fsync
+        check("power cut while saving: the file still holds the last complete content, never half of the new one",
+              cut and json.loads(f.read_text()) == {"a": 2} and safe_io.read_json(f) == {"a": 2})
+
+        f.write_text('{"a": 2, "lane_wid')        # A file cut short by an older in-place write, or a bad card.
+        with quiet():
+            got = safe_io.read_json(f)
+        check("read: a damaged file falls back to the previous content", got == {"a": 1})
+        safe_io.write_json(f, {"a": 4})
+        check("write over a damaged file: the good backup is not pushed out by the damaged one",
+              json.loads(f.read_text()) == {"a": 4} and json.loads(bak.read_text()) == {"a": 1})
+        gone = Path(tmp) / "light.json"
+        safe_io.backup_of(gone).write_text('{"samples": [1]}')
+        try:
+            safe_io.read_json(gone)
+            raised = False
+        except OSError:
+            raised = True
+        check("read: a file deleted by hand stays deleted (its backup is not brought back)", raised and lm.LightModel.load(gone) is None)
+        f.write_text("garbage")
+        bak.write_text("garbage too")
+        try:
+            safe_io.read_json(f)
+            raised = False
+        except ValueError:
+            raised = True
+        check("read: damaged with no readable backup raises as before, so the loaders fall back to their defaults", raised)
+        key = Path(tmp) / "web_key.json"
+        safe_io.write_json(key, "secret", backup=False, mode=0o600)
+        safe_io.write_json(key, "secret2", backup=False, mode=0o600)
+        check("the web key stays private and keeps no backup copy", (key.stat().st_mode & 0o777) == 0o600 and not safe_io.backup_of(key).exists())
+
+        # Through the real loaders and savers.
+        stop_file = Path(tmp) / "stops.json"
+        m = lm.StopModel()
+        m.points = {"A": {"views": [], "y": 300}}
+        m.save(stop_file)
+        m.points = {"A": {"views": [], "y": 300}, "B": {"views": [], "y": 280}}
+        m.save(stop_file)
+        stop_file.write_text(stop_file.read_text()[:25])
+        with quiet():
+            back = lm.StopModel.load(stop_file)
+        check("stop points: a file cut short while saving loads the previous registration, not nothing",
+              back is not None and back.names() == ["A"], str(back and back.names()))
+        old_file = lf.VISION_FILE
+        lf.VISION_FILE = Path(tmp) / "v.json"
+        try:
+            lf.save_vision(lane_width_px=400.0, line_color="white")
+            lf.save_vision(white_thr=90)
+            lf.VISION_FILE.write_text('{"lane_width_px": 4')
+            with quiet():
+                lf.save_vision(white_thr=95)        # Used to start again from {} and lose every other value.
+            kept = json.loads(lf.VISION_FILE.read_text())
+        finally:
+            lf.VISION_FILE = old_file
+        check("vision.json: saving one value over a damaged file keeps the others (from the backup)",
+              kept == {"lane_width_px": 400.0, "line_color": "white", "white_thr": 95}, str(kept))
+    src = "".join(path.read_text() for path in sorted((Path(lf.__file__).parent).glob("*.py")) if path.name != "safe_io.py")
+    loose = [m for m in __import__("re").findall(r"[A-Z_]+_FILE[^\n]*\.write_text\(json\.dumps|Path\(path\)\.write_text\(json\.dumps", src)]
+    check("every settings file is written through safe_io (no in-place json writes left)", not loose, str(loose))
+
+
 def test_key_inbox():
     print("[web page key input]")
     script = lf.Stream.PAGE.split("<script>")[1].split("</script>")[0]
@@ -3457,7 +3584,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

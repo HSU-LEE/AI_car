@@ -44,6 +44,7 @@ import course as _course
 from person import AnyFigure, PERSON_FILE, PHOTO_DIR, PersonDetector, PersonWatch, figure_box
 import landmarks
 from overlay import Canvas, as_draw
+from safe_io import read_json, write_json
 PERSON_IN_LANE = getattr(_course, "PERSON_IN_LANE", False)      # Same for this one.
 PERSON_LANE_MARGIN = 0.05   # PERSON_IN_LANE: a figure's center may be this far outside a lane line, as a share of the lane width, for one standing on the line.
 PERSON_ANY = getattr(_course, "PERSON_ANY", False)      # A course saved with an older run has no such line, and looked only for the registered figure.
@@ -280,7 +281,7 @@ def load_vision(path=None):
     global LINE_COLOR, WHITE_THR, CAMERA_X, LIGHT_S_MIN, LIGHT_V_MIN, LIGHT_AREA_MIN
     global LANE_WIDTH_PX, HORIZON_Y, CAMERA_LOCK, REFLECT_SHARP
     try:
-        data = json.loads((path or VISION_FILE).read_text())
+        data = read_json(path or VISION_FILE)
     except (OSError, ValueError):
         return
 
@@ -303,6 +304,26 @@ def load_vision(path=None):
     REFLECT_SHARP = pick("reflect_sharp", REFLECT_SHARP, (int, float))
 
 
+def calibration_note(path=None, today=None):
+    """One line on when the venue calibration (calibrate.py) was made and whether its check passed, for the start of a drive."""
+    try:
+        data = read_json(path or VISION_FILE)
+    except (OSError, ValueError):
+        return "Calibration: none saved (defaults). Run it on the arena: aicar calibrate"
+    info = data.get("calibrated")
+    if not isinstance(info, dict) or not isinstance(info.get("at"), str):
+        return "Calibration: saved (date unknown: made before dates were kept)"
+    try:
+        made = time.strptime(info["at"], "%Y-%m-%d %H:%M")
+        days = (time.mktime(time.strptime((today or time.strftime("%Y-%m-%d")), "%Y-%m-%d")) - time.mktime(made[:3] + (0, 0, 0) + made[6:])) / 86400
+        age = "today" if round(days) <= 0 else "yesterday" if round(days) == 1 else f"{round(days)} days ago"
+    except (ValueError, OverflowError):
+        age = "?"
+    failed = info.get("check") != "ok"
+    return (f"Calibration: {info['at']} ({age})" + (", its check FAILED: the lane model is from an earlier one" if failed else "")
+            + ("" if age in ("today", "?") else ". Light and place change: calibrate again at a new venue"))
+
+
 def motor_floor(angle):
     """Minimum motor command that actually rolls the car at this steering angle."""
     r = min(abs(angle) / STEER_LIMIT, 1.0)
@@ -312,11 +333,11 @@ def motor_floor(angle):
 def save_vision(**values):
     """Update only the given keys in vision.json. Other keys are left as they are."""
     try:
-        data = json.loads(VISION_FILE.read_text())
+        data = read_json(VISION_FILE)
     except (OSError, ValueError):
         data = {}
     data.update(values)
-    VISION_FILE.write_text(json.dumps(data))
+    write_json(VISION_FILE, data)
 
 
 load_vision()
@@ -2504,8 +2525,7 @@ def web_key():
         return json.loads(WEB_KEY_FILE.read_text())
     except (OSError, ValueError):
         key = secrets.token_urlsafe(16)
-        WEB_KEY_FILE.touch(mode=0o600)
-        WEB_KEY_FILE.write_text(json.dumps(key))
+        write_json(WEB_KEY_FILE, key, backup=False, mode=0o600)
         return key
 
 
@@ -3899,6 +3919,7 @@ def main():
     # Only a course with next() sends keys to the program, so other drives keep the page's own keys.
     stream = None if args.no_stream else Stream(args.port, "AICAR drive", "Enter next step (next)" if pauses else None)
     rec = Recorder(args.speed, args.set) if args.record else None
+    print(calibration_note())
     print("Traffic light:", f"registered ({', '.join(sorted(LIGHT_MODEL.colors()))})" if LIGHT_MODEL else "not registered (color thresholds)",
           "| crosswalk:", f"registered ({len(XWALK_MODEL.views)} views)" if XWALK_MODEL else "not registered",
           "| lines:", f"registered (reflection cut {LINE_MODEL.reflect_cut():.2f})" if LINE_MODEL else "not registered",

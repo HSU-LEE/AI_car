@@ -7,11 +7,12 @@ Crosswalk: each registration is the crosswalk's stripes seen from one place. The
 
 Files sit beside lane_follow.py (light.json, crosswalk.json), and a recording keeps a copy.
 """
-import json
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+from safe_io import read_json, write_json
 
 LIGHT_FILE = Path(__file__).with_name("light.json")
 XWALK_FILE = Path(__file__).with_name("crosswalk.json")
@@ -45,13 +46,13 @@ class LightModel:
     @classmethod
     def load(cls, path=LIGHT_FILE):
         try:
-            data = json.loads(Path(path).read_text())
+            data = read_json(path)
             return cls(data.get("samples", [])) if data.get("samples") else None
         except (OSError, ValueError, AttributeError):
             return None
 
     def save(self, path=LIGHT_FILE):
-        Path(path).write_text(json.dumps({"samples": self.samples}))
+        write_json(path, {"samples": self.samples})
 
     def colors(self):
         return {s["color"] for s in self.samples}
@@ -142,13 +143,13 @@ class CrosswalkModel:
     @classmethod
     def load(cls, path=XWALK_FILE):
         try:
-            data = json.loads(Path(path).read_text())
+            data = read_json(path)
             return cls(data.get("views", [])) if data.get("views") else None
         except (OSError, ValueError, AttributeError):
             return None
 
     def save(self, path=XWALK_FILE):
-        Path(path).write_text(json.dumps({"views": self.views}))
+        write_json(path, {"views": self.views})
 
     def like(self, w, h, fill):
         """Whether one blob (sizes in lane widths) looks like a registered stripe."""
@@ -195,13 +196,13 @@ class LineModel:
     @classmethod
     def load(cls, path=LINE_FILE):
         try:
-            data = json.loads(Path(path).read_text())
+            data = read_json(path)
             return cls(data.get("samples", [])) if data.get("samples") else None
         except (OSError, ValueError, AttributeError):
             return None
 
     def save(self, path=LINE_FILE):
-        Path(path).write_text(json.dumps({"samples": self.samples}))
+        write_json(path, {"samples": self.samples})
 
     @property
     def sharp(self):
@@ -302,13 +303,13 @@ class StopModel:
     @classmethod
     def load(cls, path=STOP_FILE):
         try:
-            data = json.loads(Path(path).read_text())
+            data = read_json(path)
             return cls(data.get("points", {})) if data.get("points") else None
         except (OSError, ValueError, AttributeError):
             return None
 
     def save(self, path=STOP_FILE):
-        Path(path).write_text(json.dumps({"points": self.points}))
+        write_json(path, {"points": self.points})
 
     def names(self):
         return sorted(self.points)
