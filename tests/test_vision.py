@@ -479,6 +479,40 @@ def test_blind_and_bundles():
         t = feed_junc(c, 3, t, True)
     check("to_junction: a flicker during blind does not end it; a line after blind does", during == 0 and c.idx == 1, f"step {c.idx + 1}")
 
+    def pass_under(c, t, ys_from):
+        """A junction line that comes down the frame from ys_from and goes under the car, lane in view, all in 0.4 s."""
+        for f in np.linspace(ys_from, 0.98, 6):
+            c.update(True, t, (0.0, 0.0), False, {"junction": int(H * f), "near": True}); t += 0.05
+        return feed(c, 2, t)        # Gone under the car, lane still in view (still inside go()'s 0.5 s blind).
+
+    with quiet():   # Start about 13 cm from a junction: it goes under the car before the 0.5 s blind ends.
+        c = lf.CourseRunner([cs.go(), finish()])
+        t = pass_under(c, 0.0, 0.75)
+        t = feed(c, 10, t)
+    check("go(): a near junction that goes under the car during blind ends it", c.idx == 1, f"step {c.idx + 1}")
+    with quiet():   # A line first seen at the very bottom (the start line the car stands on) is not the junction.
+        c = lf.CourseRunner([cs.go(), finish()])
+        t = pass_under(c, 0.0, 0.95)
+        t = feed(c, 10, t)
+    check("go(): a line first seen at the bottom during blind does not end it", c.idx == 0, f"step {c.idx + 1}")
+    with quiet():   # go(); go(): the second one drives over the line the first ended on, even though it passes under during blind.
+        c = lf.CourseRunner([cs.go(blind_sec=0), cs.go(), finish()])
+        t = feed_junc(c, 3, 0.0, False)
+        t = feed_junc(c, 6, t, True)
+        first = c.idx
+        t = pass_under(c, t, 0.6)
+        t = feed(c, 10, t)
+    check("go(); go(): the line the first ended on does not end the second", first == 1 and c.idx == 1, f"{first} -> step {c.idx + 1}")
+    with quiet():   # After a turn, a close junction that goes under during blind counts again.
+        c = lf.CourseRunner([cs.go(blind_sec=0), follow(sec=0.2), cs.go(), finish()])
+        t = feed_junc(c, 3, 0.0, False)
+        t = feed_junc(c, 6, t, True)
+        t = feed(c, 6, t)
+        mid = c.idx
+        t = pass_under(c, t, 0.7)
+        t = feed(c, 10, t)
+    check("go() after another action drove on: a near junction passing under during blind counts", mid == 2 and c.idx == 3, f"{mid} -> step {c.idx + 1}")
+
     with quiet():   # nth=2: the first line (a bend) is passed, the second ends the action.
         c = lf.CourseRunner([cs.to_junction(nth=2, blind_sec=0), finish()])
         t = feed_junc(c, 5, 0.0, False)

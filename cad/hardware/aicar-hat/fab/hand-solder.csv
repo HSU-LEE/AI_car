@@ -1,9 +1,0 @@
-Designator,Part,Footprint,LCSC Part #,Note
-J1,Pi 2x20 socket,PinSocket_2x20_P2.54mm_Vertical,C2977589,"2x20 socket, 8.5 mm tall, straight. Fit on the bottom side, solder on top."
-J2,Pack 1 JST-XH,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,C158012,JST B2B-XH-A
-J3,Pack 2 JST-XH,JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical,C158012,JST B2B-XH-A
-SW1,Power switch,PinHeader_1x03_P2.54mm_Vertical,C2895846,Break 3 pins off the strip. Shorting pins 1 and 2 turns the board on.
-J4,Motor wires,SolderWire-0.5sqmm_1x02_P4.6mm_D0.9mm_OD2.1mm,,Solder the motor wires straight to the pads.
-J5,Servo,PinHeader_1x03_P2.54mm_Vertical,C2895846,Break 3 pins off the 40-pin strip.
-J6,Sharp,PinHeader_1x03_P2.54mm_Vertical,C2895846,Break 3 pins off the 40-pin strip.
-J7,VL53L0X,PinHeader_1x04_P2.54mm_Vertical,C2895846,Break 4 pins off the 40-pin strip.

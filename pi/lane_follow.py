@@ -205,6 +205,8 @@ STOP_WHOLE_FRAMES = 2   # go_to(): frames a road-area stop point must match in a
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
 JUNCTION_LATCH_FRAMES = 2   # A junction line seen this many frames in a row, low in the frame, is remembered.
 JUNCTION_GONE_FRAMES = 2    # Remembered, then missing this many frames: it went under the car, so it counts the same as JUNCTION_FRAMES.
+BLIND_NEW_LINE_Y = 0.9      # blind_sec: a line first seen above this frame height (about 7 cm ahead of the car) that goes under the car during blind is the junction.
+                            # Lower down it may be the start line the car stands on. Not when the last action ended on a junction: that line is still in front.
                             # One missing frame is a flicker. The count resets if the line comes back.
 JUNCTION_LOST_Y = 0.8       # The remembered line must have reached this far down the frame. A line that disappears higher up was a false line.
 BLIND_REARM_FRAMES = 5  # blind_sec: a line gone for this many frames in a row during the blind period arms its event, so it can end the action once blind is over.
@@ -1927,6 +1929,8 @@ class CourseRunner:
         self.turned = None      # Turn with deg=: px the view has swung in the turn direction (YawMeter). Driver fills it every frame.
         self.paused = False     # Standing still for the LEGO figure. Driver fills it every frame.
         self.ruler = EndRuler()     # cm=: where the end line is.
+        self.junc_used = False      # The last action ended on a junction line, so that line may still be in front of the car.
+        self.blind_top_y = None     # blind_sec: highest point (farthest) of the junction line seen during this action's blind period.
         self.end_hits = 0           # cm=: frames in a row the lane's line end has been found (LANEEND_FRAMES).
         self.line_gap = None        # cm=: the line across minus the lane end, when both were seen this action (LANEEND_LINE_GAP).
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
@@ -1960,6 +1964,7 @@ class CourseRunner:
     def begin(self, now):
         self.step_start = now
         self.clear_junction_latch()
+        self.blind_top_y = None
         self.entered = False    # next(): Enter counts only once this action is running.
         self.count = 0          # nth=: how many of this action's until events have passed so far.
         self.gap_end = None     # gap=: after passing one, the next is not looked at until this time.
@@ -2133,6 +2138,16 @@ class CourseRunner:
                 self.armed[k] = True
         self.note_junction(ys.get("junction"), det, blind)
 
+    def blind_watch(self, line_y, det):
+        """blind_sec: whether the junction line is followed during blind, so that a near junction that goes under the car
+        before blind ends still counts. Only a line first seen well ahead of the car (BLIND_NEW_LINE_Y), with the lane in view,
+        when no earlier action ended on a junction still in front (go(); go() passes it), and before any nth= line was passed.
+        """
+        if line_y is not None and det is not None:
+            self.blind_top_y = line_y if self.blind_top_y is None else min(self.blind_top_y, line_y)
+        return (not self.junc_used and self.count == 0 and self.gap_end is None
+                and self.blind_top_y is not None and self.blind_top_y < BLIND_NEW_LINE_Y * FRAME_H - 1)
+
     def clear_junction_latch(self):
         """Forget a junction line remembered because it reached the bottom of the frame."""
         self.junc_latch, self.junc_seen_y, self.junc_gone, self.junc_hold = False, None, 0, 0
@@ -2149,7 +2164,7 @@ class CourseRunner:
         step = self.step()
         if step is None or step["until"] != "junction":
             return
-        if blind:
+        if blind and not self.blind_watch(line_y, det):
             self.junc_hold = 0
             self.junc_gone = 0
             return
@@ -2160,12 +2175,13 @@ class CourseRunner:
         low = line_y is not None and line_y >= mark
         if line_y is not None and self.junc_latch:
             self.junc_seen_y = line_y       # Where it was last, including after it has climbed back up the frame.
-        if low and self.armed["junction"]:
+        if low and (self.armed["junction"] or blind):
             self.junc_hold += 1
             self.junc_gone = 0
             if self.junc_hold >= JUNCTION_LATCH_FRAMES:
                 self.junc_latch = True
                 self.junc_seen_y = line_y
+                self.armed["junction"] = True   # Only reached during blind for a line that came down the frame (blind_watch).
             return
         self.junc_hold = 0
         if not self.junc_latch or line_y is not None:
@@ -2332,6 +2348,10 @@ class CourseRunner:
             if reason is None:
                 return
             print(f"\n[{self.idx + 1} done] {reason} ({elapsed:.1f}s)")
+            if step["until"] == "junction" and (self.run_out or self.count >= (step.get("nth") or 1)):
+                self.junc_used = True       # Ended on the line: it is still in front of (or under) the car.
+            elif step["do"] in ("follow", "straight", "left", "right"):
+                self.junc_used = False      # Drove on without ending on a junction: any such line is behind.
             self.idx += 1
             self.begin(now)
 

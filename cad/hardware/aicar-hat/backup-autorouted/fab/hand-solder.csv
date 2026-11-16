@@ -1,9 +1,0 @@
-Designator,Part,Footprint
-J1,Pi 2x20 socket,PinSocket_2x20_P2.54mm_Vertical
-J2,XT30UPB-M C428721,AMASS_XT30UPB-M_1x02_P5.0mm_Vertical
-J3,XT30UPB-M C428721,AMASS_XT30UPB-M_1x02_P5.0mm_Vertical
-SW1,Power switch,PinHeader_1x03_P2.54mm_Vertical
-J4,Motor wires,SolderWire-0.5sqmm_1x02_P4.6mm_D0.9mm_OD2.1mm
-J5,Servo,PinHeader_1x03_P2.54mm_Vertical
-J6,Sharp,PinHeader_1x03_P2.54mm_Vertical
-J7,VL53L0X,PinHeader_1x04_P2.54mm_Vertical
