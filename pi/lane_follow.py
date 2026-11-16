@@ -365,6 +365,10 @@ def ellipse_rects(size):
 REFLECT_K9, REFLECT_K5 = np.ones((9, 9), np.uint8), np.ones((5, 5), np.uint8)
 
 
+_COLUMNS = np.arange(4096)      # Column numbers, made once (find_lines).
+_OPEN_K3 = np.ones((3, 3), np.uint8)
+
+
 def tophat_ellipse(img, size):
     """Faster equivalent of cv2.morphologyEx(img, MORPH_TOPHAT, ellipse kernel).
 
@@ -893,20 +897,28 @@ class LaneDetector:
                     out.append(i)
         return out
 
+    @staticmethod
+    def clear_blobs(mask, labels, stats, ids):
+        """Remove these blobs from the mask and from the labels, in place. A blob lies inside its own box, so only the
+        boxes are touched: the same result as testing every pixel of the picture, at a fraction of the cost."""
+        for i in ids:
+            x, y, w, h = (int(v) for v in stats[i][:4])
+            box = labels[y:y + h, x:x + w]
+            hit = box == i
+            mask[y:y + h, x:x + w][hit] = 0
+            box[hit] = 0
+
     def drop_reflections(self, roi, mask):
         """Remove reflection blobs from the mask in place. Returns the connected components of what is left."""
-        comps = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+        comps = cv2.connectedComponentsWithStats(mask, 8)       # The mask is 0 / 255: anything not 0 is a blob pixel.
         self.reflections = self.find_reflections(roi, comps)
         self.reflect_boxes = []
         if self.reflections:        # Gone before anything else looks at the mask, so they cannot make a lane line or a crosswalk.
-            dead = np.zeros(comps[0], bool)
-            dead[self.reflections] = True
             self.reflect_boxes = [tuple(int(v) for v in comps[2][i][:4]) for i in self.reflections]
-            hit = dead[comps[1]]
-            mask[hit] = 0
+            self.clear_blobs(mask, comps[1], comps[2], self.reflections)     # Cheaper than labelling the mask again.
             stats = comps[2].copy()
-            stats[dead, 4] = 0          # Gone: no area, so nothing below takes it for a stripe or a line.
-            comps = (comps[0], np.where(hit, 0, comps[1]), stats, comps[3])     # Cheaper than labelling the mask again.
+            stats[self.reflections, 4] = 0      # Gone: no area, so nothing below takes it for a stripe or a line.
+            comps = (comps[0], comps[1], stats, comps[3])
         return comps
 
     def find_specks(self, comps, shape, band_h):
@@ -958,8 +970,9 @@ class LaneDetector:
             target = max(WHITE_MIN, 0.5 * peak)
             self.auto_thr = target if self.auto_thr is None else 0.9 * self.auto_thr + 0.1 * target
             self.thr = max(WHITE_MIN, self.auto_thr)
-        mask = (top >= self.thr).astype(np.uint8) * 255
-        return cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        # top >= thr, as 0 / 255. For whole-number pixels that is top > ceil(thr) - 1, which cv2.threshold does in one pass.
+        mask = cv2.threshold(top, int(np.ceil(self.thr)) - 1, 255, cv2.THRESH_BINARY)[1]
+        return cv2.morphologyEx(mask, cv2.MORPH_OPEN, _OPEN_K3)
 
     def far_hline(self, frame):
         """Nearest (lowest) y of a horizontal line from FAR_TOP to FAR_BOT. None if there is none.
@@ -1017,7 +1030,12 @@ class LaneDetector:
                 merged[-1][1] = b
             else:
                 merged.append([a, b])
-        lines = [float(np.average(np.arange(a, b), weights=cols[a:b] + 1e-6)) for a, b in merged]
+        # Brightness-weighted center of each run. The arithmetic of np.average(x, weights=w), which spends about 0.1 ms
+        # per call on the Pi in argument checks: sum(x * w) / sum(w) in float64.
+        lines = []
+        for a, b in merged:
+            w = cols[a:b] + 1e-6
+            lines.append(float(np.multiply(_COLUMNS[a:b], w, dtype=np.float64).sum() / w.sum(dtype=np.float64)))
         return lines, hline, False
 
     @staticmethod
@@ -1329,11 +1347,7 @@ class LaneDetector:
         gone = stripe_ids + reg_ids + self.sign_ids + self.find_specks(comps, mask.shape, h)
         labels, stats = comps[1], comps[2]
         if gone:        # Clear crosswalk stripes and off-track specks from the mask, and from the blob labels assign() reads.
-            dead = np.zeros(comps[0], bool)
-            dead[gone] = True
-            hit = dead[labels]
-            mask[hit] = 0
-            labels = np.where(hit, 0, labels)
+            self.clear_blobs(mask, labels, stats, gone)
         self.blobs, self.band_h = (labels, stats), h
         self.mask = mask
 
@@ -3041,6 +3055,97 @@ class Recorder:
         self.log.close()
 
 
+LOG_KEEP = 30       # DriveLog: this many past drives are kept in logs/. Older ones are deleted when a drive starts.
+
+
+class DriveLog:
+    """Every drive leaves a small record in logs/<time>/, whether or not it is recorded with --record. No pictures, so it costs
+    next to nothing, but it tells afterwards what the car decided and why an action ended (or never did):
+      out.log     everything the drive printed (each action's start and end, measurements, warnings, errors)
+      log.csv     one row per frame: lane position, steering, motor command, action, and what was in view
+      course.py   the course as it was;  run.json  the options;  ends.csv / stops.csv  like a recording, when there are any
+    Fetch one to the Mac with `aicar fetch-log`.
+    """
+    HEADER = "t,offset,heading,junction,steer,speed,cmd,step,status,light,obstacle,junction_y,gap_y,crosswalk_y,end_y,person\n"
+
+    class Tee:
+        """Writes to the real stream and to the log file. A fault in the file must never stop the drive."""
+
+        def __init__(self, stream, file):
+            self.stream, self.file = stream, file
+
+        def write(self, text):
+            try:
+                self.file.write(text)
+            except (OSError, ValueError):
+                pass
+            return self.stream.write(text)
+
+        def flush(self):
+            try:
+                self.file.flush()
+            except (OSError, ValueError):
+                pass
+            self.stream.flush()
+
+        def __getattr__(self, name):
+            return getattr(self.stream, name)
+
+    def __init__(self, options=None, root=None, keep=LOG_KEEP):
+        root = Path(__file__).with_name("logs") if root is None else Path(root)
+        root.mkdir(parents=True, exist_ok=True)
+        old = sorted(d for d in root.iterdir() if d.is_dir() and len(d.name) == 15 and d.name[8] == "-")
+        for d in old[:max(len(old) - (keep - 1), 0)]:
+            shutil.rmtree(d, ignore_errors=True)
+        self.dir = root / time.strftime("%Y%m%d-%H%M%S")
+        n = 1
+        while self.dir.exists():        # Two drives started in the same second.
+            n += 1
+            self.dir = root / f"{time.strftime('%Y%m%d-%H%M%S')}-{n}"
+        self.dir.mkdir()
+        course_file = Path(__file__).with_name("course.py")
+        if course_file.exists():
+            shutil.copy(course_file, self.dir / "course.py")
+        (self.dir / "run.json").write_text(json.dumps(dict(options or {}, lane_follow_md5=hashlib.md5(Path(__file__).read_bytes()).hexdigest())))
+        self.out = open(self.dir / "out.log", "w", buffering=1)     # Line buffered: the last lines survive a crash or power loss.
+        self.rows = open(self.dir / "log.csv", "w")
+        self.rows.write(self.HEADER)
+        self.n = 0
+        self.streams = (sys.stdout, sys.stderr)
+        sys.stdout, sys.stderr = self.Tee(sys.stdout, self.out), self.Tee(sys.stderr, self.out)
+
+    def write(self, t, driver, cmd, now):
+        """One row for this frame. Never raises: the log is not worth a stopped car."""
+        try:
+            det, detect, course = driver.det, driver.detect, driver.course
+            off, head = (f"{det[0]:.4f}", f"{det[1]:.4f}") if det else ("", "")
+            y = lambda v: "" if v is None else f"{v:.0f}"
+            self.rows.write(f"{t:.3f},{off},{head},{int(bool(driver.junction))},{driver.steering.angle:.2f},{driver.speed:.2f},{cmd:.2f},"
+                            f"{course.idx + 1},{course.status(now)},{driver.light or ''},{int(bool(driver.obs and driver.obs.near))},"
+                            f"{y(detect.junction_y)},{y(detect.gap_y)},{y(detect.crosswalk_y)},{y(detect.end_y)},"
+                            f"{int(bool(driver.person and driver.person.seen))}\n")
+            self.n += 1
+            if self.n % 100 == 0:
+                self.rows.flush()
+        except Exception:
+            pass
+
+    def close(self, driver=None):
+        if driver is not None:
+            try:
+                if driver.ends.rows:
+                    driver.ends.save(self.dir / "ends.csv")
+                driver.save_stop_log(self.dir / "stops.csv")
+            except Exception:
+                pass
+        sys.stdout, sys.stderr = self.streams
+        for f in (self.rows, self.out):
+            try:
+                f.close()
+            except OSError:
+                pass
+
+
 class Driver:
     """One camera frame to (steering angle, speed). Real driving (main) and the simulator both use this."""
 
@@ -3733,6 +3838,7 @@ def main():
     ap.add_argument("--record", action="store_true", help="save frames and the log in runs/")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--no-stream", action="store_true")
+    ap.add_argument("--no-log", action="store_true", help="do not keep a drive log in logs/ (aicar drive-log off)")
     ap.add_argument("--set", nargs="*", default=[], help="override settings for this run with KEY=VALUE (for example KP=1.8)")
     args = ap.parse_args()
 
@@ -3747,6 +3853,12 @@ def main():
         print(f"{key}: {globals()[key]} -> {new}")
         globals()[key] = new
 
+    try:
+        box = None if args.no_log else DriveLog({"drive": args.drive, "speed": args.speed, "start": args.start, "record": args.record, "set": args.set})
+    except OSError as e:       # A full or read-only card: drive anyway.
+        box = None
+        print(f"[warning] drive log not kept: {e}")
+
     # Started in the background with &, SIGINT is ignored, so register it again. Ctrl+C and kill -INT can then stop the process.
     signal.signal(signal.SIGINT, stop_on_signal)
     signal.signal(signal.SIGTERM, stop_on_signal)
@@ -3759,6 +3871,11 @@ def main():
     except Exception as e:      # Driving still works if the sensor or module is missing.
         print(f"[warning] obstacle sensor not used: {e}")
         obs = None
+        # go_dis() drives until the sensor sees the barrier: with no sensor it would drive straight into it.
+        blind_steps = [i + 1 for i, st in enumerate(COURSE) if st.get("until") == "obstacle" and st["do"] != "wait" and i + 1 >= args.start]
+        if blind_steps and args.drive:
+            car.close()
+            raise SystemExit(f"step {blind_steps[0]} (go_dis) needs the distance sensor, which is not working ({e}). Not driving.")
     if AUTO_TRIM:
         car.load_bias()     # Continue with the center trim learned on a previous run.
     cam = open_camera()
@@ -3832,6 +3949,8 @@ def main():
 
             if rec:
                 rec.write(frame, now - t_start, det, junction, steering.angle, speed, course, now, cmd)
+            if box:
+                box.write(now - t_start, driver, cmd, now)
             frames += 1
             if show:
                 try:
@@ -3871,7 +3990,8 @@ def main():
                          ("camera", cam.stop),
                          ("obstacle", lambda: obs.close() if obs else None),
                          ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
-                                                         print(f"Recording saved: {rec.dir} ({rec.n} frames)")))):
+                                                         print(f"Recording saved: {rec.dir} ({rec.n} frames)"))),
+                         ("drive log", lambda: box and (print(f"Drive log: {box.dir} ({box.n} frames)"), box.close(driver)))):
             try:
                 fn()
             except Exception as e:

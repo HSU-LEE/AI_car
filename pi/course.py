@@ -291,6 +291,15 @@ def go(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None
     return dict(step, cm_default=True) if cm is None and at is None else step
 
 
+def go_dis(speed=None, steer=None, sec=None, min_speed=None, shift=None, blind_sec=0.0):
+    # 차선을 따라가다 앞 거리센서에 차단바(물체)가 잡히면 끝. 이미 잡혀 있으면 바로 끝
+    # sec=5: 못 만나도 5초가 지나면 끝 (없으면 안전시간 20초).  blind_sec=0.5: 출발 후 0.5초 동안은 센서를 안 봄
+    # 바로 뒤에 start_gate()를 쓰면 차단바가 올라갈 때까지 서서 기다렸다 출발. speed, steer, min_speed, shift는 go()와 같음
+    if sec is not None and _bad_num(sec, 0, 600):
+        raise ValueError(f"go_dis(): sec must be 0 to 600 ({sec})")
+    return _auto(follow(until="obstacle", blind_sec=blind_sec, shift=shift, speed=speed, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
+
+
 def to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_speed=None, shift=None, nth=1, gap=None, blind_sec=0.0):
     # sec=3: 횡단보도에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽). steer=15: 최대 조향각
     if sec is not None and _bad_num(sec, 0, 600):
@@ -565,7 +574,7 @@ def _with_common(fn):
 
 
 for _name in ("follow", "straight", "push", "right", "left", "turn", "curve", "back", "stop", "wait", "wait_green", "start_gate",
-              "to_junction", "go", "to_crosswalk", "pass_crosswalk", "_to_crosswalk", "_pass_crosswalk", "go_to", "to_gap", "to_end",
+              "to_junction", "go", "go_dis", "to_crosswalk", "pass_crosswalk", "_to_crosswalk", "_pass_crosswalk", "go_to", "to_gap", "to_end",
               "cross_gap", "traffic", "cross", "corner", "uturn", "tr", "tl"):
     globals()[_name] = _with_common(globals()[_name])
 
@@ -618,6 +627,9 @@ def describe(step):
 #                           go(sec=3) / to_junction(sec=3): 교차로에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽)
 #                           go(cm=25): 화면의 LANE END 거리가 25cm가 되면 끝 (차로 선이 교차로에서 끝나는 곳까지 거리)
 #                                            거리는 차 앞쪽 기준. 4.5보다 작게 주면 선이 화면에서 안 보여 4.5에서 끝냄. 화면 값과 줄자 값이 다르면 lane_follow.py LANEEND_OFFSET_CM
+# go_dis()                  차선을 따라가다 앞 거리센서에 차단바(물체)가 잡히면 끝. go_dis(sec=5): 못 만나도 5초 뒤 끝
+#                           바로 뒤에 start_gate()를 쓰면 차단바가 올라갈 때까지 서서 기다렸다 출발. 예: go_dis(), start_gate(1)
+#                           거리센서가 없으면 주행을 시작하지 않음 (차단바를 못 보고 들이받지 않게)
 # to_crosswalk(at, nth)     횡단보도 앞까지 가서 끝
 # to_gap(at, nth)          차선이 끊기는 곳 앞까지 가서 끝
 # to_end(at)                바로 앞 끝에서 끝: 교차로선(가로선)이든 차선 끊김이든 먼저 오는 쪽 (기본 속도 0.3, sec=는 max_sec=와 같음)

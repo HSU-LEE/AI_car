@@ -103,7 +103,11 @@ menu_camera() {
         '3|녹화 목록|$A runs' \
         '4|최근 녹화 맥으로 받기|$A fetch latest' \
         '5|최근 녹화 재분석 (영상 만들기)|$A replay latest' \
-        '6|오래된 녹화 정리|k=$(ask "최근 몇 개를 남길까요 (엔터 = 5): "); $A clean-runs $k'
+        '6|오래된 녹화 정리|k=$(ask "최근 몇 개를 남길까요 (엔터 = 5): "); $A clean-runs $k' \
+        '-' \
+        '7|주행 기록 목록 (영상 없이 매 주행마다 자동 저장, 최근 30개)|$A logs' \
+        '8|최근 주행 기록 받아서 보기 (동작별 시작·끝, 경고, 오류)|$A fetch-log latest' \
+        '9|주행 기록 자동 저장 켜기/끄기|$A drive-log; y=$(ask "바꾸려면 y (그대로: 엔터): "); [ "$y" = y ] && $A drive-log toggle'
 }
 
 menu_settings() {

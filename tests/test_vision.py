@@ -2469,7 +2469,7 @@ def test_random_courses():
         lambda: cs.to_crosswalk(at=r(0.5, 0.67, 0.85), nth=r(1, 2), sec=r(None, 3)), lambda: cs.pass_crosswalk(),
         lambda: cs._to_crosswalk(r(0.6, 0.85), nth=r(1, 2), gap=r(None, 1.5)),
         lambda: cs.go_to(r("A", "B", "A|B", "c"), offset=r(0, 3, -3), nth=r(1, 2), cm=r(None, 12), slow=r(None, 0.3)),
-        lambda: cs.to_gap(), lambda: cs.to_end(), lambda: cs.cross_gap(),
+        lambda: cs.to_gap(), lambda: cs.to_end(), lambda: cs.cross_gap(), lambda: cs.go_dis(sec=r(None, 2), blind_sec=r(0, 0.5)),
         lambda: cs.follow(r(0.2, 1, 2.5)), lambda: cs.follow(until=r("junction", "end", "aligned", "lost"), max_sec=r(None, 2)),
         lambda: cs.back(r(0.5, 1.5)), lambda: cs.straight(r(0.3, 1)), lambda: cs.push(r(0.5, 1)),
         lambda: cs.right(), lambda: cs.left(), lambda: cs.tr(), lambda: cs.tl(), lambda: cs.tr(align=False), lambda: cs.tl(speed=r(0.3, 0.7)),
@@ -2573,6 +2573,126 @@ def test_same_on_every_platform():
             if "interpolation=" not in src[m.end():i]:
                 loose.append(f"{path.name}:{src.count(chr(10), 0, m.start()) + 1}")
     check("every cv2.resize names its interpolation (the default rounds differently on OpenCV 4.x and 5.x)", not loose, ", ".join(loose))
+
+
+def test_go_dis():
+    print("[go_dis: drive until the distance sensor sees the barrier]")
+    import course as cs
+
+    def run(c, frames, t, obstacle, det=(0.0, 0.0)):
+        for _ in range(frames):
+            c.update(False, t, det, False, {}, None, None, obstacle)
+            t += 0.05
+        return t
+
+    st = cs._flat([cs.go_dis()])[0]
+    check("go_dis(): follows the lane until the sensor sees something, at the course speed",
+          st["do"] == "follow" and st["until"] == "obstacle" and st["speed"] == cs.SPEED and st["max"] is None and not st["blind"])
+    with quiet():
+        c = lf.CourseRunner([cs.go_dis(), cs.start_gate(0.5), finish()])
+        t = run(c, 40, 0.0, False)
+        driving = (c.idx, c.stopped(t))
+        t = run(c, 1, t, True)
+        one = c.idx                     # One reading is not enough (a flicker).
+        t = run(c, lf.JUNCTION_FRAMES, t, True)
+        at_bar = (c.idx, c.stopped(t))
+        t = run(c, 30, t, True)
+        still = c.idx                   # The barrier stays down: the car stands.
+        t = run(c, 5, t, False)
+        lifting = c.idx                 # Up for less than hold_sec: still standing.
+        t = run(c, 12, t, False)
+    check("go_dis(): keeps driving with nothing in front, and one flicker does not end it", driving == (0, False) and one == 0)
+    check("go_dis() then start_gate(): stops at the barrier, waits while it is down, goes once it has been up for hold_sec",
+          at_bar == (1, True) and still == 1 and lifting == 1 and c.idx == 2, f"{at_bar} {still} {lifting} -> {c.idx}")
+    with quiet():
+        c = lf.CourseRunner([cs.go_dis(), finish()])
+        t = run(c, lf.JUNCTION_FRAMES + 1, 0.0, True)
+    check("go_dis(): a barrier already in front ends it at once", c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([cs.go_dis(sec=1), finish()])
+        t = run(c, 19, 0.0, False)
+        before = c.idx
+        t = run(c, 3, t, False)
+    check("go_dis(sec=1): ends after 1 s without a barrier", before == 0 and c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([cs.go_dis(blind_sec=0.5), finish()])
+        t = run(c, 8, 0.0, True)        # Something in front during the first 0.5 s is not looked at...
+        early = c.idx
+        t = run(c, 6, t, False)
+        t = run(c, lf.JUNCTION_FRAMES + 1, t, True)     # ...and counts once it has gone and come back.
+    check("go_dis(blind_sec=0.5): the sensor is not read for the first 0.5 s", early == 0 and c.idx == 1)
+    with quiet():
+        c = lf.CourseRunner([cs.go_dis(), finish()])
+        t = run(c, 30, 0.0, None)       # No sensor: nothing is ever seen.
+    check("go_dis(): with no sensor it never ends by itself (so a drive without the sensor is refused at start)", c.idx == 0)
+    src = (Path(lf.__file__)).read_text()
+    check("drive start: refuses a course with go_dis() when the sensor is not working", "needs the distance sensor" in src and 'st.get("until") == "obstacle"' in src)
+    try:
+        cs.go_dis(sec=-1)
+        refused = False
+    except ValueError:
+        refused = True
+    check("go_dis(sec=-1) is refused", refused)
+    with quiet():       # Through the whole driver: the motor runs until the barrier, then stands.
+        class Sensor:
+            near = False
+        d = lf.Driver(cs._flat([cs.go_dis(speed=0.5), cs.start_gate(0.3), finish()]), obstacle=Sensor)
+        cmds = [d.tick(lane_frame(), i / 30)[1] for i in range(20)]
+        Sensor.near = True
+        stop_cmds = [d.tick(lane_frame(), (20 + i) / 30)[1] for i in range(12)]
+        Sensor.near = False
+        go_cmds = [d.tick(lane_frame(), (32 + i) / 30)[1] for i in range(15)]
+    check("driver: motor on until the barrier, off while it is down, done once it is up",
+          min(cmds) > 0 and stop_cmds[-1] == 0 and stop_cmds[lf.JUNCTION_FRAMES] == 0 and d.done, f"{cmds[-1]} {stop_cmds[-1]} done {d.done}")
+
+
+def test_drive_log():
+    print("[drive log: every drive leaves a record]")
+    import course as cs
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        for name in ("20260101-000001", "20260101-000002", "20260101-000003", "20260101-000004"):
+            (root / name).mkdir()
+            (root / name / "out.log").write_text("old")
+        (root / "notes").mkdir()        # Not a drive log: left alone.
+        real_out, real_err = sys.stdout, sys.stderr
+        box = lf.DriveLog({"drive": True, "speed": 0.3}, root=root, keep=3)
+        teed = sys.stdout is not real_out and sys.stderr is not real_err
+        try:
+            with quiet():
+                d = lf.Driver(cs._flat([cs.go_dis(speed=0.5, sec=0.3), stop(0.1), finish()]))
+            with contextlib.redirect_stdout(io.StringIO()) as shown:
+                pass
+            print("\n[1/3] hello from the drive")
+            for i in range(25):
+                steer, cmd, _ = d.tick(lane_frame(), i / 30)
+                box.write(i / 30, d, cmd, i / 30)
+                if d.done:
+                    break
+            sys.stderr.write("a traceback would go here\n")
+        finally:
+            box.close(d)
+        kept = sorted(x.name for x in root.iterdir())
+        rows = (box.dir / "log.csv").read_text().splitlines()
+        out = (box.dir / "out.log").read_text()
+        check("drive log: the terminal output is restored afterwards, and was copied while driving", teed and sys.stdout is real_out and sys.stderr is real_err)
+        check("drive log: what the drive printed is kept, errors too", "hello from the drive" in out and "a traceback would go here" in out and "done]" in out, out[-200:].replace("\n", " | "))
+        check("drive log: one row per frame with the decision", rows[0] + "\n" == lf.DriveLog.HEADER and len(rows) == box.n + 1 and box.n >= 10
+              and all(len(r.split(",")) == len(rows[0].split(",")) for r in rows) and rows[1].split(",")[8] == "FOLLOW", f"{len(rows)} rows: {rows[1]}")
+        check("drive log: the course and the options are kept with it", (box.dir / "course.py").exists() and json.loads((box.dir / "run.json").read_text())["speed"] == 0.3)
+        check("drive log: only the last ones are kept, other folders are left alone",
+              kept == ["20260101-000003", "20260101-000004", box.dir.name, "notes"], str(kept))
+        broken = lf.DriveLog(root=root, keep=3)
+        broken.rows.close()
+        try:
+            broken.write(0.0, d, 0.5, 0.0)      # The file is gone: nothing may reach the drive loop.
+            print("still printing")
+            survived = True
+        except Exception:
+            survived = False
+        finally:
+            broken.close()
+        check("drive log: a fault in the log never stops the drive", survived)
 
 
 def test_key_inbox():
@@ -3337,7 +3457,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

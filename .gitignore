@@ -11,6 +11,8 @@ os-image/*.img.xz
 runs/
 snapshots/
 pi/runs/
+pi/logs/
+logs/
 
 # Calibration kept only on the Pi (aicar push does not overwrite it)
 pi/calib.json

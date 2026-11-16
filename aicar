@@ -17,7 +17,7 @@ mkdir -p "$STATE" "$RUNS" "$SNAPS"
 SSH_OPTS=(-o ConnectTimeout=4 -o ControlMaster=auto -o "ControlPath=$STATE/cm-%r@%h" -o ControlPersist=120
           -o ServerAliveInterval=2 -o ServerAliveCountMax=3)   # Notice a dropped link within 6 seconds.
 # Upload code only. Leave Pi-local config (json), recordings, the venv, and models alone.
-SYNC_EXCLUDES=(--exclude venv/ --exclude runs/ --exclude models/ --exclude __pycache__/ --exclude '*.json' --exclude person_photos/ --exclude '*.bak' --exclude '*.csv'
+SYNC_EXCLUDES=(--exclude venv/ --exclude runs/ --exclude models/ --exclude __pycache__/ --exclude '*.json' --exclude person_photos/ --exclude '*.bak' --exclude '*.csv' --exclude logs/
                --exclude '.lgd-*' --exclude '*.jpg' --exclude '*.mp4' --exclude drive.log --exclude drive.pid)
 
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -163,6 +163,41 @@ cmd_runs() {
     run "cd ~/$REMOTE/runs 2>/dev/null && for d in \$(ls -1); do
            printf '  %s  %5s frames  %s\n' \$d \$(ls \$d | grep -c jpg\$) \$(du -sh \$d | cut -f1); done"
     echo "Recordings on the Mac: $(ls -1 "$RUNS" | wc -l | tr -d ' ') ($RUNS)"
+}
+
+LOGS="$ROOT/logs"               # Drive logs copied to the Mac.
+
+cmd_logs() {
+    run "cd ~/$REMOTE/logs 2>/dev/null && for d in \$(ls -1); do
+           printf '  %s  %6s frames  %s\n' \$d \$(( \$(wc -l < \$d/log.csv) - 1 )) \"\$(grep -a -c 'done\]' \$d/out.log) actions ended\"; done" ||
+        echo "  no drive logs yet (every drive makes one from now on)"
+}
+
+drive_log_on() { [ "$(cat "$STATE/drive_log" 2>/dev/null)" != off ]; }
+
+cmd_drive_log() {
+    # Whether every drive keeps a log (logs/ on the Pi). Remembered on this Mac. on | off | toggle, or nothing to show it.
+    case "${1:-}" in
+        on)     echo on > "$STATE/drive_log" ;;
+        off)    echo off > "$STATE/drive_log" ;;
+        toggle) if drive_log_on; then echo off > "$STATE/drive_log"; else echo on > "$STATE/drive_log"; fi ;;
+        "")     ;;
+        *)      die "Usage: aicar drive-log [on|off|toggle]" ;;
+    esac
+    if drive_log_on; then green "Drive log: ON (every drive keeps a log on the Pi, see aicar logs)"
+    else echo "Drive log: OFF (drives keep no log)"; fi
+}
+
+cmd_fetch_log() {
+    # Bring one drive log to the Mac and show what happened: each action's start and end, measurements, warnings, errors.
+    local name="${1:-latest}"
+    host
+    [ "$name" = latest ] && name=$(run "ls -1 ~/$REMOTE/logs 2>/dev/null | tail -1")
+    [ -n "$name" ] || die "No drive logs yet"
+    mkdir -p "$LOGS"
+    rsync -a -e "ssh ${SSH_OPTS[*]}" "pi@$HOST:$REMOTE/logs/$name" "$LOGS/" || die "Download failed: $name"
+    green "Fetched: $LOGS/$name"
+    tr '\r' '\n' < "$LOGS/$name/out.log" | grep -a -E '^\[|done\]|warning|error|Error|Traceback|Stopped|Course done|Motor' | grep -a -v '^$' | tail -n 60
 }
 
 cmd_fetch() {
@@ -319,6 +354,7 @@ autonomous() {
     local args=()
     if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9.]+$ ]]; then args+=(--speed "$1"); shift; fi
     args+=("$@")
+    drive_log_on || args+=(--no-log)
     run "$DRIVING" && die "A drive is already running. View: aicar log   Stop: aicar stop"
     cmd_push || exit 1
     # Run in the background on the Pi so driving continues if the Mac disconnects. Output is ~/aicar/drive.log.
@@ -450,6 +486,9 @@ AICAR commands  (in a Mac terminal: aicar <command>)
   camera                 raw camera + detection view side by side (motor and servo do not move, Ctrl+C quits)
   snap                   take a photo, bring it to the Mac and open it
   runs                   recordings on the Pi
+  logs                   drive logs on the Pi: every drive keeps one (no pictures), the last 30
+  fetch-log [name|latest]   bring a drive log to the Mac and show what each action did and how it ended
+  drive-log [on|off|toggle] keep a log of every drive or not (on by default). With nothing: show which
   fetch [name|latest]    fetch a recording into the Mac runs/ folder
   replay [name|latest] [--set K=V]   re-analyse a recording on the Mac and open the video
   clean-runs [N]         delete Pi recordings except the last N (5 by default)
@@ -513,6 +552,9 @@ case "$cmd" in
     snap)        cmd_snap ;;
     runs)        cmd_runs ;;
     fetch)       cmd_fetch "$@" ;;
+    logs)        cmd_logs ;;
+    fetch-log)   cmd_fetch_log "$@" ;;
+    drive-log)   cmd_drive_log "$@" ;;
     replay)      cmd_replay "$@" ;;
     clean-runs)  cmd_clean_runs "$@" ;;
 
