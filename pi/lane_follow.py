@@ -2584,7 +2584,8 @@ function save() {
   }, "image/png");
 }
 // --- Painting the commands (overlay.py Canvas.payload). Coordinates are camera pixels, as the Pi drew them. ---
-const tint = document.createElement("canvas"), tctx = tint.getContext("2d", {willReadFrequently: true});
+const tint = document.createElement("canvas"), tctx = tint.getContext("2d");
+let tintData = null;
 const FONT = "Arial, Helvetica, sans-serif";
 function rgb(c) { return [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)]; }
 function seg(x0, y0, x1, y1, c, t) {
@@ -2628,7 +2629,9 @@ function paint(ops, blobs) {
         const [, top, k, c, a, w, h] = o, bits = blobs[k];
         if (!bits) break;     // A browser without DecompressionStream shows the view without the line tint.
         if (tint.width !== w || tint.height !== h) { tint.width = w; tint.height = h; }
-        const im = tctx.createImageData(w, h), d = im.data, [r, g, b] = rgb(c), row = (w + 7) >> 3;
+        if (!tintData || tintData.width !== w || tintData.height !== h) tintData = tctx.createImageData(w, h);
+        else tintData.data.fill(0);       // Reused every frame instead of a new half-megabyte buffer.
+        const im = tintData, d = im.data, [r, g, b] = rgb(c), row = (w + 7) >> 3;
         for (let y = 0, i = 0; y < h; y++) {
           const base = y * row;
           for (let x = 0; x < w; x++, i += 4) {
@@ -3783,7 +3786,7 @@ def main():
     fps = None
     prev_now = t_start
     watchdog = None
-    errors = 0
+    errors = view_errors = 0
     try:
         watchdog = MotorWatchdog(car, WATCHDOG_SEC)
         while True:
@@ -3810,7 +3813,7 @@ def main():
             if driver.edge:
                 print("\r[mat edge] stopped    ", end="", flush=True)
             watchdog.drive(cmd if args.drive else 0)
-            course, detect, steering, traffic = driver.course, driver.detect, driver.steering, driver.traffic
+            course, detect, steering = driver.course, driver.detect, driver.steering
             det, junction, light, speed = driver.det, driver.junction, driver.light, driver.speed
 
             # Auto center trim: if straight driving keeps steering to one side, the servo center is off.
@@ -3824,7 +3827,12 @@ def main():
                 rec.write(frame, now - t_start, det, junction, steering.angle, speed, course, now, cmd)
             frames += 1
             if show:
-                stream.update(driver.view(dbg, now, fps))
+                try:
+                    stream.update(driver.view(dbg, now, fps))
+                except Exception as e:      # The view is for the page only: a fault in it must never stop the drive.
+                    view_errors += 1
+                    if view_errors == 1 or view_errors % 100 == 0:
+                        print(f"\n[view error {view_errors}] {type(e).__name__}: {e} (driving goes on)")
             if stream:
                 if "\n" in stream.keys.take():      # Enter is read only for next(). Ctrl+C on the page stops the car, like in the terminal.
                     course.press_enter()

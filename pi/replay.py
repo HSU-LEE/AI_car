@@ -79,7 +79,7 @@ def main():
 
     # Same decisions as a real run, including course options and the LEGO figure saved with the recording.
     driver = lf.Driver(course_list, base_speed=saved.get("base_speed") or lf.BASE_SPEED, person=lf.load_person(run / lf.PERSON_FILE.name))
-    detect, steering, traffic, course = driver.detect, driver.steering, driver.traffic, driver.course
+    detect, steering, course = driver.detect, driver.steering, driver.course
     out = Path(args.out) if args.out else run / "replay.mp4"
     writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*"mp4v"), 20,
                              (lf.FRAME_W + lf.Driver.PANEL_W, lf.FRAME_H))     # Same right-hand info panel as a live run.
