@@ -367,6 +367,14 @@ def test_motor():
         cmds = [d.tick(lane_frame(), i / 30)[1] for i in range(40)]
     check("a very slow command (0.1) is raised to the minimum", min(c for c in cmds if c > 0) >= lf.MOTOR_MIN - 1e-9,
           f"min {min(c for c in cmds if c > 0):.2f}")
+    with quiet():   # Full steer at a set speed near full power: the hard-steer boost must not ask for more than the motor has.
+        import course as cs_
+        d = lf.Driver([cs_.right(speed=0.95, max_sec=99), finish()])
+        cmds = [d.tick(lane_frame(), i / 30)[1] for i in range(40)]
+        d2 = lf.Driver([cs_.right(speed=0.5, max_sec=99), finish()])
+        mid = [d2.tick(lane_frame(), i / 30)[1] for i in range(40)]
+    check("hard-steer boost: never above full power, unchanged below it", max(cmds) <= 1.0 + 1e-9 and max(cmds) > 0.95
+          and abs(max(mid) - (0.5 + lf.HARD_STEER_BOOST)) < 1e-9, f"max {max(cmds):.2f}, mid {max(mid):.2f}")
 
     # Motor guard: a separate process that writes duty 0 when the driving program dies or freezes (hardware PWM keeps its duty otherwise).
     import subprocess
@@ -561,6 +569,22 @@ def test_blind_and_bundles():
         t = pass_under(c, t, 0.7)
         t = feed(c, 10, t)
     check("go() after another action drove on: a near junction passing under during blind counts", mid == 2 and c.idx == 3, f"{mid} -> step {c.idx + 1}")
+
+    with quiet():   # gap=: standing for the LEGO figure does not use up the wait after a passed line.
+        c = lf.CourseRunner([cs.to_junction(nth=2, gap=1.0, blind_sec=0), finish()])
+        t = feed_junc(c, 3, 0.0, False)
+        t = feed_junc(c, 6, t, True)            # First line passed: the next is not looked at for 1 s.
+        wait_end = c.gap_end
+        for _ in range(60):                     # 3 s standing still (Driver.stand_for_person).
+            c.shift_clock(0.05); t += 0.05
+        left = c.gap_end - t
+        t = feed_junc(c, 2, t, False)
+        t = feed_junc(c, 6, t, True)            # Still inside the wait: this line must not end the action.
+        inside = c.idx
+        t = feed_junc(c, 20, t, False)          # The wait runs out while driving on.
+        t = feed_junc(c, 6, t, True)
+    check("gap=: the wait does not run out while standing for the figure", wait_end is not None and abs(left - (wait_end - 0.45)) < 0.2
+          and inside == 0 and c.idx == 1, f"left {left:.2f}s, step {inside + 1} -> {c.idx + 1}")
 
     with quiet():   # nth=2: the first line (a bend) is passed, the second ends the action.
         c = lf.CourseRunner([cs.to_junction(nth=2, blind_sec=0), finish()])
@@ -2432,6 +2456,125 @@ def test_web_view():
     check("drive view: payload is small", size < 60_000, f"{size} bytes, {(time.perf_counter() - t0) / 5 * 1e3:.1f} ms")
 
 
+def test_random_courses():
+    print("[random courses: no command or option combination may raise or give an impossible output]")
+    import random
+    import course as cs
+    rng = random.Random(7)
+    r = lambda *c: rng.choice(c)
+    makers = [
+        lambda: cs.go(), lambda: cs.go(cm=r(5, 12, 25, 40), nth=r(1, 2, 3), gap=r(None, 1.5), steer=r(None, 8), slow=r(None, 0.3), blind_sec=r(0, 0.5, 1.5), sec=r(None, 3)),
+        lambda: cs.go(at=r(0.5, 0.7), slow=r(None, 0.35), min_speed=r(None, 0.3), shift=r(None, 3, -3)),
+        lambda: cs.to_junction(nth=r(1, 2), cm=r(None, 20), gap=r(None, 0.5)),
+        lambda: cs.to_crosswalk(at=r(0.5, 0.67, 0.85), nth=r(1, 2), sec=r(None, 3)), lambda: cs.pass_crosswalk(),
+        lambda: cs._to_crosswalk(r(0.6, 0.85), nth=r(1, 2), gap=r(None, 1.5)),
+        lambda: cs.go_to(r("A", "B", "A|B", "c"), offset=r(0, 3, -3), nth=r(1, 2), cm=r(None, 12), slow=r(None, 0.3)),
+        lambda: cs.to_gap(), lambda: cs.to_end(), lambda: cs.cross_gap(),
+        lambda: cs.follow(r(0.2, 1, 2.5)), lambda: cs.follow(until=r("junction", "end", "aligned", "lost"), max_sec=r(None, 2)),
+        lambda: cs.back(r(0.5, 1.5)), lambda: cs.straight(r(0.3, 1)), lambda: cs.push(r(0.5, 1)),
+        lambda: cs.right(), lambda: cs.left(), lambda: cs.tr(), lambda: cs.tl(), lambda: cs.tr(align=False), lambda: cs.tl(speed=r(0.3, 0.7)),
+        lambda: cs.turn(r("left", "right")), lambda: cs.curve(r(-15, 15), r(0.5, 1)),
+        lambda: cs.stop(r(0.2, 1)), lambda: cs.wait_green(), lambda: cs.wait(r(0.3, 1)), lambda: cs.start_gate(r(0.2, 2)),
+        lambda: cs.traffic(), lambda: cs.cross(), lambda: cs.corner(r("left", "right")), lambda: cs.uturn(r("left", "right")),
+        lambda: cs.set_speed(r(0.3, 0.75, 0.95, 1.0)), lambda: cs.set_steer(r(8, 15, None)), lambda: cs.set_style(r("soft", "normal", "sharp"))]
+
+    def frame():
+        k = rng.random()
+        if k < 0.4:
+            return lane_frame(y_end=r(0, 0, 120, 200), left=rng.random() < 0.85, right=rng.random() < 0.85, shift=r(0.0, 0.2, -0.3), crosswalk=rng.random() < 0.15)
+        if k < 0.5:
+            return np.full((H, W, 3), r(0, 255), np.uint8)
+        if k < 0.6:
+            return np.random.default_rng(rng.randrange(1 << 30)).integers(0, 255, (H, W, 3), np.uint8)
+        f = np.full((H, W, 3), 30, np.uint8)
+        for _ in range(rng.randrange(1, 6)):
+            cv2.line(f, (rng.randrange(W), rng.randrange(H)), (rng.randrange(W), rng.randrange(H)), (235, 235, 235), r(6, 14, 30))
+        if rng.random() < 0.3:
+            cv2.circle(f, (rng.randrange(W), rng.randrange(120)), 9, r((0, 0, 255), (0, 255, 0), (0, 200, 255)), -1)
+        return f
+
+    problems, courses, frames = [], 0, 0
+    for _ in range(30):
+        steps = []
+        for _ in range(rng.randrange(2, 8)):
+            try:
+                steps.append(rng.choice(makers)())
+            except ValueError:      # An option combination the command refuses with a clear message is fine.
+                pass
+            except Exception as e:
+                problems.append(f"build {type(e).__name__}: {e}")
+        try:
+            flat = cs._flat(steps + [finish()])
+            for s in flat:
+                cs.describe(s)
+            with quiet():
+                d = lf.Driver(flat, base_speed=r(0.3, 0.6))
+        except Exception as e:
+            problems.append(f"course {type(e).__name__}: {e}")
+            continue
+        courses += 1
+        t = 0.0
+        for _ in range(rng.randrange(40, 120)):
+            t += r(0.0, 0.2, 1.5) if rng.random() < 0.08 else 0.04     # Odd clocks too: a repeated time, a stall.
+            try:
+                with quiet():
+                    if rng.random() < 0.05:
+                        d.course.press_enter()
+                    show = rng.random() < 0.4
+                    steer, cmd, dbg = d.tick(frame(), t, show)
+                    if show and dbg is not None:
+                        view = d.view(dbg, t, 25.0)
+                        if rng.random() < 0.15:
+                            view.payload()
+                frames += 1
+                if not (cmd == cmd and -1.0 <= cmd <= 1.0):
+                    problems.append(f"motor command {cmd}")
+                if steer is not None and not (steer == steer and abs(steer) <= lf.STEER_LIMIT + 1e-6):
+                    problems.append(f"steer {steer}")
+            except Exception as e:
+                st = d.course.step()
+                problems.append(f"tick {type(e).__name__}: {e} at {st and st['do']} until {st and st['until']}")
+                break
+            if d.done:
+                break
+    check("random courses and frames: nothing raises, motor within -1..1, steering within its limit", not problems and courses >= 25,
+          f"{courses} courses, {frames} frames" + (f", first problem: {problems[0]}" if problems else ""))
+
+
+def test_same_on_every_platform():
+    print("[same pixels on the Mac and the Pi (OpenCV 5.x and 4.x)]")
+    import re
+
+    def up2(a):
+        """2x bilinear in whole numbers: pixel centers aligned, weights 3/4 and 1/4, rounded to nearest. No library rounding involved."""
+        def one(a, axis):
+            a = np.moveaxis(a.astype(np.int64), axis, 0)
+            before, after = np.concatenate([a[:1], a[:-1]]), np.concatenate([a[1:], a[-1:]])
+            out = np.empty((2 * a.shape[0],) + a.shape[1:], np.int64)
+            out[0::2], out[1::2] = before + 3 * a, 3 * a + after
+            return np.moveaxis(out, 0, axis)
+        return ((one(one(a, 0), 1) + 8) >> 4).astype(np.uint8)
+
+    rng = np.random.default_rng(5)
+    worst = 0
+    for _ in range(5):
+        a = rng.integers(0, 256, (108, 320), np.uint8)
+        got = cv2.resize(a, (640, 216), interpolation=cv2.INTER_LINEAR_EXACT)
+        worst = max(worst, int(np.abs(got.astype(int) - up2(a)).max()))
+    check("the line mask upscale (INTER_LINEAR_EXACT) is exact arithmetic, the same on every OpenCV version", worst == 0, f"max difference {worst}")
+    loose = []
+    for path in sorted((Path(__file__).resolve().parent.parent / "pi").glob("*.py")):
+        src = path.read_text()
+        for m in re.finditer(r"cv2\.resize\(", src):
+            depth, i = 1, m.end()
+            while depth and i < len(src):
+                depth += {"(": 1, ")": -1}.get(src[i], 0)
+                i += 1
+            if "interpolation=" not in src[m.end():i]:
+                loose.append(f"{path.name}:{src.count(chr(10), 0, m.start()) + 1}")
+    check("every cv2.resize names its interpolation (the default rounds differently on OpenCV 4.x and 5.x)", not loose, ", ".join(loose))
+
+
 def test_key_inbox():
     print("[web page key input]")
     script = lf.Stream.PAGE.split("<script>")[1].split("</script>")[0]
@@ -3194,7 +3337,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

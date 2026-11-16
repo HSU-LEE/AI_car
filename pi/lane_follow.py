@@ -932,7 +932,9 @@ class LaneDetector:
             gray = cv2.bitwise_not(gray)
         # Top-hat keeps only what is brighter than the nearby floor and thin, so thick reflections and bright floor drop out.
         half = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
-        top = cv2.resize(tophat_ellipse(half, TOPHAT_K), (gray.shape[1], gray.shape[0]))
+        # INTER_LINEAR_EXACT: the same pixels on every OpenCV version. Plain INTER_LINEAR rounds differently on 4.x (the Pi)
+        # and 5.x (the Mac), by one grey level, which made a replay on the Mac decide slightly differently from the drive.
+        top = cv2.resize(tophat_ellipse(half, TOPHAT_K), (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_LINEAR_EXACT)
         mat = self.mat_mask(gray) if USE_MAT_MASK else None
         if mat is None:     # No separate mat (or the mask is off): nothing is cut, and the mat runs to the ROI top.
             self.mat_top = int(FRAME_H * ROI_TOP)
@@ -1937,6 +1939,7 @@ class CourseRunner:
         self.paused = False     # Standing still for the LEGO figure. Driver fills it every frame.
         self.ruler = EndRuler()     # cm=: where the end line is.
         self.junc_used = False      # The last action ended on a junction line, so that line may still be in front of the car.
+        self.gap_end = None         # gap=: after passing one, the next is not looked at until this time (set again by begin()).
         self.blind_top_y = None     # blind_sec: highest point (farthest) of the junction line seen during this action's blind period.
         self.end_hits = 0           # cm=: frames in a row the lane's line end has been found (LANEEND_FRAMES).
         self.line_gap = None        # cm=: the line across minus the lane end, when both were seen this action (LANEEND_LINE_GAP).
@@ -2031,6 +2034,8 @@ class CourseRunner:
         self.since = {k: None if v is None else v + dt for k, v in self.since.items()}
         if self.run_start is not None:
             self.run_start += dt
+        if self.gap_end is not None:    # gap=: the wait after a passed line is for driving on, not for standing.
+            self.gap_end += dt
 
     def near_red(self, box):
         """Whether the green lamp is near where the red lamp was, on the same traffic light. Distance scales with lamp size."""
@@ -3593,7 +3598,9 @@ class Driver:
         if floor is not None and speed > 0:     # min_speed=: slowing for steering, slow=, or a lost lane stops here (never above the set speed).
             speed = max(speed, min(floor, set_base))
         if speed > 0 and self.lost_since is None and abs(steering.angle) > HARD_STEER:
-            speed += HARD_STEER_BOOST   # A large steer drags the wheels and slows the car, so add this back. Skipped while the lane is lost.
+            # A large steer drags the wheels and slows the car, so add this back. Skipped while the lane is lost.
+            # Never past full power: the motor cannot give more, and the retrace would count on speed that was not there.
+            speed = min(speed + HARD_STEER_BOOST, max(speed, 1.0))
         self.speed = speed
         if speed > 0 and self.last_t is not None:     # Remember forward driving for a later retrace.
             # The speed the motor really gets, so a retrace covers the distance really driven.
