@@ -2263,6 +2263,126 @@ def test_key_route():
     check("Stream: does not pass quietly when the port cannot be opened", refused)
 
 
+def test_web_view():
+    print("[web view: drawing commands painted by the browser]")
+    import json as js
+    import struct
+    import threading
+    import time
+    import overlay
+    rng = np.random.default_rng(3)
+    base = rng.integers(0, 255, (360, 640, 3), np.uint8)
+    on = rng.random((200, 640)) > 0.7
+
+    def scene(d):
+        d.line((5, 5), (600, 300), (10, 200, 30), 3, cv2.LINE_AA)
+        d.rectangle((50, 60), (200, 160), (0, 0, 255), -1)
+        d.rectangle((60, 70), (190, 150), (255, 0, 0), 2, cv2.LINE_AA)
+        d.circle((320, 180), 9, (0, 255, 255), -1, cv2.LINE_AA)
+        d.putText("LANE ENDS 12.3cm", (590, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+        d.arrowedLine((320, 354), (360, 290), (255, 255, 255), 3, cv2.LINE_AA, tipLength=0.3)
+        lf.dashed_hline(d, 250, lf.C_AT, thick=2)
+        lf.chip(d, "JUNCTION AHEAD", 600, 300, lf.C_JUNC, 0.38)
+        d.tint(160, on, lf.LANE_TINT, lf.C_LANE, 0.55)
+        d.shade((200, 8), (420, 44), (40, 40, 220), 0.8)
+
+    painted = base.copy()
+    scene(overlay.ImageDraw(painted))
+    c = lf.Canvas(base)
+    scene(c)
+    check("commands painted by OpenCV = drawing straight on the picture", np.array_equal(c.image(), painted))
+    check("the base picture is never drawn on", np.array_equal(c.base, base) and c.base is base)
+    old = base.copy()      # The old banner: copy, box, then addWeighted 0.8 / 0.2.
+    over = old.copy()
+    cv2.rectangle(over, (200, 8), (420, 44), (40, 40, 220), -1)
+    cv2.addWeighted(over, 0.8, old, 0.2, 0, old)
+    k = lf.Canvas(base)
+    k.shade((200, 8), (420, 44), (40, 40, 220), 0.8)
+    check("banner blend: exactly the old 0.8 / 0.2 weights", np.array_equal(k.image(), old))
+
+    right_base = np.full((360, 240, 3), 32, np.uint8)
+    left, right = base.copy(), right_base.copy()     # The old side-by-side view: each piece drawn on its own.
+    scene(overlay.ImageDraw(left))
+    cv2.putText(right, "SPEED", (12, 168), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
+    a, b = lf.Canvas(base), lf.Canvas((360, 240), fill=32)
+    scene(a)
+    b.putText("SPEED", (12, 168), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
+    both = lf.Canvas.hstack([a, b])
+    check("side by side: each piece stays inside its own area (text past the edge is cut, as before)",
+          np.array_equal(both.image(), np.hstack([left, right])) and both.shape == (360, 880, 3))
+    both.putText("#12", (10, 348), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+    whole = np.hstack([left, right])
+    cv2.putText(whole, "#12", (10, 348), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+    check("side by side: drawing on the joined view covers all of it", np.array_equal(both.image(), whole))
+
+    import zlib
+    data = both.payload()
+    n = struct.unpack(">I", data[4:8])[0]
+    head = js.loads(data[8:8 + n])
+    blobs, at = [], 8 + n
+    for size in head["blobs"]:
+        blobs.append(data[at:at + size])
+        at += size
+    m = next(o for _, _, ops in head["parts"] for o in ops if o[0] == "m")
+    bits = np.frombuffer(zlib.decompress(blobs[m[2]]), np.uint8).reshape(m[6], -1)
+    mask = np.unpackbits(bits, axis=1)[:, :m[5]].astype(bool)
+    kinds = [o[0] for _, _, ops in head["parts"] for o in ops]
+    plain_jpg = cv2.imencode(".jpg", base, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
+    check("payload: camera picture with no drawing, the plain panel as its color, commands, and the line mask",
+          data[:4] == b"AIC1" and head["pics"] == [[0, 640, 0], [640, 240, "#202020"]] and blobs[0] == plain_jpg
+          and np.array_equal(mask, on) and at == len(data) and set(kinds) == set("lrctadms")
+          and [p[:2] for p in head["parts"]] == [[0, 640], [640, 240], [0, 880]], f"{len(data)} bytes, {kinds}")
+    t = next(o for _, _, ops in head["parts"] for o in ops if o[0] == "t")
+    check("payload: text carries the size OpenCV gives it, so the page fits its font to it",
+          t[3] == "LANE ENDS 12.3cm" and (t[6], t[7]) == cv2.getTextSize("LANE ENDS 12.3cm", cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0])
+
+    twin = lf.Canvas.hstack([lf.Canvas(base), lf.Canvas(base)]).payload()
+    n2 = struct.unpack(">I", twin[4:8])[0]
+    h2 = js.loads(twin[8:8 + n2])
+    check("payload: the same picture on both sides is sent once", h2["pics"] == [[0, 640, 0], [640, 640, 0]] and len(h2["blobs"]) == 1)
+
+    s = lf.Stream(0, "T", key="k", serve=False)
+    web = s.app.test_client()
+    check("web: no view yet -> 204 after waiting", web.get("/frame.bin?after=-1").status_code == 204)
+    s.update(both)
+    r = web.get("/frame.bin?after=-1")
+    check("web: /frame.bin is the payload, with its number", r.status_code == 200 and r.data == data and r.headers["X-Seq"] == str(s.seq))
+    t0 = time.monotonic()
+    r2 = web.get(f"/frame.bin?after={s.seq}")
+    check("web: nothing newer -> 204 after about 1 s", r2.status_code == 204 and 0.8 < time.monotonic() - t0 < 2.0)
+    threading.Timer(0.2, lambda: s.update(lf.Canvas(base))).start()
+    t0 = time.monotonic()
+    r3 = web.get(f"/frame.bin?after={s.seq}")
+    check("web: a new view is sent as soon as it comes (no polling delay)", r3.status_code == 200 and time.monotonic() - t0 < 0.6,
+          f"{time.monotonic() - t0:.2f}s")
+    jpg = web.get("/frame.jpg?after=-1")
+    check("web: legacy /frame.jpg is the view painted on the Pi", jpg.status_code == 200
+          and cv2.imdecode(np.frombuffer(jpg.data, np.uint8), cv2.IMREAD_COLOR).shape == (360, 640, 3))
+    s.last_request = -1e9
+    ping = web.get("/ping")
+    check("web: /ping (paused page) answers but does not count as watching, so nothing is drawn",
+          ping.status_code == 204 and ping.headers.get("X-AICAR-Program") == s.program and not s.watching)
+    s.update(np.zeros((20, 30, 3), np.uint8))
+    plain = web.get("/frame.bin?after=-1").data
+    n = struct.unpack(">I", plain[4:8])[0]
+    check("web: a plain picture goes as a payload with no commands", js.loads(plain[8:8 + n])["parts"] == [[0, 30, []]]
+          and js.loads(plain[8:8 + n])["pics"] == [[0, 30, 0]])
+    html = web.get("/?key=k").get_data(as_text=True)
+    check("page: paints on a canvas and fetches the payload", '<canvas id="v"' in html and "/frame.bin" in html and "<img" not in html)
+
+    d = lf.Driver(COURSE, base_speed=0.3)
+    frame = lane_frame()
+    with quiet():
+        _, _, dbg = d.tick(frame, 0.0, show=True)
+        view = d.view(dbg, 0.0, 30)
+    check("drive view: commands over the untouched camera picture", isinstance(view, lf.Canvas) and dbg.base is frame
+          and view.shape == (lf.FRAME_H, lf.FRAME_W + lf.Driver.PANEL_W, 3))
+    t0 = time.perf_counter()
+    for _ in range(5):
+        size = len(view.payload())
+    check("drive view: payload is small", size < 60_000, f"{size} bytes, {(time.perf_counter() - t0) / 5 * 1e3:.1f} ms")
+
+
 def test_key_inbox():
     print("[web page key input]")
     script = lf.Stream.PAGE.split("<script>")[1].split("</script>")[0]
@@ -3023,7 +3143,7 @@ def test_no_slowdown():
 
 
 def main():
-    for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
+    for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
               test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown):
         t()

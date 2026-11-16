@@ -224,7 +224,7 @@ def main():
                 lf.LINE_MODEL = model if model.samples else None
             frame = cam.capture_array()
             if kind == "light":
-                view = frame.copy()
+                view = lf.Canvas(frame)     # Drawing commands: the browser paints them.
                 state = traffic(frame)
                 traffic.draw(view)
                 found = f"light {state or '-'}"
@@ -247,12 +247,12 @@ def main():
                             here = yc >= target - 1 and landmarks.StopModel.close_enough(hit)
                             left = max(lf.floor_cm(yc) - lf.floor_cm(target), 0.0)
                             tag = "STOP HERE" if here else f"{left:.1f}cm to go"
-                            cv2.rectangle(view, (hit["x"], hit["y"]), (hit["x"] + hit["w"], hit["y"] + hit["h"]), lf.C_AT, 2)
+                            view.rectangle((hit["x"], hit["y"]), (hit["x"] + hit["w"], hit["y"] + hit["h"]), lf.C_AT, 2)
                             lf.chip(view, f"{nm} {hit['score']:.2f} {tag}", hit["x"], max(hit["y"] - 22, 0), lf.C_AT, 0.4)
                             seen.append(f"{nm} {tag}")
                         lf.dashed_hline(view, int(target), lf.C_AT, dash=10, gap=6)
                     found = f"registering {name}  |  " + (", ".join(seen) if seen else "no point in view")
-            side = np.zeros_like(frame)
+            side = lf.Canvas(frame.shape[:2], fill=0)     # Black panel of text: commands only.
             if kind == "light":
                 lines = [f"{s['color']}  area {s['area']}  hue {s['h'][0]}..{s['h'][1]}" for s in model.samples]
             elif kind == "crosswalk":
@@ -264,9 +264,9 @@ def main():
                          f"{sum(1 for v in model.points[nm]['views'] if not v.get('whole'))} box views" for nm in model.names()]
                 lines += [f"(next: {name}  drag a mark or the road area)", "push the car by hand: the view", "shows how far to its stop"]
             for k, text in enumerate(lines[-10:]):
-                cv2.putText(side, text, (10, 30 + 26 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-            cv2.putText(view, f"{count()} registered  |  {found}", (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            stream.update(np.hstack([view, side]))
+                side.putText(text, (10, 30 + 26 * k), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+            view.putText(f"{count()} registered  |  {found}", (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+            stream.update(lf.Canvas.hstack([view, side]))
             print(f"\r  {count()} registered  |  {found}      ", end="", flush=True)
             if note:
                 print(f"\n  {note}")

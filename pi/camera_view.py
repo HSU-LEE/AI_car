@@ -10,7 +10,6 @@ import argparse
 import time
 
 import cv2
-import numpy as np
 
 import lane_follow as lf
 
@@ -39,8 +38,8 @@ def main():
             found = person(frame, lf.PERSON_X, (lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H)) * lf.FRAME_H) if person else None
             if person:
                 lf.draw_person(dbg, person, lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H))
-            raw = frame.copy()
-            cv2.putText(raw, f"CAMERA  {fps:4.1f} fps", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            raw = lf.Canvas(frame)      # Drawing commands: the browser paints them.
+            raw.putText(f"CAMERA  {fps:4.1f} fps", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             if det is None:
                 state = "LOST"
             else:
@@ -56,8 +55,8 @@ def main():
                 state += f"  LIGHT {light.upper()}"
             if found:
                 state += f"  PERSON {found['feet'] / lf.FRAME_H:.2f}"
-            cv2.putText(dbg, f"DETECT  {state}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
-            stream.update(np.hstack([raw, dbg]))
+            dbg.putText(f"DETECT  {state}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+            stream.update(lf.Canvas.hstack([raw, dbg]))
             stream.keys.take()      # Reads no keys. Ctrl+C on the page ends this, like in the terminal.
 
             frames += 1

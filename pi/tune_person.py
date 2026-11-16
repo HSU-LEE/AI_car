@@ -104,22 +104,22 @@ def main():
         while not done:
             frame = cam.capture_array()
             found = detector(frame, lf.PERSON_X, show_at(detector) * lf.FRAME_H if detector.views else None)
-            view = frame.copy()
+            view = lf.Canvas(frame)     # Drawing commands: the browser paints them.
             lf.draw_person(view, detector, show_at(detector))
             x0, y0, x1, y1 = guide_px(frame.shape, detector.box)
-            cv2.rectangle(view, (x0, y0), (x1, y1), lf.C_AT, 2)
+            view.rectangle((x0, y0), (x1, y1), lf.C_AT, 2)
             lf.chip(view, "FIGURE" if detector.marked else "STAND FIGURE IN HERE", x0, y0 - 22, lf.C_AT, 0.38)
             if detector.last_box:
                 x, y, w, h = detector.last_box
-                cv2.rectangle(view, (x, y), (x + w, y + h), lf.C_AT, 1)
+                view.rectangle((x, y), (x + w, y + h), lf.C_AT, 1)
                 lf.chip(view, f"VIEW {len(detector.views)}", x, y + h + 2, lf.C_AT, 0.35)
-            cv2.putText(view, f"{'AUTO  ' if auto else ''}views {len(detector.views)}  " + (
+            view.putText(f"{'AUTO  ' if auto else ''}views {len(detector.views)}  " + (
                 f"FOUND c{found['score']:.2f} s{found['shape']:.2f} feet {found['feet'] / lf.FRAME_H:.2f}" if found else "-"),
                 (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             mask = np.zeros_like(frame)
             if detector.fg is not None:
                 mask[cv2.resize(detector.fg, (lf.FRAME_W, lf.FRAME_H), interpolation=cv2.INTER_NEAREST) > 0] = (60, 220, 60)
-            stream.update(np.hstack([view, mask]))
+            stream.update(lf.Canvas.hstack([view, mask]))
             print(f"\r  views {len(detector.views)}  |  auto capture {'on' if auto else 'off'}  |  "
                   f"{'found' if found else 'not found'}      ", end="", flush=True)
             note = auto.update(frame, time.monotonic()) if auto else None

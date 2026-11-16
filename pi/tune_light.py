@@ -56,14 +56,15 @@ def main():
         while True:
             frame = cam.capture_array()
             state = traffic(frame)
-            view = frame.copy()
+            view = lf.Canvas(frame)     # Drawing commands: the browser paints them.
             traffic.draw(view)
             info = (f"S>={lf.LIGHT_S_MIN} V>={lf.LIGHT_V_MIN} area>={lf.LIGHT_AREA_MIN}  -> {state or '-'}  "
                     f"{lamp_hsv(frame)}")
-            cv2.putText(view, info, (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            cv2.putText(traffic.mask_vis, "[w/s sat  e/d bright  r/f size  Enter save]", (10, lf.FRAME_H - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            stream.update(np.hstack([view, traffic.mask_vis]))
+            view.putText(info, (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+            side = lf.Canvas(traffic.mask_vis)
+            side.putText("[w/s sat  e/d bright  r/f size  Enter save]", (10, lf.FRAME_H - 12),
+                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            stream.update(lf.Canvas.hstack([view, side]))
             print(f"\r{info}      ", end="", flush=True)
 
             for key in stream.read_keys():

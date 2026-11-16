@@ -240,8 +240,8 @@ def check_result(frames):
 def annotate(dbg, lines):
     y = 24
     for text in lines:
-        cv2.putText(dbg, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 4, cv2.LINE_AA)
-        cv2.putText(dbg, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        dbg.putText(text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (20, 20, 20), 4, cv2.LINE_AA)
+        dbg.putText(text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
         y += 22
     return dbg
 
@@ -348,7 +348,7 @@ def main():
                        f"horizon {saved.get('horizon_y', lf.HORIZON_Y)}  cam_x {saved.get('camera_x', lf.CAMERA_X)}",
                        f"exp {lock['ExposureTime']}us  gain {lock['AnalogueGain']}  "
                        f"lens {lf.LENS_POSITION}  reflect cut {lf.REFLECT_SHARP}"])
-        cv2.imwrite(str(VIEW_FILE), dbg)
+        cv2.imwrite(str(VIEW_FILE), dbg.image())     # Drawing commands painted by OpenCV (overlay.py).
     finally:
         cam.stop()
         cam.close()

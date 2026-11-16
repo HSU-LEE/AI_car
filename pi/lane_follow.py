@@ -43,6 +43,7 @@ from course import COURSE, RED_BACK_ON, PERSON_AT, PERSON_MAX_WAIT, PERSON_MIN_S
 import course as _course
 from person import AnyFigure, PERSON_FILE, PHOTO_DIR, PersonDetector, PersonWatch, figure_box
 import landmarks
+from overlay import Canvas, as_draw
 PERSON_IN_LANE = getattr(_course, "PERSON_IN_LANE", False)      # Same for this one.
 PERSON_LANE_MARGIN = 0.05   # PERSON_IN_LANE: a figure's center may be this far outside a lane line, as a share of the lane width, for one standing on the line.
 PERSON_ANY = getattr(_course, "PERSON_ANY", False)      # A course saved with an older run has no such line, and looked only for the registered figure.
@@ -142,7 +143,8 @@ RED_LOOK_SEC = 2.0      # wait_green: look for the red light this long, standing
 RED_BACK_SEC = 1.0      # wait_green: back up this long along the recent path. The light may be out of view because the car stopped too close.
 RED_BACK_TRIES = 2      # wait_green: back-ups allowed per action. After them it waits out max_sec, as before.
 STEP_MAX_SEC = 20       # If an until action sets no max_sec, warn and advance after this many seconds so a step cannot run forever.
-LIGHT_VIEW_EVERY = 3    # Not waiting for green: the traffic light is detected for the view only once every this many frames.
+LIGHT_VIEW_EVERY = 8    # Not waiting for green: the traffic light is detected for the view only once every this many frames (about 3 times a second).
+                        # Display only: driving reads the light every frame while waiting for green. It is the costliest part of a watched frame.
 PERSON_EVERY = 2        # The LEGO figure is looked for once every this many frames. Its stop position and delays are in course.py.
 FAR_TOP = 0.3           # slow= far detection also looks for a horizontal line between this frame height and FAR_BOT. [narrow FOV 0.2]
 FAR_BOT = 0.6           # A far line that is still thin can sit below ROI_TOP before the near (band) test can see it, so the far search reaches down to here.
@@ -450,37 +452,42 @@ C_DIM = (110, 110, 110)
 
 
 def chip(img, text, x, y, color, scale=0.42, dark=None):
-    """Small label: text on a colored background. (x, y) is the top left. Returns the right-edge x."""
+    """Small label: text on a colored background. (x, y) is the top left. Returns the right-edge x.
+
+    img: a Canvas (overlay.py, drawn later by the browser or render) or an ndarray (painted at once). Same for the other draw helpers.
+    """
+    d = as_draw(img)
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
-    x = int(min(max(x, 0), img.shape[1] - tw - 8))
-    y = int(min(max(y, 0), img.shape[0] - th - 8))
-    cv2.rectangle(img, (x, y), (x + tw + 8, y + th + 8), color, -1)
+    x = int(min(max(x, 0), d.shape[1] - tw - 8))
+    y = int(min(max(y, 0), d.shape[0] - th - 8))
+    d.rectangle((x, y), (x + tw + 8, y + th + 8), color, -1)
     if dark is None:
         dark = sum(color) > 380     # Black text on a bright background.
-    cv2.putText(img, text, (x + 4, y + th + 4), cv2.FONT_HERSHEY_SIMPLEX, scale,
-                (20, 20, 20) if dark else (255, 255, 255), 1, cv2.LINE_AA)
+    d.putText(text, (x + 4, y + th + 4), cv2.FONT_HERSHEY_SIMPLEX, scale,
+              (20, 20, 20) if dark else (255, 255, 255), 1, cv2.LINE_AA)
     return x + tw + 8
 
 
 def dashed_hline(img, y, color, x0=0, x1=None, dash=10, gap=6, thick=1):
-    y = int(min(max(y, 0), img.shape[0] - 1))
-    x1 = img.shape[1] if x1 is None else x1
-    for x in range(x0, x1, dash + gap):
-        cv2.line(img, (x, y), (min(x + dash, x1), y), color, thick, cv2.LINE_AA)
+    d = as_draw(img)
+    y = int(min(max(y, 0), d.shape[0] - 1))
+    x1 = d.shape[1] if x1 is None else x1
+    d.dashed(x0, y, x1, color, dash, gap, thick)
 
 
 def draw_person(dbg, detector, at):
     """LEGO figure on the view: the line its feet must pass to count, blobs of the right size with the wrong colors, and the match."""
+    dbg = as_draw(dbg)
     if at is not None:
         dashed_hline(dbg, int(at * FRAME_H), C_PERSON, dash=4, gap=8)
     for x, y, w, h, color, shape in detector.near:
-        cv2.rectangle(dbg, (x, y), (x + w, y + h), C_DIM, 1)
+        dbg.rectangle((x, y), (x + w, y + h), C_DIM, 1)
         chip(dbg, f"c{color:.2f} s{shape:.2f}", x, y - 18, C_DIM, 0.35)
     if detector.found:
         f = detector.found
         x, y, w, h = figure_box(f["x"], f["y"], f["w"], f["h"], f["feet"])      # The whole figure, though only its colored part was matched.
-        cv2.rectangle(dbg, (x, y), (x + w, y + h), C_PERSON, 2, cv2.LINE_AA)
-        look = f"" if f.get("look") is None else f" L{f['look']:.2f}"     # L: how much it looks like the registered figure (EMBED_MIN).
+        dbg.rectangle((x, y), (x + w, y + h), C_PERSON, 2, cv2.LINE_AA)
+        look = "" if f.get("look") is None else f" L{f['look']:.2f}"     # L: how much it looks like the registered figure (EMBED_MIN).
         chip(dbg, f"PERSON c{f['score']:.2f} s{f['shape']:.2f}{look}", f["x"], f["y"] - 22, C_PERSON, 0.38)
 
 
@@ -1328,15 +1335,14 @@ class LaneDetector:
         self.blobs, self.band_h = (labels, stats), h
         self.mask = mask
 
-        dbg = frame.copy() if draw else None
+        dbg = Canvas(frame) if draw else None   # Drawing commands only: the browser paints them (overlay.py).
         if draw:
-            roi, on = dbg[top:], mask > 0       # Paint white-line pixels translucent so the original image still shows.
-            cv2.copyTo(cv2.LUT(roi, LANE_TINT), on.astype(np.uint8), roi)      # Same tint as 0.45 * pixel + 0.55 * color, from a table (4x faster on the Pi).
+            dbg.tint(top, mask > 0, LANE_TINT, C_LANE, 0.55)    # White-line pixels translucent, 0.45 * pixel + 0.55 * color, so the original image still shows.
             dashed_hline(dbg, top, C_DIM)       # Only below this line is used for lane detection.
             for bx, by, bw, bh in self.reflect_boxes:      # Light reflections left out of the lane lines.
-                cv2.rectangle(dbg, (bx, top + by), (bx + bw, top + by + bh), C_DIM, 1)
+                dbg.rectangle((bx, top + by), (bx + bw, top + by + bh), C_DIM, 1)
             for bx, by, bw, bh in self.xwalk2_boxes:       # Stripes of the registered crosswalk.
-                cv2.rectangle(dbg, (bx, top + by), (bx + bw, top + by + bh), C_AT, 2)
+                dbg.rectangle((bx, top + by), (bx + bw, top + by + bh), C_AT, 2)
         cx0 = int(FRAME_W * CAMERA_X)
         jy = int(FRAME_H * JUNCTION_Y)
         marks = {}                          # Junction and crosswalk labels, one per kind, drawn on top at the end.
@@ -1352,7 +1358,7 @@ class LaneDetector:
             self.crosswalk = self.crosswalk_y >= jy
             if draw:
                 for sx, sy, sw, sh in self.stripes:
-                    cv2.rectangle(dbg, (sx - sw // 2, sy - sh // 2), (sx + sw // 2, sy + sh // 2), C_XWALK, 2)
+                    dbg.rectangle((sx - sw // 2, sy - sh // 2), (sx + sw // 2, sy + sh // 2), C_XWALK, 2)
                 marks.setdefault("CROSSWALK", (C_XWALK, self.crosswalk_y))
         ys, ls, rs, pending = [], [], [], []
         bands = []      # Per band: (y, line x list, horizontal line or crosswalk). Used for the lane-gap test.
@@ -1389,8 +1395,8 @@ class LaneDetector:
             if hline or crosswalk:
                 color, name = (C_JUNC, "JUNCTION") if hline else (C_XWALK, "CROSSWALK")
                 if draw:
-                    cv2.rectangle(dbg, (0, top + y1 + 2), (5, top + y1 + h - 2), color, -1)   # Marks on both edges.
-                    cv2.rectangle(dbg, (FRAME_W - 6, top + y1 + 2), (FRAME_W - 1, top + y1 + h - 2), color, -1)
+                    dbg.rectangle((0, top + y1 + 2), (5, top + y1 + h - 2), color, -1)   # Marks on both edges.
+                    dbg.rectangle((FRAME_W - 6, top + y1 + 2), (FRAME_W - 1, top + y1 + h - 2), color, -1)
                 marks.setdefault(name, (color, cy))
 
             if LINE_MODE == "line":
@@ -1450,11 +1456,11 @@ class LaneDetector:
             if draw:
                 for x, color in ((l, C_LEFT), (r, C_RIGHT)):
                     if x is not None:
-                        cv2.circle(dbg, (int(x), cy), 5, (20, 20, 20), -1, cv2.LINE_AA)
-                        cv2.circle(dbg, (int(x), cy), 4, color, -1, cv2.LINE_AA)
+                        dbg.circle((int(x), cy), 5, (20, 20, 20), -1, cv2.LINE_AA)
+                        dbg.circle((int(x), cy), 4, color, -1, cv2.LINE_AA)
             if c is not None:
                 if draw:
-                    cv2.circle(dbg, (int(c), cy), 3, C_PATH, -1, cv2.LINE_AA)
+                    dbg.circle((int(c), cy), 3, C_PATH, -1, cv2.LINE_AA)
                 pts.append((cy, c))
 
         if len(pts) == 1 and pts[0][0] < (top + FRAME_H) / 2:
@@ -1484,7 +1490,7 @@ class LaneDetector:
                 if draw:
                     for y, x in pts:
                         if (y, x) not in best:
-                            cv2.circle(dbg, (int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # Point dropped as a misdetect.
+                            dbg.circle((int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # Point dropped as a misdetect.
                 pts = best
 
         near_y, far_y = FRAME_H - h // 2, top + h // 2
@@ -1494,8 +1500,8 @@ class LaneDetector:
         else:
             x_near = x_far = pts[0][1]
         if draw:
-            cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
-            cv2.line(dbg, (int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
+            dbg.line((int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
+            dbg.line((int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
 
         # Error unit: half the frame width times (REF_LANE_PX / LANE_WIDTH_PX). A changed field of view can make the lane look smaller.
         # The same lane departure stays the same value, so the steering gains (KP, KH) and the thresholds stay as they are.
@@ -1671,16 +1677,17 @@ class TrafficLight:
 
     def draw(self, dbg, regions=True):
         """regions: also draw the lamp search areas (upper left and right). The drive view draws them only while waiting for a light."""
+        dbg = as_draw(dbg)
         if regions:
             for x0, y0, x1, y1 in self.regions():
-                cv2.rectangle(dbg, (x0, y0), (x1 - 1, y1 - 1), C_DIM, 1)
+                dbg.rectangle((x0, y0), (x1 - 1, y1 - 1), C_DIM, 1)
         for x0, y0, x1, y1, color in self.local:    # Spot wait_green re-reads, where red was (yellow).
-            cv2.rectangle(dbg, (x0, y0), (x1 - 1, y1 - 1), C_AT, 1, cv2.LINE_AA)
+            dbg.rectangle((x0, y0), (x1 - 1, y1 - 1), C_AT, 1, cv2.LINE_AA)
             if color:
                 chip(dbg, color.upper(), x0, y1 + 2, C_AT, 0.35)
         for x, y, w, h, color in self.boxes:
             bgr = (40, 40, 255) if color == "red" else (60, 220, 60)
-            cv2.rectangle(dbg, (x - 4, y - 4), (x + w + 4, y + h + 4), bgr, 2, cv2.LINE_AA)
+            dbg.rectangle((x - 4, y - 4), (x + w + 4, y + h + 4), bgr, 2, cv2.LINE_AA)
             chip(dbg, color.upper(), x - 4, y - 22, bgr, 0.38)
 
 
@@ -2505,8 +2512,10 @@ class KeyInbox:
 class Stream:
     """Send the debug view to a browser, and take keys from it for the running program (self.keys).
 
-    The page fetches the latest frame one at a time (/frame.jpg). If Wi-Fi drops briefly or the program restarts, the page reconnects on its own, and a slow client always gets the latest frame with none queued up.
-    JPEG encoding runs on the browser request thread, not the main loop, and only while someone is watching.
+    The page fetches the latest view one at a time (/frame.bin): the camera picture as JPEG plus the drawing commands
+    (overlay.Canvas), which the browser paints itself. The Pi draws nothing and encodes only the plain picture.
+    If Wi-Fi drops briefly or the program restarts, the page reconnects on its own, and a slow client always gets the latest view with none queued up.
+    Encoding runs on the browser request thread, not the main loop, and only while someone is watching (not while the page is paused or hidden).
     """
 
     PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -2525,13 +2534,13 @@ button{background:var(--panel);color:var(--txt);border:1px solid var(--line);bor
  font:inherit;font-size:13px;cursor:pointer} button:hover{border-color:#555} button.on{border-color:var(--warn);color:var(--warn)}
 kbd{font:11px ui-monospace,monospace;color:var(--dim);margin-left:4px}
 .wrap{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000}
-img{display:block;width:100%;height:100%;object-fit:contain}
+#v{display:block;width:100%;height:100%;object-fit:contain}
 #msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
  background:rgba(0,0,0,.55);color:#fff;font-size:18px;font-weight:600;text-align:center;padding:16px}
 #paused{position:absolute;top:10px;left:10px;display:none;background:rgba(0,0,0,.7);color:var(--warn);
  border:1px solid var(--warn);border-radius:6px;padding:4px 10px;font-weight:600}
 #drag{position:absolute;display:none;border:2px solid var(--ok);background:rgba(60,220,60,.15);pointer-events:none}
-.wrap.drag{cursor:crosshair;touch-action:none} .wrap.drag img{user-select:none;-webkit-user-select:none}
+.wrap.drag{cursor:crosshair;touch-action:none} .wrap.drag #v{user-select:none;-webkit-user-select:none}
 #toast{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;
  border-radius:6px;padding:6px 12px;opacity:0;transition:opacity .3s;pointer-events:none}
 #keys{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
@@ -2545,27 +2554,119 @@ img{display:block;width:100%;height:100%;object-fit:contain}
  <button id="bSave" title="save the view as a photo">Save photo<kbd>S</kbd></button>
  <button id="bFull" title="full screen (double click too)">Full screen<kbd>F</kbd></button>
 </span></header>
-<div class="wrap" id="wrap"><img id="v" alt="" draggable="false"><div id="drag"></div><div id="paused">Paused</div>
+<div class="wrap" id="wrap"><canvas id="v" width="0" height="0"></canvas><div id="drag"></div><div id="paused">Paused</div>
 <div id="msg">Disconnected · reconnecting…</div><div id="toast"></div></div>
 <div id="keys"><label id="klabel">Terminal keys</label>
 <button id="bEnter">Enter</button><button id="bStop">Ctrl+C</button><span id="kstate"></span><small>__KEYS_HELP__</small></div>
 <script>
-// Fetch the latest frame one at a time. On failure wait a moment and keep retrying (resumes by itself when the program restarts).
+// Fetch the latest view one at a time: the camera picture (JPEG) and the drawing commands, painted here, not on the Pi.
+// On failure wait a moment and keep retrying (resumes by itself when the program restarts).
 const $ = id => document.getElementById(id);
-const img = $("v"), msg = $("msg"), dot = $("dot"), stt = $("stt"), wrap = $("wrap");
-let seq = -1, fails = 0, shown = [], url = null, paused = false, pausedAt = 0, lastBlob = null;
+const cv = $("v"), ctx = cv.getContext("2d"), msg = $("msg"), dot = $("dot"), stt = $("stt"), wrap = $("wrap");
+let seq = -1, fails = 0, shown = [], paused = false, pausedAt = 0, drawn = false, wake = null;
 function status(ok, text) { dot.style.background = ok ? "var(--ok)" : "var(--bad)"; stt.textContent = text; }
 function toast(t) { const e = $("toast"); e.textContent = t; e.style.opacity = 1; clearTimeout(e.t); e.t = setTimeout(() => e.style.opacity = 0, 1500); }
+function timeout(ms) { const c = new AbortController(); setTimeout(() => c.abort(), ms); return c.signal; }   // AbortSignal.timeout is missing on older Safari.
 function setPaused(p) {
   paused = p; pausedAt = Date.now(); $("paused").style.display = p ? "block" : "none";
   $("bPause").classList.toggle("on", p); $("bPause").firstChild.textContent = p ? "Resume" : "Pause";
+  if (!p && wake) wake();
 }
 function save() {
-  if (!lastBlob) return toast("No frame received yet");
-  const a = document.createElement("a"), d = new Date(), z = n => String(n).padStart(2, "0");
-  a.href = URL.createObjectURL(lastBlob);
-  a.download = `aicar-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.jpg`;
-  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast("Photo saved: " + a.download);
+  if (!drawn) return toast("No frame received yet");
+  const d = new Date(), z = n => String(n).padStart(2, "0");
+  const name = `aicar-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.png`;
+  cv.toBlob(b => {
+    if (!b) return toast("Could not save the photo");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b); a.download = name;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast("Photo saved: " + name);
+  }, "image/png");
+}
+// --- Painting the commands (overlay.py Canvas.payload). Coordinates are camera pixels, as the Pi drew them. ---
+const tint = document.createElement("canvas"), tctx = tint.getContext("2d", {willReadFrequently: true});
+const FONT = "Arial, Helvetica, sans-serif";
+function rgb(c) { return [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)]; }
+function seg(x0, y0, x1, y1, c, t) {
+  const o = t % 2 ? 0.5 : 0;
+  ctx.strokeStyle = c; ctx.lineWidth = t; ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(x0 + o, y0 + o); ctx.lineTo(x1 + o, y1 + o); ctx.stroke();
+}
+function paint(ops, blobs) {
+  for (const o of ops) {
+    switch (o[0]) {
+      case "l": seg(o[1], o[2], o[3], o[4], o[5], o[6]); break;
+      case "r": {
+        const [, x0, y0, x1, y1, c, t] = o;
+        if (t < 0) { ctx.fillStyle = c; ctx.fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1); }
+        else { const f = t % 2 ? 0.5 : 0; ctx.strokeStyle = c; ctx.lineWidth = t; ctx.lineJoin = "miter"; ctx.strokeRect(x0 + f, y0 + f, x1 - x0, y1 - y0); }
+        break;
+      }
+      case "c": {
+        const [, x, y, r, c, t] = o;
+        ctx.beginPath(); ctx.arc(x + 0.5, y + 0.5, t < 0 ? r + 0.5 : r, 0, 2 * Math.PI);
+        if (t < 0) { ctx.fillStyle = c; ctx.fill(); } else { ctx.strokeStyle = c; ctx.lineWidth = t; ctx.stroke(); }
+        break;
+      }
+      case "t": {     // Fitted to the box OpenCV gave this text, so labels sit in their chips and right-aligned values line up.
+        const [, x, y, s, c, t, tw, th] = o;
+        ctx.font = `${t > 1 ? 700 : 500} ${Math.max(th / 0.716, 6)}px ${FONT}`;
+        const m = ctx.measureText(s).width;
+        if (!m) break;
+        ctx.save(); ctx.translate(x, y); ctx.scale(tw / m, 1); ctx.fillStyle = c; ctx.fillText(s, 0, 0); ctx.restore();
+        break;
+      }
+      case "a": {     // Same tips as cv2.arrowedLine.
+        const [, x0, y0, x1, y1, c, t, tip] = o;
+        seg(x0, y0, x1, y1, c, t);
+        const len = Math.hypot(x0 - x1, y0 - y1) * tip, ang = Math.atan2(y0 - y1, x0 - x1);
+        for (const k of [1, -1]) seg(x1, y1, Math.round(x1 + len * Math.cos(ang + k * Math.PI / 4)), Math.round(y1 + len * Math.sin(ang + k * Math.PI / 4)), c, t);
+        break;
+      }
+      case "d": { const [, x0, y, x1, c, dash, gap, t] = o; for (let x = x0; x < x1; x += dash + gap) seg(x, y, Math.min(x + dash, x1), y, c, t); break; }
+      case "m": {     // Line mask (np.packbits rows): its pixels in the color at alpha, the rest untouched.
+        const [, top, k, c, a, w, h] = o, bits = blobs[k];
+        if (!bits) break;     // A browser without DecompressionStream shows the view without the line tint.
+        if (tint.width !== w || tint.height !== h) { tint.width = w; tint.height = h; }
+        const im = tctx.createImageData(w, h), d = im.data, [r, g, b] = rgb(c), row = (w + 7) >> 3;
+        for (let y = 0, i = 0; y < h; y++) {
+          const base = y * row;
+          for (let x = 0; x < w; x++, i += 4) {
+            if ((bits[base + (x >> 3)] >> (7 - (x & 7))) & 1) { d[i] = r; d[i + 1] = g; d[i + 2] = b; d[i + 3] = 255; }
+          }
+        }
+        tctx.putImageData(im, 0, 0);
+        ctx.globalAlpha = a; ctx.drawImage(tint, 0, top); ctx.globalAlpha = 1;
+        break;
+      }
+      case "s": { const [, x0, y0, x1, y1, c, a] = o; ctx.globalAlpha = a; ctx.fillStyle = c; ctx.fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1); ctx.globalAlpha = 1; break; }
+    }
+  }
+}
+async function inflate(bytes) {
+  if (!window.DecompressionStream) return null;
+  return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"))).arrayBuffer());
+}
+async function show(buf) {
+  const u8 = new Uint8Array(buf);
+  if (u8.length < 8 || String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== "AIC1") throw new Error("bad view");
+  const n = new DataView(buf).getUint32(4), head = JSON.parse(new TextDecoder().decode(u8.subarray(8, 8 + n)));
+  let at = 8 + n;
+  const raw = head.blobs.map(len => { const b = u8.subarray(at, at + len); at += len; return b; });
+  const jpegs = new Set(head.pics.filter(p => typeof p[2] === "number").map(p => p[2]));
+  const blobs = await Promise.all(raw.map((b, k) => jpegs.has(k) ? createImageBitmap(new Blob([b], {type: "image/jpeg"})) : inflate(b)));
+  if (cv.width !== head.w || cv.height !== head.h) { cv.width = head.w; cv.height = head.h; }
+  for (const [x, w, src] of head.pics) {      // The camera pictures, and plain panels as their color.
+    if (typeof src === "number") ctx.drawImage(blobs[src], x, 0);
+    else { ctx.fillStyle = src; ctx.fillRect(x, 0, w, head.h); }
+  }
+  for (const [x, w, ops] of head.parts) {     // Each piece of a side-by-side view is clipped to its own area, as on the Pi.
+    ctx.save(); ctx.beginPath(); ctx.rect(x, 0, w, head.h); ctx.clip(); ctx.translate(x, 0);
+    paint(ops, blobs);
+    ctx.restore();
+  }
+  for (const k of jpegs) blobs[k].close();
+  drawn = true;
 }
 function full() { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen?.(); }
 $("bPause").onclick = () => setPaused(!paused); $("bSave").onclick = save; $("bFull").onclick = full; wrap.ondblclick = full;
@@ -2576,7 +2677,7 @@ const KEYS_TO_PROGRAM = __KEYS_TO_PROGRAM__ && !!KEY;
 const KEY_CODES = {Minus: ["-", "_"], Equal: ["=", "+"]};
 let keyQueue = Promise.resolve(), armed = null, armedAt = 0;
 function postKeys(text, ms) {
-  return fetch("/key", {method: "POST", body: text, signal: AbortSignal.timeout(ms),
+  return fetch("/key", {method: "POST", body: text, signal: timeout(ms),
                         headers: {"X-AICAR-Key": KEY, "X-AICAR-Program": PROGRAM}});
 }
 function sendKeys(text) {
@@ -2647,8 +2748,8 @@ if (DRAG && KEY) {
   const clip = v => Math.min(Math.max(v, 0), 1);
   const spot = e => [(e.clientX - area.x) / area.w, (e.clientY - area.y) / area.h];
   function picture() {      // The picture keeps its aspect and is centered, so it can be smaller than the img box.
-    const r = img.getBoundingClientRect(), s = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
-    const w = img.naturalWidth * s, h = img.naturalHeight * s;
+    const r = cv.getBoundingClientRect(), s = Math.min(r.width / cv.width, r.height / cv.height);
+    const w = cv.width * s, h = cv.height * s;
     return {x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w: w * DRAG, h};
   }
   function square(e) {
@@ -2657,7 +2758,7 @@ if (DRAG && KEY) {
   }
   wrap.classList.add("drag");
   wrap.addEventListener("pointerdown", e => {
-    if (e.button !== 0 || !img.naturalWidth) return;
+    if (e.button !== 0 || !drawn) return;
     area = picture();
     const [x, y] = spot(e);
     if (x < 0 || x > 1 || y < 0 || y > 1) return;
@@ -2676,7 +2777,7 @@ if (DRAG && KEY) {
     const [x0, y0, x1, y1] = square(e);
     from = null; mark.style.display = "none";
     if (x1 - x0 < 0.015 || y1 - y0 < 0.02) return;      // A click, not a drag.
-    fetch("/box", {method: "POST", body: [x0, y0, x1, y1].map(v => v.toFixed(4)).join(","), signal: AbortSignal.timeout(1500),
+    fetch("/box", {method: "POST", body: [x0, y0, x1, y1].map(v => v.toFixed(4)).join(","), signal: timeout(1500),
                    headers: {"X-AICAR-Key": KEY, "X-AICAR-Program": PROGRAM}}).then(r => {
       if (r.status === 409) { location.reload(); return; }
       if (!r.ok) throw new Error(r.status);
@@ -2685,32 +2786,34 @@ if (DRAG && KEY) {
   });
   wrap.ondblclick = null;       // So the end of a drag does not go full screen. Full screen is on the button.
 }
+// Paused or in a hidden tab: no views are fetched, so the Pi draws and encodes nothing. Paused still checks the connection.
+const idle = ms => new Promise(ok => { wake = ok; setTimeout(ok, ms); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && wake) wake(); });
 async function loop() {
   for (;;) {
-    const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 3000);
     try {
-      const r = await fetch("/frame.jpg?after=" + seq, {cache: "no-store", signal: ctl.signal});
-      clearTimeout(t);
+      if (document.hidden) { await idle(60000); continue; }
+      const r = await fetch(paused ? "/ping" : "/frame.bin?after=" + seq, {cache: "no-store", signal: timeout(3000)});
       const program = r.headers.get("X-AICAR-Program");
       if (program && program !== PROGRAM) { location.reload(); return; }     // Another program started: reopen with its keys and help.
-      if (r.status === 204) {     // No new frame for 1 s (the program is running)
+      if (paused) {
+        if (!r.ok) throw new Error(r.status);
+        fails = 0; msg.style.display = "none";
+        status(true, "paused · view from " + Math.round((Date.now() - pausedAt) / 1000) + " s ago");
+        await idle(1000); continue;
+      }
+      if (r.status === 204) {     // No new view for 1 s (the program is running)
         fails = 0; msg.style.display = "none"; status(true, "connected · no new frame"); continue;
       }
       if (!r.ok) throw new Error(r.status);
-      seq = +r.headers.get("X-Seq");
-      const blob = await r.blob();
-      fails = 0; msg.style.display = "none";
+      const next = +r.headers.get("X-Seq"), buf = await r.arrayBuffer();
+      if (paused) continue;       // Paused while this one was on its way: keep the view as it is.
+      await show(buf);
+      seq = next; fails = 0; msg.style.display = "none";
       const now = performance.now(); shown.push(now); shown = shown.filter(x => now - x < 2000);
-      if (paused) {               // While paused the view stays as it is, and the connection is kept
-        status(true, "paused · frame from " + Math.round((Date.now() - pausedAt) / 1000) + " s ago");
-        continue;
-      }
-      lastBlob = blob;
-      const u = URL.createObjectURL(blob);
-      img.src = u; if (url) URL.revokeObjectURL(url); url = u;
       status(true, "connected · " + (shown.length / 2).toFixed(0) + " fps");
     } catch (e) {
-      clearTimeout(t); fails++;
+      fails++;
       if (fails >= 2) { msg.style.display = "flex"; status(false, "disconnected · reconnecting"); }
       await new Promise(ok => setTimeout(ok, Math.min(300 * fails, 2000)));
     }
@@ -2733,9 +2836,11 @@ loop();
         from werkzeug.serving import make_server
         logging.getLogger("werkzeug").setLevel(logging.ERROR)   # Turn off the request log printed for every frame.
         flask.cli.show_server_banner = lambda *_: None          # And the startup lines.
-        self.img, self.seq = None, 0            # Latest frame and its number, written by the main loop.
-        self.jpg, self.jpg_seq = None, -1       # Last encoded JPEG and the frame number it came from.
+        self.img, self.seq = None, 0            # Latest view (Canvas or ndarray) and its number, written by the main loop.
+        self.jpg, self.jpg_seq = None, -1       # Last painted JPEG (legacy /frame.jpg, /video) and the view number it came from.
+        self.bin, self.bin_seq = None, -1       # Last page payload (/frame.bin) and the view number it came from.
         self.lock = threading.Lock()
+        self.new_frame = threading.Condition()  # Wakes the requests waiting for a newer view.
         self.last_request = -1e9                # Time a browser last fetched a frame (used for watching).
         self.keys = KeyInbox()
         self.dragged = None                     # Last box dragged on the page, not yet read.
@@ -2751,21 +2856,34 @@ loop();
             allowed = hmac.compare_digest(request.args.get("key", ""), self.key)
             return Response(page.replace("__KEY__", self.key if allowed else ""), mimetype="text/html", headers={"Cache-Control": "no-store"})
 
-        @app.route("/frame.jpg")
-        def frame():
-            # Wait up to 1 second for a frame newer than after, then send only the latest one.
+        def latest(get, mimetype):
+            # Wait up to 1 second for a view newer than after, then send only the latest one.
             self.last_request = time.monotonic()
             after = request.args.get("after", -1, type=int)
-            if after > self.seq:        # The program restarted and the number went back to the start, so just send the latest frame.
+            if after > self.seq:        # The program restarted and the number went back to the start, so just send the latest view.
                 after = -1
-            end = time.monotonic() + 1.0
-            while (self.img is None or self.seq <= after) and time.monotonic() < end:
-                time.sleep(0.01)
-            jpg, seq = self.encoded()
-            if jpg is None or seq <= after:
+            with self.new_frame:
+                self.new_frame.wait_for(lambda: self.img is not None and self.seq > after, timeout=1.0)
+            data, seq = get()
+            if data is None or seq <= after:
                 return Response(status=204, headers={"X-AICAR-Program": self.program})
-            return Response(jpg, mimetype="image/jpeg",
+            return Response(data, mimetype=mimetype,
                             headers={"X-Seq": str(seq), "X-AICAR-Program": self.program, "Cache-Control": "no-store"})
+
+        @app.route("/frame.bin")
+        def frame_bin():
+            """The page's view: picture plus drawing commands (overlay.Canvas.payload)."""
+            return latest(self.payload, "application/octet-stream")
+
+        @app.route("/frame.jpg")
+        def frame():
+            """The view painted on the Pi, for other programs that open the URL directly."""
+            return latest(self.encoded, "image/jpeg")
+
+        @app.route("/ping")
+        def ping():
+            """Connection check while the page is paused. Does not count as watching, so nothing is drawn or encoded."""
+            return Response(status=204, headers={"X-AICAR-Program": self.program, "Cache-Control": "no-store"})
 
         @app.route("/key", methods=["POST"])
         def key():
@@ -2838,17 +2956,31 @@ loop();
         box, self.dragged = self.dragged, None
         return box
 
-    def update(self, img):
-        """Store the frame without encoding it. img must be a new array that is not modified afterward."""
-        self.img = img
-        self.seq += 1
+    def update(self, view):
+        """Store the view without drawing or encoding it: an overlay.Canvas (commands the browser paints) or a plain ndarray.
+
+        Neither the view nor its base picture may be modified afterward.
+        """
+        with self.new_frame:
+            self.img = view
+            self.seq += 1
+            self.new_frame.notify_all()
+
+    def payload(self):
+        """Page payload of the latest view. Built only when the view is new, once even if several browsers are connected."""
+        with self.lock:
+            view, seq = self.img, self.seq
+            if view is not None and seq != self.bin_seq:
+                self.bin = (view if isinstance(view, Canvas) else Canvas(view)).payload()
+                self.bin_seq = seq
+            return self.bin, self.bin_seq
 
     def encoded(self):
-        """JPEG of the latest frame. Encodes only when the frame is new, once even if several browsers are connected."""
+        """JPEG of the latest view painted on the Pi (legacy URLs only). Encodes only when the view is new."""
         with self.lock:
-            img, seq = self.img, self.seq
-            if img is not None and seq != self.jpg_seq:
-                self.jpg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
+            view, seq = self.img, self.seq
+            if view is not None and seq != self.jpg_seq:
+                self.jpg = cv2.imencode(".jpg", np.asarray(view), [cv2.IMWRITE_JPEG_QUALITY, 70])[1].tobytes()
                 self.jpg_seq = seq
             return self.jpg, self.jpg_seq
 
@@ -3073,7 +3205,7 @@ class Driver:
                 best = (name, found, target, left, y)
             if dbg is not None and found is not None:
                 x, fy, w, h = found["x"], found["y"], found["w"], found["h"]
-                cv2.rectangle(dbg, (x, fy), (x + w, fy + h), C_AT, 2)
+                dbg.rectangle((x, fy), (x + w, fy + h), C_AT, 2)
                 chip(dbg, f"{name} {max(left, 0):.1f}cm", x, max(fy - 22, 0), C_AT, 0.4)
         name, found, self.stop_target, _, self.stop_y = best
         self.stop_found = found
@@ -3190,8 +3322,8 @@ class Driver:
         cx0, by = int(FRAME_W * CAMERA_X), FRAME_H - 6
         a = np.radians(steering.angle * 1.6)
         tip = (int(cx0 + 70 * np.sin(a)), int(by - 70 * np.cos(a)))
-        cv2.arrowedLine(dbg, (cx0, by), tip, (20, 20, 20), 7, cv2.LINE_AA, tipLength=0.3)
-        cv2.arrowedLine(dbg, (cx0, by), tip, (255, 255, 255), 3, cv2.LINE_AA, tipLength=0.3)
+        dbg.arrowedLine((cx0, by), tip, (20, 20, 20), 7, cv2.LINE_AA, tipLength=0.3)
+        dbg.arrowedLine((cx0, by), tip, (255, 255, 255), 3, cv2.LINE_AA, tipLength=0.3)
 
         # One large notice at the top center, only the most important.
         lost = self.det is None
@@ -3220,27 +3352,25 @@ class Driver:
         if banner:
             (tw, _), _ = cv2.getTextSize(banner[0], cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
             x = (FRAME_W - tw) // 2 - 12
-            over = dbg.copy()
-            cv2.rectangle(over, (x, 8), (x + tw + 24, 44), banner[1], -1)
-            cv2.addWeighted(over, 0.8, dbg, 0.2, 0, dbg)
-            cv2.putText(dbg, banner[0], (x + 12, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            dbg.shade((x, 8), (x + tw + 24, 44), banner[1], 0.8)
+            dbg.putText(banner[0], (x + 12, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
         # --- Right Panel ---
         W = self.PANEL_W
-        p = np.full((FRAME_H, W, 3), 32, np.uint8)
+        p = Canvas((FRAME_H, W), fill=32)     # Plain background: sent as part of the base picture, the text and bars as commands.
         white, grey = (240, 240, 240), (150, 150, 150)
 
         def text(t, x, y, scale=0.45, color=white, thick=1):
-            cv2.putText(p, t, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
+            p.putText(t, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, thick, cv2.LINE_AA)
 
         def bar(y, label, frac, value, color, mark=None):
             text(label, 12, y)
             text(value, W - 12 - cv2.getTextSize(value, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0][0], y)
-            cv2.rectangle(p, (12, y + 6), (W - 12, y + 16), (70, 70, 70), -1)
-            cv2.rectangle(p, (12, y + 6), (12 + int((W - 24) * float(np.clip(frac, 0, 1))), y + 16), color, -1)
+            p.rectangle((12, y + 6), (W - 12, y + 16), (70, 70, 70), -1)
+            p.rectangle((12, y + 6), (12 + int((W - 24) * float(np.clip(frac, 0, 1))), y + 16), color, -1)
             if mark is not None:
                 mx = 12 + int((W - 24) * float(np.clip(mark, 0, 1)))
-                cv2.line(p, (mx, y + 3), (mx, y + 19), C_AT, 2)
+                p.line((mx, y + 3), (mx, y + 19), C_AT, 2)
 
         # Current action / next action.
         idx, n = min(course.idx + 1, len(course.course)), len(course.course)
@@ -3249,8 +3379,8 @@ class Driver:
         lim = None if course.needs_light() and course.red_seen else step and (step["sec"] or step["max"])
         t = f"{el:.1f}s" + (f" / {lim:g}s" if lim else "")
         text(t, W - 12 - cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0][0], 24, 0.45, grey)
-        cv2.rectangle(p, (12, 31), (W - 12, 34), (70, 70, 70), -1)
-        cv2.rectangle(p, (12, 31), (12 + int((W - 24) * (course.idx / max(n, 1))), 34), C_PATH, -1)
+        p.rectangle((12, 31), (W - 12, 34), (70, 70, 70), -1)
+        p.rectangle((12, 31), (12 + int((W - 24) * (course.idx / max(n, 1))), 34), C_PATH, -1)
         title, lines = self.step_text(step)
         text(title, 12, 60, 0.62, white, 2)
         y = 80
@@ -3259,7 +3389,7 @@ class Driver:
             y += 18
         nxt = course.course[course.idx + 1] if course.idx + 1 < n else None
         text("next: " + (self.step_text(nxt)[0] if nxt else "-"), 12, 134, 0.42, grey)
-        cv2.line(p, (12, 146), (W - 12, 146), (70, 70, 70), 1)
+        p.line((12, 146), (W - 12, 146), (70, 70, 70), 1)
 
         # Speed / steering.
         slow = course.opt("slow")
@@ -3270,11 +3400,11 @@ class Driver:
         t = f"{'L' if st < -0.5 else 'R' if st > 0.5 else ''} {abs(st):.0f} deg"
         text(t, W - 12 - cv2.getTextSize(t, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)[0][0], 206)
         mid = W // 2
-        cv2.rectangle(p, (12, 212), (W - 12, 222), (70, 70, 70), -1)
+        p.rectangle((12, 212), (W - 12, 222), (70, 70, 70), -1)
         sx = mid + int((W // 2 - 12) * float(np.clip(st / AUTO_STEER_MAX, -1, 1)))
-        cv2.rectangle(p, (min(mid, sx), 212), (max(mid, sx), 222), (255, 200, 80), -1)
-        cv2.line(p, (mid, 209), (mid, 225), white, 1)
-        cv2.line(p, (12, 236), (W - 12, 236), (70, 70, 70), 1)
+        p.rectangle((min(mid, sx), 212), (max(mid, sx), 222), (255, 200, 80), -1)
+        p.line((mid, 209), (mid, 225), white, 1)
+        p.line((12, 236), (W - 12, 236), (70, 70, 70), 1)
 
         # Status marks, colored only when on.
         on_light = course.local_light or self.light     # Re-reading the spot that was red is more accurate.
@@ -3289,10 +3419,10 @@ class Driver:
         for k, (name, on, color, val) in enumerate(items):
             x, yy = 12 + (k % 2) * ((W - 24) // 2 + 2), 242 + (k // 2) * 24
             w = (W - 24) // 2 - 2
-            cv2.rectangle(p, (x, yy), (x + w, yy + 20), color if on else (55, 55, 55), -1)
+            p.rectangle((x, yy), (x + w, yy + 20), color if on else (55, 55, 55), -1)
             label = name if val is None else f"{name} {val}"
             dark = on and sum(color) > 380
-            cv2.putText(p, label, (x + 6, yy + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
+            p.putText(label, (x + 6, yy + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.36,
                         (20, 20, 20) if dark else (white if on else grey), 1, cv2.LINE_AA)
 
         # Bottom: white-line threshold and fps.
@@ -3301,7 +3431,7 @@ class Driver:
         if fps:
             foot += f"   {fps:.0f} fps"
         text(foot, 12, FRAME_H - 12, 0.4, grey)
-        return np.hstack([dbg, p])
+        return Canvas.hstack([dbg, p])
 
     def tick(self, frame, now, show=False):
         """Return (steering angle, or None to hold, motor command, debug image)."""
@@ -3361,7 +3491,7 @@ class Driver:
         self.det, self.junction, self.light = det, junction, light
         if dbg is not None and detect.end_y is not None:
             ey = int(detect.end_y)
-            cv2.line(dbg, (0, ey), (FRAME_W - 1, ey), C_JUNC, 1, cv2.LINE_AA)
+            dbg.line((0, ey), (FRAME_W - 1, ey), C_JUNC, 1, cv2.LINE_AA)
             chip(dbg, f"LANE END {floor_cm(detect.end_y) + LANEEND_OFFSET_CM:.1f}cm", 10 if detect.end_side == "left" else FRAME_W - 190, ey - 20, C_JUNC, 0.4)
         watching = course.idx != idx_before and step is not None and step["until"] in ("junction", "end")
         if watching or self.ends.open is not None:
@@ -3659,8 +3789,9 @@ def main():
         while True:
             frame = cam.capture_array()
             now = time.monotonic()
-            # Send this frame to the browser only if someone is watching, and only every other frame. If nobody is watching, drawing costs nothing.
-            show = stream is not None and stream.watching and frames % 2 == 0
+            # Send this frame to the browser only if someone is watching. The view is only drawing commands (the browser paints
+            # them), so every frame can go. If nobody is watching, it costs nothing.
+            show = stream is not None and stream.watching
             try:
                 steer, cmd, dbg = driver.tick(frame, now, show)
                 errors = 0

@@ -106,9 +106,9 @@ def main():
         diffs.append(steering.angle - float(row["steer"]))
 
         view = driver.view(dbg, now)
-        cv2.putText(view, f"#{row['frame']}  recorded steer {float(row['steer']):+.1f}",
-                    (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-        writer.write(view)
+        view.putText(f"#{row['frame']}  recorded steer {float(row['steer']):+.1f}",
+                     (10, lf.FRAME_H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+        writer.write(view.image())      # The drawing commands painted by OpenCV (overlay.py).
     writer.release()
 
     s = np.array(steers)

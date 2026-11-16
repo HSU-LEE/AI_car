@@ -35,7 +35,7 @@ def main():
         while True:
             _, _, dbg = detect(cam.capture_array())
             mode = "AUTO" if lf.WHITE_THR is None else "MANUAL"
-            cv2.putText(dbg, f"{mode} white {detect.thr:.0f}  [w/s +-2  W/S +-10  a auto  Enter save]",
+            dbg.putText(f"{mode} white {detect.thr:.0f}  [w/s +-2  W/S +-10  a auto  Enter save]",
                         (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             stream.update(dbg)
             print(f"\r{mode:6s} white = {detect.thr:5.1f}   ", end="", flush=True)
