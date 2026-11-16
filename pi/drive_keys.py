@@ -14,7 +14,7 @@ import sys
 import termios
 import tty
 
-from car import STEER_LIMIT, Car
+from car import STEER_LIMIT, Car, stop_on_signals
 
 
 
@@ -24,6 +24,7 @@ def main():
     args = ap.parse_args()
 
     print(__doc__)
+    stop_on_signals()       # aicar stop, or the ssh session dropping, stops the car like Ctrl+C.
     car = Car()
     car.center()
     speed, angle = 0.0, 0.0
@@ -36,6 +37,8 @@ def main():
             if not select.select([sys.stdin], [], [], 0.1)[0]:
                 continue
             key = sys.stdin.read(1)
+            if key == "":       # The terminal is gone (ssh dropped): nobody can steer or stop it any more.
+                break
             if key == "w":
                 speed = min(args.max_speed, round(speed + 0.1, 1))
             elif key == "s":

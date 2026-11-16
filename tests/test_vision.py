@@ -368,6 +368,55 @@ def test_motor():
     check("a very slow command (0.1) is raised to the minimum", min(c for c in cmds if c > 0) >= lf.MOTOR_MIN - 1e-9,
           f"min {min(c for c in cmds if c > 0):.2f}")
 
+    # Motor guard: a separate process that writes duty 0 when the driving program dies or freezes (hardware PWM keeps its duty otherwise).
+    import subprocess
+    import time
+    import car
+    with tempfile.TemporaryDirectory() as tmp:
+        duty = Path(tmp) / "duty_cycle"
+
+        def wait_for(value, sec=3.0):
+            end = time.monotonic() + sec
+            while time.monotonic() < end and duty.read_text() != value:
+                time.sleep(0.02)
+            return duty.read_text() == value
+
+        duty.write_text("47500")
+        g = car.MotorGuard(duty, limit=0.5)
+        time.sleep(1.2)
+        check("guard: leaves the motor alone while the program is alive", duty.read_text() == "47500" and g.proc.poll() is None)
+        g.close()
+        check("guard: a clean close does not touch the duty and the guard exits", duty.read_text() == "47500" and g.proc.poll() is not None)
+
+        # The program is killed outright (kill -9): its end of the pipe closes with it.
+        script = (f"import sys, time; sys.path.insert(0, {str(Path(car.__file__).parent)!r}); import car; "
+                  f"g = car.MotorGuard({str(duty)!r}, limit=5); print(g.proc.pid, flush=True); time.sleep(60)")
+        prog = subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+        guard_pid = int(prog.stdout.readline())
+        prog.kill()
+        prog.wait()
+        stopped = wait_for("0")
+
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                return False
+
+        end = time.monotonic() + 2
+        while alive(guard_pid) and time.monotonic() < end:
+            time.sleep(0.02)
+        check("guard: the program killed with kill -9 -> motor duty 0, and the guard is gone", stopped and not alive(guard_pid))
+
+        # The program freezes (no sign of life): duty 0 after the limit, and the guard keeps watching.
+        duty.write_text("47500")
+        g = car.MotorGuard(duty, limit=0.4)
+        g._stop.set()
+        g._thread.join()
+        check("guard: a frozen program -> motor duty 0 after the limit", wait_for("0") and g.proc.poll() is None)
+        g.close()
+
 
 def test_turn_align_stop():
     print("[tr(): turn -> align -> slow drive]")

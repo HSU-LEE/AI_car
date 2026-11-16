@@ -17,7 +17,11 @@ Usage:
   python car.py trim -4.2       Shift the saved center trim by -4.2 degrees.
 """
 import json
+import os
+import signal
+import subprocess
 import sys
+import threading
 from pathlib import Path
 from time import sleep
 
@@ -117,6 +121,76 @@ class HardwareServo(SysfsPWM):
         self._angle = value
 
 
+GUARD_SEC = 2.0     # MotorGuard: the motor is switched off if the program gives no sign of life for this long.
+
+# Runs as its own small process (python -c), so it outlives the program it watches. Reads a pipe from it:
+# a byte now and then = alive, "q" = closed cleanly, end of file = the program died. Silence or death -> duty 0.
+_GUARD_CODE = """
+import os, select, signal, sys
+duty, limit = sys.argv[1], float(sys.argv[2])
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(s, signal.SIG_IGN)
+def off():
+    try:
+        with open(duty, "w") as f:
+            f.write("0")
+    except OSError:
+        pass
+while True:
+    ready, _, _ = select.select([0], [], [], limit)
+    if not ready:
+        off()
+        continue
+    data = os.read(0, 4096)
+    if not data:
+        off()
+        break
+    if b"q" in data:
+        break
+"""
+
+
+class MotorGuard:
+    """Switches the motor PWM off if the program driving it dies or freezes.
+
+    Hardware PWM keeps its last duty after the process is gone (kill -9, a crash, out of memory), and the direction
+    pins keep their last level too, so the car would drive on at that speed with nothing left to stop it. The watchdog
+    thread in lane_follow.py dies with the process. This is a separate process holding the other end of a pipe:
+    when the pipe closes or goes quiet for GUARD_SEC, it writes duty 0 (PWMA low = motor braked).
+    """
+
+    def __init__(self, duty_file, limit=GUARD_SEC):
+        self.proc = subprocess.Popen([sys.executable, "-S", "-c", _GUARD_CODE, str(duty_file), str(limit)],
+                                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     start_new_session=True, close_fds=True)     # Own session: Ctrl+C in the terminal does not reach it.
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._beat, args=(limit / 5,), daemon=True)
+        self._thread.start()
+
+    def _send(self, data):
+        try:
+            os.write(self.proc.stdin.fileno(), data)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _beat(self, every):
+        while not self._stop.wait(every):
+            if not self._send(b"."):
+                return
+
+    def close(self):
+        """Clean exit: the motor is already stopped by the program, so the guard just leaves."""
+        self._stop.set()
+        self._thread.join(timeout=1)
+        self._send(b"q")
+        try:
+            self.proc.stdin.close()
+            self.proc.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
 class HardwareMotor:
     """TB6612 channel A: speed on PWMA (GPIO13 hardware PWM, MOTOR_PWM_HZ), direction on AIN1 / AIN2.
 
@@ -127,6 +201,11 @@ class HardwareMotor:
         from gpiozero import DigitalOutputDevice
         self.pwm = SysfsPWM(1, round(1e9 / MOTOR_PWM_HZ))
         self.in1, self.in2 = DigitalOutputDevice(MOTOR_IN1), DigitalOutputDevice(MOTOR_IN2)
+        try:
+            self.guard = MotorGuard(self.pwm.pwm / "duty_cycle")
+        except OSError as e:
+            self.guard = None
+            print(f"[warning] motor guard not started ({e}): a crash of this program would leave the motor running")
 
     def _run(self, a, b, speed):
         self.in1.value, self.in2.value = a, b
@@ -143,6 +222,8 @@ class HardwareMotor:
 
     def close(self):
         self.stop()
+        if self.guard:
+            self.guard.close()
         self.pwm.close()
         self.in1.close()
         self.in2.close()
@@ -221,8 +302,18 @@ class Car:
         self.motor.close()
 
 
+def stop_on_signals():
+    """Make `aicar stop` (SIGTERM) and a dropped ssh session (SIGHUP) end the program like Ctrl+C, so its
+    finally block runs: motor off, wheels centered, pins released. Without this the process just dies mid-drive."""
+    def stop(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGHUP, stop)
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "center"
+    stop_on_signals()
     car = Car()
     try:
         if cmd == "center":

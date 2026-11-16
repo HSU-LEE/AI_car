@@ -15,7 +15,7 @@ import sys
 import termios
 import tty
 
-from car import CALIB_FILE, Car, load_calib, load_trim
+from car import CALIB_FILE, Car, load_calib, load_trim, stop_on_signals
 
 MAX_TRIM = 20
 
@@ -32,6 +32,7 @@ def getkey():
 
 def main():
     print(__doc__)
+    stop_on_signals()       # aicar stop, or the ssh session dropping, ends this like Ctrl+C.
     car = Car()
     trim = load_trim()
     steps = {"z": -0.1, "c": 0.1, "a": -0.5, "d": 0.5, "A": -2, "D": 2}
@@ -53,9 +54,11 @@ def main():
                 car.trim, car.bias = trim, 0.0
                 print(f"\nSaved: {CALIB_FILE} (steer_trim = {trim:+.1f})")
                 break
-            elif key in ("q", "\x03"):
+            elif key in ("q", "\x03", ""):     # "" = the terminal is gone (ssh dropped).
                 print("\nQuit without saving")
                 break
+    except KeyboardInterrupt:
+        print("\nQuit without saving")
     finally:
         car.close()
 

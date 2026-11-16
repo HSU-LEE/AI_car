@@ -38,6 +38,13 @@ method=disabled
 EOF
 chmod 600 $R/etc/NetworkManager/system-connections/AICAR-AP.nmconnection
 
+# Wi-Fi power saving off for every network, the USB adapter's too: it delays incoming traffic (SSH, the web view).
+mkdir -p $R/etc/NetworkManager/conf.d
+cat > $R/etc/NetworkManager/conf.d/wifi-powersave-off.conf <<EOF
+[connection]
+wifi.powersave=2
+EOF
+
 # --- first-boot config via cloud-init ---
 cat > $B/user-data <<EOF
 #cloud-config
