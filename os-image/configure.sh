@@ -65,6 +65,10 @@ runcmd:
 - [rfkill, unblock, wifi]
 - [systemctl, enable, --now, ssh]
 - [nmcli, connection, up, AICAR-AP]
+# Faster later boots (as pi/fast_boot.sh): first-boot setup is done, so cloud-init is not needed again, and no
+# network wait, Bluetooth, LVM cleanup or automatic apt jobs (they could start in the middle of a drive).
+- [systemctl, disable, NetworkManager-wait-online.service, e2scrub_reap.service, bluetooth.service, apt-daily.timer, apt-daily-upgrade.timer, man-db.timer]
+- [touch, /etc/cloud/cloud-init.disabled]
 EOF
 touch $B/ssh
 
@@ -74,6 +78,7 @@ grep -q '^dtparam=i2c_arm=on' $B/config.txt || printf '\n# AICAR\ndtparam=i2c_ar
 # Hardware PWM: channel 0 on GPIO18 (steering servo), channel 1 on GPIO13 (motor speed, 20 kHz in car.py). Camera Module 3.
 grep -q '^dtoverlay=pwm' $B/config.txt || printf 'dtoverlay=pwm-2chan,pin=18,func=2,pin2=13,func2=4\n' >> $B/config.txt
 grep -q '^dtoverlay=imx708' $B/config.txt || printf 'dtoverlay=imx708\n' >> $B/config.txt
+grep -q '^# Faster boot (aicar)' $B/config.txt || printf '\n# Faster boot (aicar): no rainbow screen, no Bluetooth (the UART stays free)\ndisable_splash=1\ndtoverlay=disable-bt\n' >> $B/config.txt
 grep -q '^i2c-dev' $R/etc/modules || echo i2c-dev >> $R/etc/modules
 
 chroot $R systemctl enable ssh avahi-daemon NetworkManager >/dev/null 2>&1

@@ -144,6 +144,7 @@ menu_system() {
         '8|저장된 와이파이 삭제|$A wifi; echo; w=$(ask "삭제할 와이파이 이름: "); $A wifi-del "$w"' \
         '-' \
         '9|파이 재부팅|$A reboot' \
+        'f|부팅 빠르게 (안 쓰는 서비스 끄기, 되돌리기: aicar fast-boot undo)|$A fast-boot' \
         '0|파이 끄기 (전원 뽑기 전에)|y=$(ask "파이를 종료하시겠습니까? [y/N] "); [ "$y" = y ] && $A shutdown'
 }
 

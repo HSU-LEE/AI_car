@@ -2822,6 +2822,36 @@ def test_safe_settings():
     check("every settings file is written through safe_io (no in-place json writes left)", not loose, str(loose))
 
 
+def test_start_checks():
+    print("[drive start: a course that cannot run is refused before the motor and camera are opened]")
+    import course as cs
+    flat = cs._flat([cs.go(), cs.stop(1), finish()])
+    check("a plain course passes", lf.course_problem(flat, 1) is None and lf.course_problem(flat, 3) is None)
+    check("--start past the course end is refused", "--start 9" in (lf.course_problem(flat, 9) or "") and "--start 0" in (lf.course_problem(flat, 0) or ""))
+    old_stop, old_x, old_on = lf.STOP_MODEL, lf.XWALK_MODEL, cs.STOP_POINTS_ON
+    try:
+        lf.STOP_MODEL, cs.STOP_POINTS_ON = None, True       # With STOP_POINTS_ON = False, go_to() is a plain go() and needs no stop point.
+        need_stop = lf.course_problem(cs._flat([cs.go_to("A"), finish()]))
+        cs.STOP_POINTS_ON = False
+        off = lf.course_problem(cs._flat([cs.go_to("A"), finish()]))
+        lf.XWALK_MODEL = None
+        need_x = lf.course_problem(cs._flat([cs._to_crosswalk(0.8), finish()]))
+    finally:
+        lf.STOP_MODEL, lf.XWALK_MODEL, cs.STOP_POINTS_ON = old_stop, old_x, old_on
+    check("go_to() with no stop point registered is refused (and passes with STOP_POINTS_ON = False)",
+          need_stop is not None and "not registered" in need_stop and off is None, str(need_stop))
+    check("_to_crosswalk() with no crosswalk registered is refused", need_x is not None and "registered crosswalk" in need_x)
+    check("next() without the web page is refused", "next()" in (lf.course_problem(cs._flat([cs.next(), finish()]), no_stream=True) or "")
+          and lf.course_problem(cs._flat([cs.next(), finish()])) is None)
+    src = Path(lf.__file__).read_text()
+    main = src[src.index("def main():"):]
+    opened = main.index("car = Car()")
+    check("the course is checked before anything is opened", main.index("course_problem(COURSE") < opened)
+    tail = main[opened:main.index("print(calibration_note())")]
+    check("every refusal after opening goes through refuse() (motor, camera and sensor released)",
+          "raise SystemExit" not in tail.replace("raise SystemExit(message)", "") and "except SystemExit as e:" in tail and "refuse(" in tail)
+
+
 def test_key_inbox():
     print("[web page key input]")
     script = lf.Stream.PAGE.split("<script>")[1].split("</script>")[0]
@@ -3584,7 +3614,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

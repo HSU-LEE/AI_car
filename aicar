@@ -439,6 +439,7 @@ AICAR commands  (in a Mac terminal: aicar <command>)
   check                  check the Pi Python environment
   test-vision            check detection and course logic on synthetic images (on the Mac, no Pi needed)
   reboot | shutdown      reboot / shut down the Pi safely (shutdown before unplugging)
+  fast-boot [undo]       boot faster: no network wait, cloud-init, Bluetooth or automatic apt jobs (they can start mid-drive)
   wifi                   Pi Wi-Fi status, saved networks, nearby networks
   wifi-add [name] [pw]   connect the Pi USB adapter to a new Wi-Fi and save it (asks if not given)
   wifi-del <name>        delete a saved Wi-Fi
@@ -512,6 +513,7 @@ case "$cmd" in
     check)       run "$(in_dir "$PY check_env.py")" 2>&1 | grep -E '^  (OK|FAIL)|Camera' ;;
     test-vision) ensure_mac_venv; "$ROOT/.venv/bin/python" "$ROOT/tests/test_vision.py" ;;
     reboot)      run "sudo reboot" 2>/dev/null; green "Rebooting. Reconnect in about a minute." ;;
+    fast-boot)   cmd_push && run_tty "bash ~/$REMOTE/fast_boot.sh ${1:-}" ;;
     shutdown)    run "sudo shutdown -h now" 2>/dev/null; green "Shutting the Pi down. Unplug the power once the green LED is off." ;;
 
     drive-keys)  cmd_push && run_tty "$(in_dir "$PY drive_keys.py ${1:+--max-speed $1}")" ;;

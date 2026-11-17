@@ -324,6 +324,22 @@ def calibration_note(path=None, today=None):
             + ("" if age in ("today", "?") else ". Light and place change: calibrate again at a new venue"))
 
 
+def course_problem(course, start=1, no_stream=False):
+    """Why this course cannot be driven as it is, or None. Checked before the motor and the camera are opened."""
+    if not 1 <= start <= max(len(course), 1):
+        return f"--start {start}: the course has steps 1 to {len(course)}"
+    wanted = {n for s in course if s.get("until") == "_stop" for n in ([s["stop"]] if isinstance(s["stop"], str) else s["stop"])}
+    missing = sorted(wanted - set(STOP_MODEL.names() if STOP_MODEL else []))
+    if missing:
+        return (f"go_to(): stop point(s) {', '.join(missing)} not registered (registered: {', '.join(STOP_MODEL.names()) if STOP_MODEL else 'none'}). "
+                "Register: aicar stoppoint")
+    if XWALK_MODEL is None and any(s.get("until") in ("_crosswalk", "_crossed") for s in course):
+        return "_to_crosswalk / _pass_crosswalk need a registered crosswalk: aicar crosswalk (menu: register crosswalk)"
+    if no_stream and any(s.get("until") == "enter" for s in course):
+        return "a course with next() needs the web page (leave out --no-stream)"
+    return None
+
+
 def motor_floor(angle):
     """Minimum motor command that actually rolls the car at this steering angle."""
     r = min(abs(angle) / STEER_LIMIT, 1.0)
@@ -3884,41 +3900,53 @@ def main():
     signal.signal(signal.SIGTERM, stop_on_signal)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)   # Keep driving if ssh drops. Stop with Ctrl+C or aicar stop.
 
-    car = Car()
+    # Checks that need no hardware come first: a refused course then never touches the motor or the camera.
+    problem = course_problem(COURSE, args.start, no_stream=args.no_stream)
+    if problem:
+        if box:
+            print(problem)      # Into the drive log too, so a refused start can be read back later.
+            box.close()
+        raise SystemExit(problem)
+
+    car = cam = obs = None
+
+    def refuse(message):
+        """Stop before driving: release everything opened so far, and keep the reason in the drive log."""
+        for name, fn in (("car", lambda: car and car.close()), ("camera", lambda: cam and cam.stop()),
+                         ("obstacle", lambda: obs and obs.close())):
+            try:
+                fn()
+            except Exception as e:
+                print(f"[error] {name}: {e}")
+        if box:
+            print(message)
+            box.close()
+        raise SystemExit(message)
+
     try:
-        from obstacle import Obstacle
-        obs = Obstacle()
-    except Exception as e:      # Driving still works if the sensor or module is missing.
-        print(f"[warning] obstacle sensor not used: {e}")
-        obs = None
-        # go_dis() drives until the sensor sees the barrier: with no sensor it would drive straight into it.
-        blind_steps = [i + 1 for i, st in enumerate(COURSE) if st.get("until") == "obstacle" and st["do"] != "wait" and i + 1 >= args.start]
-        if blind_steps and args.drive:
-            car.close()
-            raise SystemExit(f"step {blind_steps[0]} (go_dis) needs the distance sensor, which is not working ({e}). Not driving.")
-    if AUTO_TRIM:
-        car.load_bias()     # Continue with the center trim learned on a previous run.
-    cam = open_camera()
-    try:
+        car = Car()
+        try:
+            from obstacle import Obstacle
+            obs = Obstacle()
+        except Exception as e:      # Driving still works if the sensor or module is missing.
+            print(f"[warning] obstacle sensor not used: {e}")
+            obs = None
+            # go_dis() drives until the sensor sees the barrier: with no sensor it would drive straight into it.
+            blind_steps = [i + 1 for i, st in enumerate(COURSE) if st.get("until") == "obstacle" and st["do"] != "wait" and i + 1 >= args.start]
+            if blind_steps and args.drive:
+                refuse(f"step {blind_steps[0]} (go_dis) needs the distance sensor, which is not working ({e}). Not driving.")
+        if AUTO_TRIM:
+            car.load_bias()     # Continue with the center trim learned on a previous run.
+        cam = open_camera()
         driver = Driver(COURSE, args.start, args.speed, obs, load_person())
-    except ValueError as e:
-        raise SystemExit(e)
-    wanted = {n for s in driver.course.course if s["until"] == "_stop" for n in ([s["stop"]] if isinstance(s["stop"], str) else s["stop"])}
-    missing = sorted(wanted - set(STOP_MODEL.names() if STOP_MODEL else []))
-    if missing:
-        car.close()
-        cam.stop()
-        raise SystemExit(f"go_to(): stop point(s) {', '.join(missing)} not registered (registered: {', '.join(STOP_MODEL.names()) if STOP_MODEL else 'none'}). Register: aicar stoppoint")
-    if XWALK_MODEL is None and any(s["until"] in ("_crosswalk", "_crossed") for s in driver.course.course):
-        car.close()
-        cam.stop()
-        raise SystemExit("_to_crosswalk / _pass_crosswalk need a registered crosswalk: aicar crosswalk (menu: register crosswalk)")
-    pauses = any(s["until"] == "enter" for s in driver.course.course)
-    if pauses and args.no_stream:
-        raise SystemExit("a course with next() needs the web page (leave out --no-stream)")
-    # Only a course with next() sends keys to the program, so other drives keep the page's own keys.
-    stream = None if args.no_stream else Stream(args.port, "AICAR drive", "Enter next step (next)" if pauses else None)
-    rec = Recorder(args.speed, args.set) if args.record else None
+        pauses = any(s["until"] == "enter" for s in driver.course.course)
+        # Only a course with next() sends keys to the program, so other drives keep the page's own keys.
+        stream = None if args.no_stream else Stream(args.port, "AICAR drive", "Enter next step (next)" if pauses else None)
+        rec = Recorder(args.speed, args.set) if args.record else None
+    except SystemExit as e:
+        refuse(str(e))
+    except (ValueError, OSError, RuntimeError) as e:    # A bad course value, the camera or the motor not there: say why, release the rest.
+        refuse(f"cannot start: {type(e).__name__}: {e}")
     print(calibration_note())
     print("Traffic light:", f"registered ({', '.join(sorted(LIGHT_MODEL.colors()))})" if LIGHT_MODEL else "not registered (color thresholds)",
           "| crosswalk:", f"registered ({len(XWALK_MODEL.views)} views)" if XWALK_MODEL else "not registered",
