@@ -583,6 +583,7 @@ class LaneDetector:
         self.jump_last = self.jump_pending = None   # confirm_jump: the lane last given out, and a jump waiting for a second frame.
         self.jump_held = False      # This frame's jump was held back.
         self.jump_count = 0         # Frames held back in a row.
+        self.jump_gone = 0          # Frames with no lane in a row (confirm_jump keeps the last lane through a short loss).
         self.band_line = None       # Its center line this frame, (x at near_y, x at far_y) before clipping, or None.
         self.moving_since = None
         self.history = collections.deque(maxlen=40)     # (time, gray ROI) of recent frames for the motion test.
@@ -1472,6 +1473,7 @@ class LaneDetector:
             if self.tracker is None:
                 from lane_track import LaneTracker
                 self.tracker = LaneTracker()
+            self.tracker.use_far = LANE_MODEL == "track"     # Steering by it needs the far lines; the junction check does not.
             if side != "center":        # side= (follow one line only) is the band method's job: the tracker starts again after it.
                 self.tracker.reset()
             elif LANE_MODEL == "track":
@@ -1552,6 +1554,14 @@ class LaneDetector:
         the whole lane over for a single frame, and the car steered after it. Off during a turn and on one line (side=):
         there the lane really does move fast."""
         last, pending = self.jump_last, self.jump_pending
+        if det is None and not self.assist_turn and side == "center":
+            # A frame or two with no lane (a gap, glare) keeps the last lane to compare with: otherwise the first reading after
+            # it counted whatever it was, a one-frame misread included. A longer loss forgets it.
+            self.jump_gone += 1
+            if self.jump_gone > JUMP_HOLD_MAX:
+                self.jump_last, self.jump_pending, self.jump_held = None, None, False
+            return det
+        self.jump_gone = 0
         if JUMP_CONFIRM <= 0 or det is None or last is None or self.assist_turn or side != "center" \
                 or abs(det[0] - last[0]) <= JUMP_CONFIRM:
             self.jump_last, self.jump_pending, self.jump_held = det, None, False

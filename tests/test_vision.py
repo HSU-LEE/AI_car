@@ -3244,6 +3244,12 @@ def test_confirm_jump():
     noisy = [d.confirm_jump(x, "center") for x in [(0.9, 0), (-0.9, 0), (0.9, 0), (-0.9, 0)]]
     check(f"never more than {lf.JUMP_HOLD_MAX} frames held in a row", noisy[lf.JUMP_HOLD_MAX] != (0.0, 0.0), str(noisy))
     d.jump_last, d.jump_pending, d.jump_held = (0.0, 0.0), None, False
+    gap = [d.confirm_jump(x, "center") for x in [None, (0.9, 0.0), (0.02, 0.0)]]
+    check("one frame with no lane: a misread right after it is still held", gap[1] == (0.0, 0.0) and gap[2] == (0.02, 0.0), str(gap))
+    d.jump_last, d.jump_pending, d.jump_held = (0.0, 0.0), None, False
+    long = [d.confirm_jump(x, "center") for x in [None] * (lf.JUMP_HOLD_MAX + 1) + [(0.9, 0.0)]]
+    check("a longer loss forgets the old lane: the new reading is taken", long[-1] == (0.9, 0.0), str(long))
+    d.jump_last, d.jump_pending, d.jump_held = (0.0, 0.0), None, False
     d.assist_turn = True
     check("during a turn every reading is taken at once", d.confirm_jump((0.9, 0.0), "center") == (0.9, 0.0))
     d.assist_turn = False

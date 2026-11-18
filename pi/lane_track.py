@@ -75,6 +75,7 @@ class LaneTracker:
         self.relocked_at = None
         self.frame_no = 0
         self.far_cache = (np.zeros((0, 4)), 0)
+        self.use_far = True     # Read the strip above the band area up to near the horizon (off for the junction check alone).
         self.support = (0.0, 0.0)
         self.conf = 0.0
         self.age = 0            # Frames the current lane has been held since it started or re-locked.
@@ -201,9 +202,12 @@ class LaneTracker:
             return None
         near = self.runs_of(det.mask, top, TRACK_ROW_STEP, float(TRACK_ROW_STEP))     # Weighted back up: the near rows keep their share against the far strip.
         self.frame_no += 1
-        if self.frame_no % max(TRACK_FAR_EVERY, 1) == 0 or self.far_cache[1] == 0:
-            self.far_cache = self.far_lines(lf, frame, det.thr, top)
-        far, y0 = self.far_cache
+        if not self.use_far:        # Junction check only: it judges lines in the band area, so the far strip is not read.
+            far, y0 = np.zeros((0, 4)), top
+        else:
+            if self.frame_no % max(TRACK_FAR_EVERY, 1) == 0 or self.far_cache[1] == 0:
+                self.far_cache = self.far_lines(lf, frame, det.thr, top)
+            far, y0 = self.far_cache
         if not len(near):           # Nothing near the car: an old far reading must not keep a lane alive that is gone.
             far = far[:0]
         runs = np.vstack([near, far]) if len(far) else near
