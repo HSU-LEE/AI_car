@@ -28,6 +28,7 @@ WINDOW = 0.15           # Window used for the on-ratio.
 ON_RATIO = 0.6          # On-ratio at or above this means an obstacle.
 OFF_RATIO = 0.2         # Must fall to this or below before it clears.
 HOLD = 0.3              # Minimum time an on reading is kept, seconds.
+FAIL_READS = 20         # Failed reads in a row (0.1 s) before the sensor counts as broken.
 
 
 class Obstacle:
@@ -38,13 +39,26 @@ class Obstacle:
         self.ratio = 0.0
         self._near = False
         self._near_since = 0.0
+        self.error = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def _run(self):
+        fails = 0
         while not self._stop.is_set():
-            self.samples.append(self.dev.value)
+            try:
+                value = self.dev.value
+                fails = 0
+            except Exception as e:      # Kept failing: the thread stops and near reads as an obstacle.
+                fails += 1
+                if fails >= FAIL_READS:
+                    self.error = e
+                    print(f"[error] obstacle sensor stopped: {e}", flush=True)
+                    return
+                time.sleep(SAMPLE_DT)
+                continue
+            self.samples.append(value)
             self.ratio = sum(self.samples) / len(self.samples)
             now = time.monotonic()
             if not self._near and self.ratio >= ON_RATIO:
@@ -55,7 +69,9 @@ class Obstacle:
 
     @property
     def near(self):
-        return self._near
+        """An obstacle in front. A sensor that stopped working reads as one: go_dis() then stops, and a wait for
+        clear (start_gate) keeps waiting, instead of driving on with the last reading."""
+        return self._near or self.error is not None or (not self._thread.is_alive() and not self._stop.is_set())
 
     def close(self):
         self._stop.set()

@@ -61,8 +61,11 @@ CAMERA_X = 0.5          # Where the car centerline falls across the frame. visio
 
 LINE_MODE = "lane"      # "lane": drive between both lines. "line": follow a single line.
 ROI_TOP = 0.4           # Use only from this fraction of the frame height downward. A smaller value looks farther ahead.
-LANE_MODEL = getattr(_course, "LANE_MODEL", "bands")    # course.py. "bands": a point per line in each of SLICES bands, a straight line through them (the method so far).
-                        # "track": one lane model fitted to every line pixel up to near the horizon, tracked frame to frame (lane_track.py).
+LANE_MODEL = "bands"    # Driving always reads the lane this way: a point per line in each band, a straight line through them.
+                        # course.py cannot switch it. "track" (lane_track.py: one lane model fitted to every line pixel up to
+                        # near the horizon, tracked frame to frame) is experimental: tests and the simulator set it directly.
+JUNCTION_TRACK_ASSIST = getattr(_course, "JUNCTION_TRACK_ASSIST", False)   # course.py. The tracker only removes false junctions and
+                        # false lane ends. It never steers and never adds one. Off: detection is exactly as before.
 STEER_MODE = "pursuit"  # With LANE_MODEL = "track": "pursuit" steers onto an arc through the lane center LOOK_LW ahead (uses the bend of
                         # the lane); "pd" keeps the position / heading steering (KP, KH). The band method always uses "pd".
 LOOK_LW = 0.5           # pursuit: target this many lane widths ahead of the camera. Longer = smoother, shorter = tighter in curves.
@@ -557,7 +560,9 @@ class LaneDetector:
         self.curve_t = None                     # Last time a line leaving its straight path was judged a curve of the whole lane.
         self.now, self.moving = None, False     # Set by Driver before each frame: time, and driving forward without a big steer (motion test).
         self.tracker = None         # LANE_MODEL = "track": the lane tracker (lane_track.py), made on first use.
+        self.assist_turn = False
         self.det_bands = None       # The band method's own answer this frame, whichever LANE_MODEL drives.
+        self.band_line = None       # Its center line this frame, (x at near_y, x at far_y) before clipping, or None.
         self.moving_since = None
         self.history = collections.deque(maxlen=40)     # (time, gray ROI) of recent frames for the motion test.
         self.glare_spots = []                   # (x0, y0, x1, y1, time) of blobs judged reflections by motion, in ROI px.
@@ -671,9 +676,11 @@ class LaneDetector:
         counts = np.bincount(bottom[bottom > 0], minlength=n)
         if counts.max() == 0:
             return None
-        pts = cv2.findNonZero((labels == counts.argmax()).astype(np.uint8))
+        blob = (labels == counts.argmax()).astype(np.uint8)
+        # The hull of the outline is the hull of every pixel, and the outline is a few points instead of the whole mat.
+        contours, _ = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         hull = np.zeros_like(small)
-        cv2.fillConvexPoly(hull, cv2.convexHull(pts), 255)
+        cv2.fillConvexPoly(hull, cv2.convexHull(contours[0]), 255)
         hull = cv2.dilate(hull, np.ones((3, 3), np.uint8))
         return cv2.resize(hull, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -847,9 +854,27 @@ class LaneDetector:
         g = self._roi_gray(roi)[y0:y1, x0:x1].astype(np.float32)    # The ROI's gray, made once per frame (the same pixels as converting the crop).
         if LINE_COLOR == "black":
             g = 255 - g
-        mag = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
+        mag = self._roi_mag(roi)[y0:y1, x0:x1]     # One Sobel for the whole frame: the edge sits inside the crop, so it matches a Sobel of the crop.
         contrast = pct(g[blob > 0], 90) - pct(g[ring], 50)
         return float(pct(mag[edge], 90) / max(contrast, 1.0))
+
+    def _roi_mag(self, roi):
+        """Edge magnitude of the ROI gray (Sobel / 8), made once per frame and shared by every blob."""
+        gray = self._roi_gray(roi)
+
+        def make():
+            g = gray.astype(np.float32)
+            if LINE_COLOR == "black":
+                g = 255 - g
+            return np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
+
+        cache = getattr(self, "_sharp_cache", None)
+        if cache is None:
+            return make()
+        key = ("mag", gray.__array_interface__["data"][0])
+        if key not in cache:
+            cache[key] = make()
+        return cache[key]
 
     def _roi_gray(self, roi):
         """Gray of this picture (uint8). Inside a detection it is made once per frame and shared (line mask, reflections);
@@ -1316,7 +1341,43 @@ class LaneDetector:
                 best = (last, side)
         if best is not None:
             self.end_y, self.end_side = top + best[0], best[1]
+            self.drop_continued_end(top, best[0], best[1])
         return self.end_y
+
+    def drop_continued_end(self, top, last, side):
+        """Drop a lane end the other line could not confirm, when the ending line itself runs on along the tracked lane.
+
+        lane_bends needs the other line. With it out of sight the end stands, and a curve is read as the lane ending.
+        The line has to still lie on the tracked lane above the end, including the rows just above it where a curve
+        has left the straight fit but not the lane (runs 20261110-103523 frame 109, 183806 frame 132)."""
+        t = self.tracker
+        if not JUNCTION_TRACK_ASSIST or t is None or not t.ready(self.assist_turn):
+            return
+        if self.lane_bends(side, last, self.mask > 0, top, {}) is not None:
+            return
+        import lane_track
+        mask = self.mask > 0
+        which = -1 if side == "left" else 1
+
+        def along(start, stop, tol_share, need, least):
+            hit = rows = 0
+            for dy in range(start, stop, 2):
+                yy = last - dy
+                if yy < 0:
+                    break
+                s = top + yy - HORIZON_Y
+                if s <= 4:
+                    break
+                rows += 1
+                left, right, _ = t.lines_at(t.p, s)
+                x = left if which < 0 else right
+                tol = max(4.0, tol_share * t.p[2] * s)
+                if mask[yy, max(int(x - tol), 0):min(int(x + tol) + 1, mask.shape[1])].any():
+                    hit += 1
+            return rows >= least and hit / rows >= need
+
+        if along(2, 16, 0.35, lane_track.TRACK_END_NEAR, 6) or along(6, 36, 0.2, lane_track.TRACK_END_CONTINUE, 8):
+            self.end_y = self.end_side = None
 
     def lane_bends(self, side, last, mask, top, walks):
         """Whether the whole lane curves where this side's line left its straight path (row last): the other line bends the same way.
@@ -1397,21 +1458,24 @@ class LaneDetector:
         draw=False skips the debug drawing. Detection is unchanged, and the debug image is None, which is faster when the view is not being sent.
         """
         self._sharp_cache = {}      # This frame's gray and edge pictures, shared by every blob_sharpness() call inside it.
+        self.band_line = None
         try:
             det, junction, dbg = self._detect(frame, side, draw)
         finally:
             self._sharp_cache = None
         self.det_bands = det
-        if LANE_MODEL == "track":
+        if LANE_MODEL == "track" or JUNCTION_TRACK_ASSIST:
             if self.tracker is None:
                 from lane_track import LaneTracker
                 self.tracker = LaneTracker()
             if side != "center":        # side= (follow one line only) is the band method's job: the tracker starts again after it.
                 self.tracker.reset()
-            else:
+            elif LANE_MODEL == "track":
                 det = self.tracker.update(sys.modules[__name__], self, frame, self.now)
                 if dbg is not None:
                     self.draw_track(dbg)
+            else:
+                self.tracker.update(sys.modules[__name__], self, frame, self.now)     # Junction and lane-end checks only: the band reading stands.
         return det, junction, dbg
 
     def draw_track(self, dbg):
@@ -1494,8 +1558,17 @@ class LaneDetector:
                 inside = min(hrun[1], prev[1]) - max(hrun[0], prev[0])
                 if inside < HLINE_LANE_SHARE * (prev[1] - prev[0]):
                     hrun = None
+            # The lane-end test sees the line as the band method judged it. The assist below only takes lines off the junction.
+            gap_hline = hrun is not None
+            if hrun is not None and prev is None and JUNCTION_TRACK_ASSIST and self.tracker is not None:
+                # No memory of both lines: the same test, using the tracked lane. It only ever drops a line.
+                guessed = self.tracker.assist_lane(sys.modules[__name__], cy, self.assist_turn)
+                if guessed is not None:
+                    inside = min(hrun[1], guessed[1]) - max(hrun[0], guessed[0])
+                    if inside < HLINE_LANE_SHARE * (guessed[1] - guessed[0]):
+                        hrun = None
             hline = hrun is not None
-            bands.append((cy, lines, hline or crosswalk))
+            bands.append((cy, lines, gap_hline or crosswalk))
             if hline and cy >= jy or (JUNCTION_BY_BRANCH and i < 2 and len(lines) >= 3):
                 junction = True
             if hline:
@@ -1614,6 +1687,7 @@ class LaneDetector:
             x_near, x_far = np.polyval(fit, near_y), np.polyval(fit, far_y)
         else:
             x_near = x_far = pts[0][1]
+        self.band_line = (x_near, x_far)    # Before the clip below: where the tracker (LANE_MODEL "track") starts from.
         if draw and LANE_MODEL != "track":      # With the tracker, its own lane is drawn instead (draw_track).
             dbg.line((int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
             dbg.line((int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
@@ -2102,7 +2176,8 @@ class CourseRunner:
         self.end_hits = 0
         step = self.step()
         if step is None:
-            print("\n[course end] following the lane from here on")
+            self.done = True
+            print("\n[course end] stopped")
             return
         if step["do"] in ("straight", "left", "right") and step["until"] == "lane":
             # Straight through a gap, or a turn: the lane visible at the start (before the gap, before the turn) must disappear once and be found again, so the action does not end immediately.
@@ -2256,10 +2331,11 @@ class CourseRunner:
             self.since[k] = (self.since[k] if self.since[k] is not None else now) if v else None
             if not v:
                 self.armed[k] = True
-            elif k == "junction" and until == "junction" and self.count == 0:
+            elif k == "junction" and until == "junction" and self.count == 0 and not self.junc_used:
                 # The line in front is the one this action is driving to. It often stays in view the whole way,
                 # so waiting for it to vanish once meant it never counted and the car drove through it.
                 # nth= has already passed a line when count > 0: that line must still disappear before the next one counts.
+                # So must the line the last action ended on (go(); go() with no blind_sec ended the second one on it at once).
                 self.armed[k] = True
         self.note_junction(ys.get("junction"), det, blind)
 
@@ -3461,7 +3537,8 @@ class Driver:
             self.aim = None
             return None
         look = (LOOK_LW + LOOK_SPEED_LW * max(base, 0.0)) * STYLE_LOOK.get(course.opt("style", "normal"), 1.0)
-        out = t.pursuit(sys.modules[__name__], look, WHEELBASE_LW, CAM_AHEAD_LW)
+        out = t.pursuit(sys.modules[__name__], look, WHEELBASE_LW, CAM_AHEAD_LW,
+                        course.opt("shift", 0.0) * LANE_PX_PER_CM / REF_LANE_PX)      # shift= in lane widths, as the band method takes it.
         if out is None:
             self.aim = None
             return None
@@ -3655,7 +3732,9 @@ class Driver:
                  ("LIGHT", on_light is not None,
                   (40, 40, 255) if on_light == "red" else (60, 220, 60), (on_light or "").upper() or None),
                  ("OBSTACLE", bool(self.obs and self.obs.near), (0, 140, 255), None),
-                 ("PERSON", bool(self.person and self.person.seen), C_PERSON, None)]
+                 ("PERSON", bool(self.person and self.person.seen), C_PERSON, None),
+                 ("CHECK", JUNCTION_TRACK_ASSIST and detect.tracker is not None and detect.tracker.p is not None, C_AT,
+                  f"{detect.tracker.conf:.0%}" if detect.tracker is not None and detect.tracker.p is not None else None)]
         for k, (name, on, color, val) in enumerate(items):
             x, yy = 12 + (k % 2) * ((W - 24) // 2 + 2), 242 + (k // 2) * 24
             w = (W - 24) // 2 - 2
@@ -3682,6 +3761,7 @@ class Driver:
             if detect.tracker is not None:      # Likewise the tracked lane: it is the old one. It starts again from the new lane.
                 detect.tracker.reset()
         detect.now = now
+        detect.assist_turn = course.turning(now)   # The junction check does not trust the tracked lane mid turn: it is the old one.
         detect.moving = self.speed > 0 and abs(steering.angle) < GLARE_STEER_MAX     # Driving forward: the motion test for reflections can run.
         det, junction, dbg = detect(frame, course.lane_side(now), draw=show)     # Skip drawing when the view is not being sent.
         step = course.step()
@@ -3746,6 +3826,7 @@ class Driver:
                 self.ends.watch(line_y, now)
         if course.done:
             self.done = True
+            self.speed = 0.0
             return None, 0.0, dbg
 
         base = course.speed if course.speed is not None else self.base_speed
@@ -3798,7 +3879,9 @@ class Driver:
         # Mat-edge stop is skipped while the lane is visible or during a turn, so a false hit does not stop the car.
         self.edge = detect.edge and det is None and not course.turning(now)
         red_angle = self.search_red(now, hold)
-        if target is None:      # Lane lost during follow: hold the previous steering, up to LOST_HOLD seconds.
+        # Lane lost during follow: hold the previous steering, up to LOST_HOLD seconds. Standing still does not count: a lane
+        # unseen through stop(6.5) on a crosswalk read as long lost the moment the car set off, and it backed up.
+        if target is None and not course.stopped(now):
             self.lost_since = self.lost_since if self.lost_since is not None else now
         else:
             self.lost_since = None
@@ -4031,10 +4114,14 @@ def main():
         except Exception as e:      # Driving still works if the sensor or module is missing.
             print(f"[warning] obstacle sensor not used: {e}")
             obs = None
-            # go_dis() drives until the sensor sees the barrier: with no sensor it would drive straight into it.
-            blind_steps = [i + 1 for i, st in enumerate(COURSE) if st.get("until") == "obstacle" and st["do"] != "wait" and i + 1 >= args.start]
+            # go_dis() drives until the sensor sees the barrier: with no sensor it would drive straight into it. A wait for
+            # "clear" (start_gate) would pass at once, with the barrier still down.
+            blind_steps = [i + 1 for i, st in enumerate(COURSE) if i + 1 >= args.start and
+                           (st.get("until") == "clear" or (st.get("until") == "obstacle" and st["do"] != "wait"))]
             if blind_steps and args.drive:
-                refuse(f"step {blind_steps[0]} (go_dis) needs the distance sensor, which is not working ({e}). Not driving.")
+                st = COURSE[blind_steps[0] - 1]
+                refuse(f"step {blind_steps[0]} ({st['do']} until {st['until']}) needs the distance sensor, "
+                       f"which is not working ({e}). Not driving.")
         if AUTO_TRIM:
             car.load_bias()     # Continue with the center trim learned on a previous run.
         cam = open_camera()
@@ -4052,6 +4139,8 @@ def main():
           "| crosswalk:", f"registered ({len(XWALK_MODEL.views)} views)" if XWALK_MODEL else "not registered",
           "| lines:", f"registered (reflection cut {LINE_MODEL.reflect_cut():.2f})" if LINE_MODEL else "not registered",
           "| stop points:", ", ".join(STOP_MODEL.names()) if STOP_MODEL else "none")
+    print("Lane:", LANE_MODEL, "| junction check:", "on" if JUNCTION_TRACK_ASSIST else "off",
+          "(false junctions and false lane ends only; steering stays the band method)" if JUNCTION_TRACK_ASSIST and LANE_MODEL != "track" else "")
     print("Motor", "ON" if args.drive else "OFF (steering only)",
           f"| course {len(COURSE)} steps, from {args.start} | Ctrl+C to stop")
 
@@ -4079,6 +4168,7 @@ def main():
                     raise
                 continue
             if driver.done:
+                watchdog.drive(0)     # The last step ended: stop now, not only when the pins are released below.
                 print("\nCourse done")
                 break
             if steer is not None:
@@ -4124,27 +4214,38 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped")
     finally:
-        # Motor first: nothing below may keep the car moving if it fails.
-        if watchdog:
-            watchdog.close()
-        try:
-            car.close()
-        except Exception as e:
-            print(f"\n[error] car.close: {e}")
+        def release():
+            # Motor first: nothing below may keep the car moving if it fails.
+            if watchdog:
+                watchdog.close()
             try:
-                car.drive(0)
+                car.close()
+            except Exception as e:
+                print(f"\n[error] car.close: {e}")
+                try:
+                    car.drive(0)
+                except Exception:
+                    pass
+            for name, fn in (("save_bias", lambda: (car.save_bias(), print(f"\nAuto trim saved: {car.bias:+.1f} deg")) if AUTO_TRIM and args.drive else None),
+                             ("camera", cam.stop),
+                             ("obstacle", lambda: obs.close() if obs else None),
+                             ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
+                                                             print(f"Recording saved: {rec.dir} ({rec.n} frames)"))),
+                             ("drive log", lambda: box and (print(f"Drive log: {box.dir} ({box.n} frames)"), box.close(driver)))):
+                try:
+                    fn()
+                except Exception as e:
+                    print(f"\n[error] {name}: {e}")
+
+        try:
+            release()
+        except KeyboardInterrupt:
+            # A second Ctrl-C used to leave this block, so the motor could stay on.
+            try:
+                if car is not None:
+                    car.stop()
             except Exception:
                 pass
-        for name, fn in (("save_bias", lambda: (car.save_bias(), print(f"\nAuto trim saved: {car.bias:+.1f} deg")) if AUTO_TRIM and args.drive else None),
-                         ("camera", cam.stop),
-                         ("obstacle", lambda: obs.close() if obs else None),
-                         ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
-                                                         print(f"Recording saved: {rec.dir} ({rec.n} frames)"))),
-                         ("drive log", lambda: box and (print(f"Drive log: {box.dir} ({box.n} frames)"), box.close(driver)))):
-            try:
-                fn()
-            except Exception as e:
-                print(f"\n[error] {name}: {e}")
 
 
 if __name__ == "__main__":

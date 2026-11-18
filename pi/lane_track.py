@@ -18,11 +18,14 @@ weighted least squares, solved a few times while pixels far from the model lose 
 
 Each frame:
   1. The line pixels (the band method's mask, plus a strip above it up to near the horizon) become runs: one per row and line piece.
+     In the strip only the pieces that reach down to the band area count: a lane line runs on from the near lines, while the
+     edges of walls, boxes and chair legs near the horizon stand apart, and the bend terms (largest so far up) would follow them.
   2. Runs near the left or the right model line (in lane widths) are given to that line. Wide runs are lines across the lane
      (a junction) and are left out; so are pieces between the lines (crosswalk stripes, reflections) and far outside them.
   3. Weighted least squares for [B, M, D, C, E], with the last frame's lane as a soft prior: one line alone, or a gap, still
      gives the whole lane, and nothing jumps.
-  4. Confidence from how much of each line was found. With too little for a while, it starts again from the band method.
+  4. Confidence from how much of each line was found. With too little for a while, it starts again from the band method
+     (from its line points in the bands it kept on its center line).
 Position and heading come out exactly as the band method defines them (the same rows), so steering and every course test work as before.
 """
 import cv2
@@ -43,10 +46,11 @@ TRACK_RELOCK_DIFF = 0.3     # The band method sees both lines, a plausible width
 TRACK_RELOCK_FRAMES = 4     # tracker's by more than this (in the steering position unit) this many frames in a row: the tracker
                             # is the one that is wrong (it held on to a misread), so it starts again from the band method.
 TRACK_RELOCK_BANDS = 3      # Bands with both lines needed for the band method to count as sure.
-TRACK_EMPTY_FRAMES = 2
-TRACK_FAR_EVERY = 2         # The far strip is read every this many frames (it changes slowly; the last reading is used in between).      # Frames with no line pixel near either line at all: the lane is gone, not in a gap (a dashed line still shows pieces).
+TRACK_EMPTY_FRAMES = 2      # Frames with no line pixel near either line at all: the lane is gone, not in a gap (a dashed line still shows pieces).
+TRACK_FAR_EVERY = 2         # The far strip is read every this many frames (it changes slowly; the last reading is used in between).
 TRACK_MIN_SUPPORT = 0.12    # Share of rows with a line found, below which the frame does not count as tracked.
 TRACK_FAR_WEIGHT = 0.5      # Weight of rows above the band area (thin, far, less sure).
+TRACK_FAR_LINK = 2          # A piece of line above the band area counts only if it reaches this close to the band area (half-size rows).
 TRACK_ROW_STEP = 3          # Every this many rows of the band area are read: a smooth model needs no more, and the Pi saves time.
 TRACK_INSIDE = 0.6          # The car is inside the lane: |M| below this share of D. Beyond it the lines were taken for each other.
 TRACK_D_RANGE = (0.85, 1.18)    # The lane width D stays within this share of the calibrated width (LANE_WIDTH_PX).
@@ -54,6 +58,12 @@ TRACK_D_RETURN = 0.05       # Each frame D moves this share of the way back to t
                             # everywhere, so a width learned from a misread (one line, a reflection) cannot stay.
 TRACK_BOTH_MIN = 25         # Runs each line needs before the lane width D may change. With one line only, nothing measures the width:
                             # a wider lane and a sharper bend explain one line equally well, so D is held and only the bend moves.
+TRACK_ASSIST_CONF = 0.6     # Junction check: the tracked lane stands in for missing line memory only when the tracker is at least this sure.
+TRACK_ASSIST_FRAMES = 10    # ...and has held the lane this many frames since it started or re-locked (a fresh model can be the next lane).
+TRACK_END_CONTINUE = 0.3    # Farther above a reported lane end, the line still on the tracked lane over this share of rows: it did not end.
+TRACK_END_NEAR = 0.5        # The same, in the rows just above the end. A curve leaves the straight fit but is still on the tracked line there.
+TRACK_ASSIST_SUPPORT = 0.12  # ...and both lines were found last frame, each at least this share of the rows (TRACK_MIN_SUPPORT). One line only
+                            # and the model can sit a whole lane off while looking sure (run 20261110-183806 frame 316: support 0.55 and 0.01).
 
 
 class LaneTracker:
@@ -67,6 +77,7 @@ class LaneTracker:
         self.far_cache = (np.zeros((0, 4)), 0)
         self.support = (0.0, 0.0)
         self.conf = 0.0
+        self.age = 0            # Frames the current lane has been held since it started or re-locked.
         self.runs = None        # Last frame's runs and which line each went to, for the view.
         self.far_mask = None
 
@@ -78,7 +89,7 @@ class LaneTracker:
         return c - D * s / 2, c + D * s / 2, c
 
     def reset(self):
-        self.p, self.bad = None, 0
+        self.p, self.bad, self.age = None, 0, 0
 
     @staticmethod
     def inside(p):
@@ -127,19 +138,39 @@ class LaneTracker:
         half = cv2.resize(gray, (gray.shape[1] // 2, gray.shape[0] // 2), interpolation=cv2.INTER_AREA)
         tophat = lf.tophat_ellipse(half, max(lf.TOPHAT_K // 2, 3))
         mask = cv2.threshold(tophat, int(np.ceil(thr)) - 1, 255, cv2.THRESH_BINARY)[1]
+        # A lane line reaches the band area; a chair leg or box edge near the horizon does not (run 20261110-191610).
+        # Joining gaps let those edges back in, so only pieces that already touch the bottom rows are kept.
+        r0 = max(mask.shape[0] - TRACK_FAR_LINK - 1, 0)
+        ys, xs = np.nonzero(mask[r0:])
+        for y, x in zip((ys + r0).tolist(), xs.tolist()):
+            if mask[y, x] == 255:
+                cv2.floodFill(mask, None, (x, y), 128, flags=8)
+        mask = mask == 128
         self.far_mask = (y0, mask)
         return self.runs_of(mask, y0, 1, TRACK_FAR_WEIGHT, scale=2), y0       # Read at half size: far lines are thin anyway.
 
     # --- start from the band method ---
     def init_from_bands(self, lf, det):
-        """A first lane from the band method's line points (left / right per band), with the calibrated lane width."""
+        """A first lane from the band method's line points (left / right per band), with the calibrated lane width.
+
+        Only the bands whose center lies on the band method's final center line (det.band_line): it has dropped the
+        bands that do not line up (another lane's line in one band). A fit through every band put the whole lane one
+        lane width off (run 20261112-193530 started on the next lane and, seeing one line only, never re-locked).
+        No answer from the band method: no start."""
         H = lf.HORIZON_Y
         D0 = lf.LANE_WIDTH_PX / max(342 - H, 1.0)
         top = int(lf.FRAME_H * lf.ROI_TOP)
         h = (lf.FRAME_H - top) // lf.SLICES
+        if det.det_bands is None:
+            return False
+        line = getattr(det, "band_line", None)
+        near_y, far_y = lf.FRAME_H - h // 2, top + h // 2
         rows, xs, sides = [], [], []
         for i in range(lf.SLICES):
             cy = lf.FRAME_H - (i + 1) * h + h // 2
+            if line is not None and det.center[i] is not None and \
+                    abs(det.center[i] - line[0] - (line[1] - line[0]) * (cy - near_y) / (far_y - near_y)) >= lf.OUTLIER_PX:
+                continue
             for side, arr in ((-1, det.left), (1, det.right)):
                 if arr[i] is not None:
                     rows.append(cy - H)
@@ -154,12 +185,15 @@ class LaneTracker:
         sol, *_ = np.linalg.lstsq(A, y, rcond=None)
         self.p = self.inside(np.array([sol[0], sol[1], D0, 0.0, 0.0]))
         self.bad = 0
+        self.age = 0
         return True
 
     # --- one frame ---
     def update(self, lf, det, frame, now=None):
         """Track the lane in this frame. det is the LaneDetector after its own pass (mask, line points, thr).
         Returns (offset, heading) as the band method defines them, or None when the lane is not tracked."""
+        if self.p is not None:      # init_from_bands resets age; this counts frames held since then.
+            self.age += 1
         H = lf.HORIZON_Y
         top = int(lf.FRAME_H * lf.ROI_TOP)
         if self.p is None and not self.init_from_bands(lf, det):
@@ -196,14 +230,15 @@ class LaneTracker:
             rc = (x - center) / lane_px             # Residual to the center line, in lane widths.
             to_left = rc < 0
             r = rc + np.where(to_left, 0.5, -0.5)  # ... and to the nearer of the two lines.
-            ok = (np.abs(r) < gate) & (width < TRACK_WIDE * lane_px)
+            ar = np.abs(r)
+            ok = (ar < gate) & (width < TRACK_WIDE * lane_px)
             side = np.where(ok, np.where(to_left, -1, 1), 0).astype(np.int8)
             n_l, n_r = int((side < 0).sum()), int((side > 0).sum())
             if n_l + n_r < 3:
                 break
             # Residuals in lane widths at their own row, with less weight beyond TRACK_HUBER (robust), times the run's weight.
             # The weights are scaled to sum to 1, so the data term is the mean squared error in lane widths, however many runs there are.
-            hub = np.minimum(1.0, TRACK_HUBER / np.maximum(np.abs(r[ok]), 1e-9))
+            hub = np.minimum(1.0, TRACK_HUBER / np.maximum(ar[ok], 1e-9))
             base = wt[ok] * hub
             ww = base / (base.sum() + 1e-12) / lane_px[ok] ** 2
             A = basis[ok].copy()
@@ -274,6 +309,23 @@ class LaneTracker:
             self.disagree = 0
         return out
 
+    def ready(self, turning):
+        """The tracked lane is fit to judge a detection by: sure, held since it started, not a turn's old lane, both lines found."""
+        return not (turning or self.p is None or self.conf < TRACK_ASSIST_CONF or self.age < TRACK_ASSIST_FRAMES
+                    or min(self.support) < TRACK_ASSIST_SUPPORT)
+
+    def assist_lane(self, lf, y, turning):
+        """(left x, right x) at frame row y from the last frame's model, or None when ready() is not."""
+        if not self.ready(turning):
+            return None
+        s = y - lf.HORIZON_Y
+        if s <= 4:
+            return None
+        left, right, _ = self.lines_at(self.p, s)
+        if right - left <= 1:
+            return None
+        return float(left), float(right)
+
     def measure(self, lf, p=None):
         """(offset, heading) on the band method's rows and scale."""
         p = self.p if p is None else p
@@ -289,8 +341,9 @@ class LaneTracker:
         heading = float(np.clip((xf - xn) / half, -1, 1))
         return offset, heading
 
-    def pursuit(self, lf, look_lw, wheelbase_lw, cam_ahead_lw):
-        """Steering angle (degrees, + = right) that puts the car on an arc through the lane center look_lw lane widths ahead.
+    def pursuit(self, lf, look_lw, wheelbase_lw, cam_ahead_lw, shift_lw=0.0):
+        """Steering angle (degrees, + = right) that puts the car on an arc through the lane center look_lw lane widths ahead
+        (shift_lw lane widths to the right of it: the course's shift=).
 
         Flat floor, everything in lane widths: the camera is (342 - HORIZON_Y) / LANE_WIDTH_PX lane widths above the floor,
         so a screen row s below the horizon is F * height / s ahead. The arc starts at the rear axle, cam_ahead_lw behind the
@@ -304,6 +357,7 @@ class LaneTracker:
         F = lf.CAMERA_F
         s = F * height / max(look_lw, 0.05)
         _, _, xc = self.lines_at(self.p, s)
+        xc += shift_lw * self.p[2] * s
         cx = lf.FRAME_W * lf.CAMERA_X
         Z = look_lw
         X = (xc - cx) * Z / F

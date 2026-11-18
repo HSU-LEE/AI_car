@@ -50,7 +50,7 @@ def main():
         print("[warning] This recording has no course.py: the current course is used")
     if module is not None:
         for name in dir(module):        # The figure's settings are read from the course file too.
-            if name.startswith("PERSON_") or name == "RED_BACK_ON":
+            if name.startswith("PERSON_") or name in ("RED_BACK_ON", "JUNCTION_TRACK_ASSIST"):
                 setattr(lf, name, getattr(module, name))
     saved = json.loads((run / "run.json").read_text()) if (run / "run.json").exists() else {}
     if saved.get("lane_follow_md5") not in (None, hashlib.md5(Path(lf.__file__).read_bytes()).hexdigest()):
