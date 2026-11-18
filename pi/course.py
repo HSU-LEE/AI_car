@@ -3,11 +3,10 @@
 REFLECT_MOTION_ON = False    # 반사광을 움직임으로 구별 (반짝이는 매트용). False = 끄고 가장자리 날카로움으로만 판단 (반사 없는 경기장이면 결과 같고 더 빠름)
 STOP_POINTS_ON = False       # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
 SLOWDOWN_ON = False         # 감속. False = 모든 감속 없음: slow= 무시, 차선 놓쳐도 그 속도, uturn·to_end도 SPEED (True = 예전처럼 감속)
-SPEED = 0.75                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
+SPEED = 0.95                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 STEER_MAX = 12            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
-LANE_MODEL = "bands"         # 차선 인식. "bands" = 기존 방식 (가까운 띠 6개에 점을 찍어 직선으로)
-                             #          "track" = 시험 중인 새 방식 (화면 전체의 선으로 차선 모양을 맞춤). 실제 녹화 일부에서 차선을 잘못 잡아 아직 기본값 아님
-JUNCTION_TRACK_ASSIST = True    # 오검출 제거. 추적기로 거짓 교차로와 거짓 차선 끝만 지움 (조향은 그대로, 새로 만들지는 않음)
+# 차선 인식은 밴드 방식 고정. 추적기는 조향에 쓰지 않고, 거짓 교차로와 거짓 차선 끝만 지운다.
+JUNCTION_TRACK_ASSIST = True    # 오검출 제거. 끄면 밴드 결과만 쓴다. 교차로를 새로 만들지는 않음
 
 # --- 신호등 ---
 RED_BACK_ON = False          # wait_green에서 빨간불을 못 찾으면 후진해서 다시 찾을지 (True / False)
@@ -755,41 +754,47 @@ def describe(step):
 # --- 코스 ---
 
 COURSE = _flat([
-    set_speed(0.95),
     set_style("soft"),
     start_gate(2),
-    
-    follow(4),
-    _to_crosswalk(0.85, nth=1, gap=1.5),
-    follow(0.25),
-    stop(6.5),
-    pass_crosswalk(),
-    follow(0.75),
-    stop(1),
-    go(steer=8,cm=25),
-    follow(2.5),
-    tl(),
-    
-    go(steer=8,cm=25),
-    follow(2.5),
-    tr(align=False),
 
-    stop(1),
-    back(1.5),
-    stop(1),
+
+
+    go(steer=8,cm=15),
+
+
+
+
+    # follow(4),
+    # _to_crosswalk(0.85, nth=1, gap=1.5),
+    # follow(0.25),
+    # stop(6.5),
+    # pass_crosswalk(),
+    # follow(0.75),
+    # stop(1),
+    # go(steer=8,cm=25),
+    # follow(2.5),
+    # tl(),
     
-    go(steer=8,cm=25),
-    follow(2.5),
-    tr(),
+    # go(steer=8,cm=25),
+    # follow(2.5),
+    # tr(align=False),
+
+    # stop(1),
+    # back(1.5),
+    # stop(1),
     
-    go(steer=8,cm=25),
-    follow(2.5),
-    tr(),
+    # go(steer=8,cm=25),
+    # follow(2.5),
+    # tr(),
     
-    go(steer=8,cm=25),
-    follow(11), 
-    stop(1),
-    finish(),
+    # go(steer=8,cm=25),
+    # follow(2.5),
+    # tr(),
+    
+    # go(steer=8,cm=25),
+    # follow(11), 
+    # stop(1),
+    # finish(),
  
 
 

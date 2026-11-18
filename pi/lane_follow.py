@@ -61,9 +61,11 @@ CAMERA_X = 0.5          # Where the car centerline falls across the frame. visio
 
 LINE_MODE = "lane"      # "lane": drive between both lines. "line": follow a single line.
 ROI_TOP = 0.4           # Use only from this fraction of the frame height downward. A smaller value looks farther ahead.
-LANE_MODEL = getattr(_course, "LANE_MODEL", "bands")    # course.py. "bands": a point per line in each of SLICES bands, a straight line through them (the method so far).
-JUNCTION_TRACK_ASSIST = getattr(_course, "JUNCTION_TRACK_ASSIST", False)   # course.py. The lane tracker only removes false junctions and false lane ends. It never steers and never creates one. Off: detection is exactly as before.
-                        # "track": one lane model fitted to every line pixel up to near the horizon, tracked frame to frame (lane_track.py).
+LANE_MODEL = "bands"    # Driving always reads the lane this way: a point per line in each band, a straight line through them.
+                        # course.py cannot switch it. "track" (lane_track.py: one lane model fitted to every line pixel up to
+                        # near the horizon, tracked frame to frame) is experimental: tests and the simulator set it directly.
+JUNCTION_TRACK_ASSIST = getattr(_course, "JUNCTION_TRACK_ASSIST", False)   # course.py. The tracker only removes false junctions and
+                        # false lane ends. It never steers and never adds one. Off: detection is exactly as before.
 STEER_MODE = "pursuit"  # With LANE_MODEL = "track": "pursuit" steers onto an arc through the lane center LOOK_LW ahead (uses the bend of
                         # the lane); "pd" keeps the position / heading steering (KP, KH). The band method always uses "pd".
 LOOK_LW = 0.5           # pursuit: target this many lane widths ahead of the camera. Longer = smoother, shorter = tighter in curves.
@@ -1345,32 +1347,36 @@ class LaneDetector:
     def drop_continued_end(self, top, last, side):
         """Drop a lane end the other line could not confirm, when the ending line itself runs on along the tracked lane.
 
-        lane_bends needs the other line. With it out of sight the end stands, and a curve is read as the lane ending
-        (run 20261110-191610 frame 113: the right line bends on). Curvature alone is not enough: a real corner reads as a
-        large bend too (run 20261112-194812 frame 183), so the line has to actually be there above the end."""
+        lane_bends needs the other line. With it out of sight the end stands, and a curve is read as the lane ending.
+        The line has to still lie on the tracked lane above the end, including the rows just above it where a curve
+        has left the straight fit but not the lane (runs 20261110-103523 frame 109, 183806 frame 132)."""
         t = self.tracker
         if not JUNCTION_TRACK_ASSIST or t is None or not t.ready(self.assist_turn):
             return
         if self.lane_bends(side, last, self.mask > 0, top, {}) is not None:
             return
+        import lane_track
         mask = self.mask > 0
         which = -1 if side == "left" else 1
-        hit = rows = 0
-        for dy in range(6, 36, 2):
-            yy = last - dy
-            if yy < 0:
-                break
-            s = top + yy - HORIZON_Y
-            if s <= 4:
-                break
-            rows += 1
-            left, right, _ = t.lines_at(t.p, s)
-            x = left if which < 0 else right
-            tol = max(4.0, 0.2 * t.p[2] * s)
-            if mask[yy, max(int(x - tol), 0):min(int(x + tol) + 1, mask.shape[1])].any():
-                hit += 1
-        import lane_track
-        if rows >= 8 and hit / rows >= lane_track.TRACK_END_CONTINUE:
+
+        def along(start, stop, tol_share, need, least):
+            hit = rows = 0
+            for dy in range(start, stop, 2):
+                yy = last - dy
+                if yy < 0:
+                    break
+                s = top + yy - HORIZON_Y
+                if s <= 4:
+                    break
+                rows += 1
+                left, right, _ = t.lines_at(t.p, s)
+                x = left if which < 0 else right
+                tol = max(4.0, tol_share * t.p[2] * s)
+                if mask[yy, max(int(x - tol), 0):min(int(x + tol) + 1, mask.shape[1])].any():
+                    hit += 1
+            return rows >= least and hit / rows >= need
+
+        if along(2, 16, 0.35, lane_track.TRACK_END_NEAR, 6) or along(6, 36, 0.2, lane_track.TRACK_END_CONTINUE, 8):
             self.end_y = self.end_side = None
 
     def lane_bends(self, side, last, mask, top, walks):
@@ -2170,7 +2176,8 @@ class CourseRunner:
         self.end_hits = 0
         step = self.step()
         if step is None:
-            print("\n[course end] following the lane from here on")
+            self.done = True
+            print("\n[course end] stopped")
             return
         if step["do"] in ("straight", "left", "right") and step["until"] == "lane":
             # Straight through a gap, or a turn: the lane visible at the start (before the gap, before the turn) must disappear once and be found again, so the action does not end immediately.
@@ -3819,6 +3826,7 @@ class Driver:
                 self.ends.watch(line_y, now)
         if course.done:
             self.done = True
+            self.speed = 0.0
             return None, 0.0, dbg
 
         base = course.speed if course.speed is not None else self.base_speed
@@ -4160,6 +4168,7 @@ def main():
                     raise
                 continue
             if driver.done:
+                watchdog.drive(0)     # The last step ended: stop now, not only when the pins are released below.
                 print("\nCourse done")
                 break
             if steer is not None:
@@ -4205,27 +4214,38 @@ def main():
     except KeyboardInterrupt:
         print("\nStopped")
     finally:
-        # Motor first: nothing below may keep the car moving if it fails.
-        if watchdog:
-            watchdog.close()
-        try:
-            car.close()
-        except Exception as e:
-            print(f"\n[error] car.close: {e}")
+        def release():
+            # Motor first: nothing below may keep the car moving if it fails.
+            if watchdog:
+                watchdog.close()
             try:
-                car.drive(0)
+                car.close()
+            except Exception as e:
+                print(f"\n[error] car.close: {e}")
+                try:
+                    car.drive(0)
+                except Exception:
+                    pass
+            for name, fn in (("save_bias", lambda: (car.save_bias(), print(f"\nAuto trim saved: {car.bias:+.1f} deg")) if AUTO_TRIM and args.drive else None),
+                             ("camera", cam.stop),
+                             ("obstacle", lambda: obs.close() if obs else None),
+                             ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
+                                                             print(f"Recording saved: {rec.dir} ({rec.n} frames)"))),
+                             ("drive log", lambda: box and (print(f"Drive log: {box.dir} ({box.n} frames)"), box.close(driver)))):
+                try:
+                    fn()
+                except Exception as e:
+                    print(f"\n[error] {name}: {e}")
+
+        try:
+            release()
+        except KeyboardInterrupt:
+            # A second Ctrl-C used to leave this block, so the motor could stay on.
+            try:
+                if car is not None:
+                    car.stop()
             except Exception:
                 pass
-        for name, fn in (("save_bias", lambda: (car.save_bias(), print(f"\nAuto trim saved: {car.bias:+.1f} deg")) if AUTO_TRIM and args.drive else None),
-                         ("camera", cam.stop),
-                         ("obstacle", lambda: obs.close() if obs else None),
-                         ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
-                                                         print(f"Recording saved: {rec.dir} ({rec.n} frames)"))),
-                         ("drive log", lambda: box and (print(f"Drive log: {box.dir} ({box.n} frames)"), box.close(driver)))):
-            try:
-                fn()
-            except Exception as e:
-                print(f"\n[error] {name}: {e}")
 
 
 if __name__ == "__main__":

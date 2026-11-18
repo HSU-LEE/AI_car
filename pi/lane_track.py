@@ -46,8 +46,8 @@ TRACK_RELOCK_DIFF = 0.3     # The band method sees both lines, a plausible width
 TRACK_RELOCK_FRAMES = 4     # tracker's by more than this (in the steering position unit) this many frames in a row: the tracker
                             # is the one that is wrong (it held on to a misread), so it starts again from the band method.
 TRACK_RELOCK_BANDS = 3      # Bands with both lines needed for the band method to count as sure.
-TRACK_EMPTY_FRAMES = 2
-TRACK_FAR_EVERY = 2         # The far strip is read every this many frames (it changes slowly; the last reading is used in between).      # Frames with no line pixel near either line at all: the lane is gone, not in a gap (a dashed line still shows pieces).
+TRACK_EMPTY_FRAMES = 2      # Frames with no line pixel near either line at all: the lane is gone, not in a gap (a dashed line still shows pieces).
+TRACK_FAR_EVERY = 2         # The far strip is read every this many frames (it changes slowly; the last reading is used in between).
 TRACK_MIN_SUPPORT = 0.12    # Share of rows with a line found, below which the frame does not count as tracked.
 TRACK_FAR_WEIGHT = 0.5      # Weight of rows above the band area (thin, far, less sure).
 TRACK_FAR_LINK = 2          # A piece of line above the band area counts only if it reaches this close to the band area (half-size rows).
@@ -56,13 +56,14 @@ TRACK_INSIDE = 0.6          # The car is inside the lane: |M| below this share o
 TRACK_D_RANGE = (0.85, 1.18)    # The lane width D stays within this share of the calibrated width (LANE_WIDTH_PX).
 TRACK_D_RETURN = 0.05       # Each frame D moves this share of the way back to the calibrated width: the lane is the same width
                             # everywhere, so a width learned from a misread (one line, a reflection) cannot stay.
-TRACK_BOTH_MIN = 25         # Runs each line needs before the lane width D may change.
+TRACK_BOTH_MIN = 25         # Runs each line needs before the lane width D may change. With one line only, nothing measures the width:
+                            # a wider lane and a sharper bend explain one line equally well, so D is held and only the bend moves.
 TRACK_ASSIST_CONF = 0.6     # Junction check: the tracked lane stands in for missing line memory only when the tracker is at least this sure.
 TRACK_ASSIST_FRAMES = 10    # ...and has held the lane this many frames since it started or re-locked (a fresh model can be the next lane).
-TRACK_END_CONTINUE = 0.3   # A reported lane end is dropped when the line still runs on along the tracked lane over this share of the rows above it.
+TRACK_END_CONTINUE = 0.3    # Farther above a reported lane end, the line still on the tracked lane over this share of rows: it did not end.
+TRACK_END_NEAR = 0.5        # The same, in the rows just above the end. A curve leaves the straight fit but is still on the tracked line there.
 TRACK_ASSIST_SUPPORT = 0.12  # ...and both lines were found last frame, each at least this share of the rows (TRACK_MIN_SUPPORT). One line only
-                            # and the model can sit a whole lane off while looking sure (run 20261110-183806 frame 316: support 0.55 and 0.01). With one line only, nothing measures the width:
-                            # a wider lane and a sharper bend explain one line equally well, so D is held and only the bend moves.
+                            # and the model can sit a whole lane off while looking sure (run 20261110-183806 frame 316: support 0.55 and 0.01).
 
 
 class LaneTracker:

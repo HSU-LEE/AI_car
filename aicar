@@ -150,7 +150,7 @@ cmd_config() {
     run "cd ~/$REMOTE && echo '[calib.json] servo calibration (motor_min is not read; the lowest speed is MOTOR_MIN in lane_follow.py)'; cat calib.json 2>/dev/null || echo '  (none)'; echo
          echo '[vision.json] lines/camera'; cat vision.json 2>/dev/null || echo '  (none - automatic)'; echo"
     bold "[course.py switches] (edit pi/course.py on the Mac, then aicar push)"
-    grep -E '^(LANE_MODEL|JUNCTION_TRACK_ASSIST|STEER_MAX|SPEED|SLOWDOWN_ON|REFLECT_MOTION_ON|STOP_POINTS_ON|RED_BACK_ON) ' \
+    grep -E '^(JUNCTION_TRACK_ASSIST|STEER_MAX|SPEED|SLOWDOWN_ON|REFLECT_MOTION_ON|STOP_POINTS_ON|RED_BACK_ON) ' \
         "$CODE/course.py" | sed 's/^/  /'
     bold "[lane_follow.py main settings] (edit pi/lane_follow.py on the Mac, then aicar push)"
     grep -E '^(BASE_SPEED|MIN_SPEED|KP|KH|KD|SMOOTH|AUTO_STEER_MAX|STEER_RATE|ROI_TOP|LINE_MODE|LENS_POSITION|JUNCTION_Y|EDGE_STOP_Y|AUTO_TRIM) ' \
@@ -463,8 +463,7 @@ AICAR commands  (in a Mac terminal: aicar <command>)
                --set KP=1.8 KH=1.0  change settings for this run only
   log                    show the running drive output again (after a disconnect, Ctrl+C stops)
   course                 edit the course (course.py) on the Mac, then aicar push
-                         switches at the top: JUNCTION_TRACK_ASSIST drops false junctions and false lane ends
-                         (steering stays as it is; it never adds a junction)
+                         lane reading is fixed to the band method. JUNCTION_TRACK_ASSIST only drops false junctions and false lane ends
 
 [settings]
   config                 show the current settings (calibration, lines, main driving values)

@@ -3082,6 +3082,30 @@ def test_drive_fixes():
           standing is None and (drv.lost_since is None or drv.lost_since >= 1.0), f"{standing} {drv.lost_since}")
 
 
+def test_lane_model_locked():
+    print("[driving lane reading stays the band method]")
+    import course as cs
+    had = hasattr(cs, "LANE_MODEL")
+    old_course = getattr(cs, "LANE_MODEL", None)
+    old_model, old_assist = lf.LANE_MODEL, lf.JUNCTION_TRACK_ASSIST
+    try:
+        lf.LANE_MODEL = "bands"
+        cs.LANE_MODEL = "track"
+        lf.JUNCTION_TRACK_ASSIST = False
+        check("course.py LANE_MODEL does not select the steering model", lf.LANE_MODEL == "bands")
+        d = lf.LaneDetector()
+        img = lane_frame()
+        for _ in range(3):
+            det, _, _ = d(img, draw=False)
+        check("with the check off, the band method drives and no tracker is made", det is not None and d.tracker is None, str(det))
+    finally:
+        if had:
+            cs.LANE_MODEL = old_course
+        elif hasattr(cs, "LANE_MODEL"):
+            del cs.LANE_MODEL
+        lf.LANE_MODEL, lf.JUNCTION_TRACK_ASSIST = old_model, old_assist
+
+
 def test_junction_assist():
     print("[junction assist: the tracker drops a line that does not cross the lane]")
     top = int(H * lf.ROI_TOP)
@@ -3148,11 +3172,30 @@ def test_lane_end_continues():
 
     old = lf.JUNCTION_TRACK_ASSIST
     try:
+        near = np.zeros((H - top, W), np.uint8)
+        for dy in range(2, 16, 2):
+            s = top + (last - dy) - lf.HORIZON_Y
+            _, right, _ = t.lines_at(t.p, s)
+            x = int(right)
+            near[last - dy, max(x - 1, 0):x + 2] = 255
         check("the line runs on above the end: it is a curve, not an end", end(paint(), True) is None)
+        check("the line is still on the tracked lane just above the end: a curve, not an end", end(near, True) is None)
         check("nothing above the end: the lane end stands", end(np.zeros((H - top, W), np.uint8), True) == top + last)
         check("assist off: a line that runs on is still an end (detection unchanged)", end(paint(), False) == top + last)
     finally:
         lf.JUNCTION_TRACK_ASSIST = old
+
+
+def test_course_end_stops():
+    print("[the last step ending stops the car]")
+    import course as cs
+    img = lane_frame()
+    drv = lf.Driver(cs._flat([follow(0.1)]))
+    drv.tick(img, 0.0)
+    going = drv.speed
+    _, cmd, _ = drv.tick(img, 0.2)
+    check("no finish() after the last step: the car stops, it does not keep the speed",
+          going > 0 and drv.done and cmd == 0.0 and drv.speed == 0.0, f"was {going}, then cmd {cmd} done {drv.done}")
 
 
 def test_junction_not_mat_edge():
@@ -3938,7 +3981,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_junction_assist, test_lane_end_continues, test_junction_not_mat_edge, test_drive_fixes):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
