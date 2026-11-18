@@ -58,9 +58,9 @@ def _paint(img, op):
     elif kind == "fpoly":
         _, pts, color, alpha = op
         x0, y0 = np.maximum(pts.min(axis=0), 0)
-        x1, y1 = pts.max(axis=0) + 1
-        roi = img[y0:y1, x0:x1]       # Only the polygon's box is blended, not the whole picture.
-        if roi.size:
+        x1, y1 = np.minimum(pts.max(axis=0) + 1, (img.shape[1], img.shape[0]))
+        if x1 > x0 and y1 > y0:       # Only the polygon's box inside the picture is blended (a negative end would wrap around).
+            roi = img[y0:y1, x0:x1]
             over = roi.copy()
             cv2.fillPoly(over, [pts - (x0, y0)], color, cv2.LINE_AA)
             cv2.addWeighted(over, alpha, roi, round(1 - alpha, 9), 0, roi)
