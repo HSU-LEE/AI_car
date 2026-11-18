@@ -25,6 +25,7 @@ _course_settings.STEER_MAX = None
 _course_settings.REFLECT_MOTION_ON = True
 _course_settings.SLOWDOWN_ON = True     # The slowdown code is tested as it works when switched on.
 _course_settings.RED_BACK_ON = lf.RED_BACK_ON = True      # wait_green backing up is tested as it works when switched on.
+_course_settings.JUNCTION_TRACK_ASSIST = lf.JUNCTION_TRACK_ASSIST = False   # The assist is tested by turning it on itself.
 from course import COURSE, finish, follow, stop, straight, wait_green  # noqa: E402
 import person  # noqa: E402
 from person import AutoViews, PersonDetector  # noqa: E402
@@ -66,6 +67,25 @@ def lane_frame(y_end=0, left=True, right=True, shift=0.0, bg=30, line=235, cross
         for k in range(8):
             x = int(W * 0.25) + k * int(W * 0.065)
             cv2.rectangle(img, (x, y0), (x + int(W * 0.033), y0 + int(H * 0.1)), (line,) * 3, -1)
+    return img
+
+
+def far_lane_frame(top=None, edges=()):
+    """A straight lane drawn up to near the horizon (or from row top down), lines thinning with distance as on camera.
+
+    edges: (side, dx) thin upright bright bars near the horizon, dx px beside where that line would run (side -1 left,
+    1 right): the edge of a box, a chair leg, a person, standing apart from the lines."""
+    rng = np.random.default_rng(0)
+    img = np.clip(rng.normal(30, 4, (H, W, 3)), 0, 255).astype(np.uint8)
+    hy = lf.HORIZON_Y
+    for y in range(int(hy + 12) if top is None else top, H):
+        half = max(1, int(5 * (y - hy) / (342 - hy)) + 1)
+        for x in lane_x(y):
+            cv2.line(img, (int(x) - half, y), (int(x) + half, y), (235,) * 3, 1)
+    for side, dx in edges:
+        y0, y1 = int(hy + 14), int(hy + 50)
+        x = lane_x((y0 + y1) / 2)[side > 0] + dx
+        cv2.rectangle(img, (int(x), y0), (int(x) + 2, y1), (235,) * 3, -1)
     return img
 
 
@@ -598,6 +618,19 @@ def test_blind_and_bundles():
         t = pass_under(c, t, 0.6)
         t = feed(c, 10, t)
     check("go(); go(): the line the first ended on does not end the second", first == 1 and c.idx == 1, f"{first} -> step {c.idx + 1}")
+    with quiet():   # The same with no blind on the second: the line still in front must not end it at once.
+        c = lf.CourseRunner([cs.go(blind_sec=0), cs.go(blind_sec=0), finish()])
+        t = feed_junc(c, 3, 0.0, False)
+        t = feed_junc(c, 6, t, True)
+        first = c.idx
+        t = feed_junc(c, 10, t, True)
+        held = c.idx
+        t = pass_under(c, t, 0.6)
+        t = feed(c, 6, t)
+        t = feed_junc(c, 3, t, False)
+        t = feed_junc(c, 6, t, True)
+    check("go(); go(blind_sec=0): not ended by the line the first ended on, then ends at the next one",
+          first == 1 and held == 1 and c.idx == 2, f"{first} {held} -> step {c.idx + 1}")
     with quiet():   # After a turn, a close junction that goes under during blind counts again.
         c = lf.CourseRunner([cs.go(blind_sec=0), follow(sec=0.2), cs.go(), finish()])
         t = feed_junc(c, 3, 0.0, False)
@@ -2674,6 +2707,25 @@ def test_go_dis():
     check("go_dis(): with no sensor it never ends by itself (so a drive without the sensor is refused at start)", c.idx == 0)
     src = (Path(lf.__file__)).read_text()
     check("drive start: refuses a course with go_dis() when the sensor is not working", "needs the distance sensor" in src and 'st.get("until") == "obstacle"' in src)
+    check("drive start: refuses start_gate() (a wait for clear) too: with no sensor it would pass at once, barrier down",
+          'st.get("until") == "clear"' in src)
+    import obstacle as ob
+
+    class Broken:
+        @property
+        def value(self):
+            raise OSError("read failed")
+
+    o = ob.Obstacle.__new__(ob.Obstacle)        # No GPIO here: a sensor whose every read fails.
+    o.dev = Broken()
+    o.samples, o.ratio, o._near, o._near_since, o.error = [], 0.0, False, 0.0, None
+    o._stop = ob.threading.Event()
+    o._thread = ob.threading.Thread(target=o._run, daemon=True)
+    with quiet():
+        o._thread.start()
+        o._thread.join(timeout=2)
+    check("obstacle sensor that keeps failing: its thread stops and it reads as an obstacle (go_dis stops, start_gate waits)",
+          not o._thread.is_alive() and o.error is not None and o.near)
     try:
         cs.go_dis(sec=-1)
         refused = False
@@ -2863,6 +2915,7 @@ def test_start_checks():
 
 def test_lane_track():
     print("[lane tracker: one lane model over every line pixel (LANE_MODEL = track)]")
+    import types
     import course as cs
     import lane_track as lt
     import overlay
@@ -2938,6 +2991,56 @@ def test_lane_track():
         check("a held misread is dropped: the sure band method (both lines in several bands) takes over within a few frames",
               steps[0] > lt.TRACK_RELOCK_DIFF and steps[-1] < 0.05 and w.tracker.relocked_at is not None,
               f"error per frame {[round(e, 2) for e in steps]}")
+
+        def far_reading(img, link=lt.TRACK_FAR_LINK):
+            """The tracked center line as drawn (up to the farthest row with line pixels): its widest gap from the true
+            straight center, in lane widths at each row, and the row it reaches up to."""
+            old_link = lt.TRACK_FAR_LINK
+            lt.TRACK_FAR_LINK = link
+            try:
+                fd = lf.LaneDetector()
+                for i in range(10):
+                    fd.now = i / 30
+                    fd(img, draw=False)
+            finally:
+                lt.TRACK_FAR_LINK = old_link
+            pts = fd.tracker.curve_points(lf, 0)
+            gap = np.abs(pts[:, 0] - W * lf.CAMERA_X) / (fd.tracker.p[2] * (pts[:, 1] - lf.HORIZON_Y))
+            return float(gap.max()), int(pts[:, 1].min())
+
+        noisy = far_lane_frame(top=int(H * lf.ROI_TOP) - 24, edges=((1, 10), (1, 25)))
+        bend, reach = far_reading(noisy)
+        bend_all, reach_all = far_reading(noisy, link=10 ** 6)
+        check("straight lane, upright edges near the horizon beside it: the far end does not bend toward them",
+              bend < 0.05 and bend_all > 0.3, f"bend {bend:.3f} lane widths up to y={reach}; reading the edges too: {bend_all:.3f} up to y={reach_all}")
+        bend, reach = far_reading(far_lane_frame())
+        check("a lane line that runs on up to near the horizon is still read that far, and straight",
+              reach < lf.HORIZON_Y + 30 and bend < 0.1, f"up to y={reach}, bend {bend:.3f}")
+
+        # The band method's points as in run 20261112-193530, frame 0: the right line in every band, but in the top band
+        # another lane's line (its RANSAC dropped that band). A fit through every point put the lane one lane width off.
+        top = int(lf.FRAME_H * lf.ROI_TOP)
+        h = (lf.FRAME_H - top) // lf.SLICES
+        rows = [lf.FRAME_H - (i + 1) * h + h // 2 for i in range(lf.SLICES)]
+        right = [lane_x(cy)[1] for cy in rows]
+        center = [lane_x(cy)[0] / 2 + lane_x(cy)[1] / 2 for cy in rows]
+        right[-1] -= 200
+        center[-1] -= 200
+        cx = W * lf.CAMERA_X
+        half = lf.FRAME_W / 2 * lf.LANE_WIDTH_PX / lf.REF_LANE_PX
+        fake = types.SimpleNamespace(det_bands=((cx - int(cx)) / half, 0.0), band_line=(cx, cx), center=center,
+                                     left=[None] * lf.SLICES, right=right)
+        ti = lt.LaneTracker()
+        started = ti.init_from_bands(lf, fake)
+        fake_all = types.SimpleNamespace(**dict(vars(fake), band_line=None))
+        ta = lt.LaneTracker()
+        ta.init_from_bands(lf, fake_all)
+        check("start: a band point the band method dropped is left out (the lane is not put one lane width off)",
+              started and abs(ti.measure(lf)[0] - fake.det_bands[0]) < 0.02 and abs(ta.measure(lf)[0] - fake.det_bands[0]) > 0.1,
+              f"start {ti.measure(lf)[0]:+.3f}, band method {fake.det_bands[0]:+.3f}, every point {ta.measure(lf)[0]:+.3f}")
+        none = types.SimpleNamespace(**dict(vars(fake), det_bands=None, band_line=None))
+        check("start: no answer from the band method (one far point alone, for example), no tracked lane",
+              not lt.LaneTracker().init_from_bands(lf, none))
     finally:
         lf.LANE_MODEL, lf.STEER_MODE = old
     import sim
@@ -2949,6 +3052,107 @@ def test_lane_track():
           acc_t["offset_err"] + acc_t["heading_err"] < acc_b["offset_err"] + acc_b["heading_err"],
           f"track {acc_t['offset_err'] + acc_t['heading_err']:.3f} vs bands {acc_b['offset_err'] + acc_b['heading_err']:.3f}")
     check("simulator: a closed-loop drive runs and keeps to the lane", drive["result"] in ("finished", "TIMED OUT") and drive["max"] < 5, str(drive))
+
+
+def test_drive_fixes():
+    print("[course options and the lost-lane timer]")
+    import course as cs
+    st = cs._flat([cs.set_steer(8), cs.follow(sec=1, speed=0.5)])[0]
+    sty = cs._flat([cs.set_style("soft"), cs.follow(sec=1, speed=0.5)])[0]
+    check("set_steer() / set_style() also hold for a step with its own speed=", st.get("steer") == 8 and sty.get("style") == "soft",
+          f"{st.get('steer')} {sty.get('style')}")
+    turn = cs._flat([cs.set_steer(8), cs.tr(speed=0.5)])
+    check("... but not for the parts of a turn (tr(speed=) included): the align is not clipped", all(s.get("steer") is None for s in turn))
+    given = cs._flat([cs.set_speed(0.8), cs.tr(blind_sec=0.2)])[0]
+    auto = cs._flat([cs.set_speed(0.8), cs.tr()])[0]
+    check("tr(blind_sec=) is kept after set_speed() (the default blind is still scaled to the speed)",
+          given["blind"] == 0.2 and auto["blind"] != 0.2, f"{given['blind']} {auto['blind']}")
+    with quiet():
+        drv = lf.Driver(cs._flat([stop(1.0), follow(sec=2), finish()]))
+        blank = np.full((H, W, 3), 30, np.uint8)
+        t = 0.0
+        for _ in range(18):         # Standing (for 1 s) with no lane in view ...
+            drv.tick(blank, t)
+            t += 0.05
+        standing = drv.lost_since
+        for _ in range(6):          # ... and setting off.
+            drv.tick(blank, t)
+            t += 0.05
+    check("lane unseen while standing (stop on a crosswalk): not counted as lost, the timer starts when the car moves",
+          standing is None and (drv.lost_since is None or drv.lost_since >= 1.0), f"{standing} {drv.lost_since}")
+
+
+def test_junction_assist():
+    print("[junction assist: the tracker drops a line that does not cross the lane]")
+    top = int(H * lf.ROI_TOP)
+    h = (H - top) // lf.SLICES
+    band = top + (H - top) - 5 * h          # Band 4 (no both-lines memory when only the two nearest bands have lines).
+    near = top + (H - top) - 2 * h          # Lines drawn from here down fall in the two nearest bands only.
+
+    def scene(full, bar=None):
+        img = np.full((H, W, 3), 30, np.uint8)
+        for y in range(int(lf.HORIZON_Y) + 12 if full else near, H):
+            for x in lane_x(y):
+                cv2.line(img, (int(x) - 2, y), (int(x) + 2, y), (235,) * 3, 1)
+        if bar is not None:
+            cv2.rectangle(img, (bar[0], band + 2), (bar[1], band + h - 2), (235,) * 3, -1)
+        return img
+
+    def run(assist, bar):
+        lf.JUNCTION_TRACK_ASSIST = assist
+        d = lf.LaneDetector()
+        junction = None
+        for i in range(24):
+            d.now = i / 30
+            junction = d(scene(i < 20, bar if i == 23 else None), draw=False)[1]
+        return junction
+
+    old = lf.JUNCTION_TRACK_ASSIST
+    try:
+        check("assist off: a horizontal line beside the lane is read as a junction (nothing says it is not)",
+              run(False, (430, W - 1)) is True)
+        check("assist on: the tracked lane shows that line does not cross the lane, so it is not a junction",
+              run(True, (430, W - 1)) is False)
+        check("assist on: a line that does cross the lane is still a junction (the assist only ever removes)",
+              run(True, (150, 500)) is True)
+    finally:
+        lf.JUNCTION_TRACK_ASSIST = old
+
+
+def test_lane_end_continues():
+    print("[a lane end is dropped only when its own line runs on]")
+    import lane_track as lt
+    top = int(H * lf.ROI_TOP)
+    last = 120
+    t = lt.LaneTracker()
+    t.p = np.array([300.0, 0.3, 1.5, 0.0, 0.0])
+    t.conf, t.age, t.support = 1.0, 20, (0.4, 0.4)
+
+    def paint():
+        mask = np.zeros((H - top, W), np.uint8)
+        for dy in range(6, 36, 2):
+            s = top + (last - dy) - lf.HORIZON_Y
+            _, right, _ = t.lines_at(t.p, s)
+            x = int(right)
+            mask[last - dy, max(x - 1, 0):x + 2] = 255
+        return mask
+
+    def end(mask, assist):
+        lf.JUNCTION_TRACK_ASSIST = assist
+        d = lf.LaneDetector()
+        d.left, d.right = [None] * lf.SLICES, [None] * lf.SLICES   # The other line is unseen, so nothing else can call this a curve.
+        d.tracker, d.mask = t, mask
+        d.end_y, d.end_side = top + last, "right"
+        d.drop_continued_end(top, last, "right")
+        return d.end_y
+
+    old = lf.JUNCTION_TRACK_ASSIST
+    try:
+        check("the line runs on above the end: it is a curve, not an end", end(paint(), True) is None)
+        check("nothing above the end: the lane end stands", end(np.zeros((H - top, W), np.uint8), True) == top + last)
+        check("assist off: a line that runs on is still an end (detection unchanged)", end(paint(), False) == top + last)
+    finally:
+        lf.JUNCTION_TRACK_ASSIST = old
 
 
 def test_junction_not_mat_edge():
@@ -3734,7 +3938,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_junction_not_mat_edge):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_junction_assist, test_lane_end_continues, test_junction_not_mat_edge, test_drive_fixes):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

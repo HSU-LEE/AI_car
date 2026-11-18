@@ -4,9 +4,10 @@ REFLECT_MOTION_ON = False    # 반사광을 움직임으로 구별 (반짝이는
 STOP_POINTS_ON = False       # 정지 지점 검색 (go_to). False = go_to("A")가 go()처럼 차선 끝에서 정지 (등록 모양을 찾지 않아 빠름)
 SLOWDOWN_ON = False         # 감속. False = 모든 감속 없음: slow= 무시, 차선 놓쳐도 그 속도, uturn·to_end도 SPEED (True = 예전처럼 감속)
 SPEED = 0.75                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
-STEER_MAX = 10            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
+STEER_MAX = 12            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
 LANE_MODEL = "bands"         # 차선 인식. "bands" = 기존 방식 (가까운 띠 6개에 점을 찍어 직선으로)
                              #          "track" = 시험 중인 새 방식 (화면 전체의 선으로 차선 모양을 맞춤). 실제 녹화 일부에서 차선을 잘못 잡아 아직 기본값 아님
+JUNCTION_TRACK_ASSIST = True    # 오검출 제거. 추적기로 거짓 교차로와 거짓 차선 끝만 지움 (조향은 그대로, 새로 만들지는 않음)
 
 # --- 신호등 ---
 RED_BACK_ON = False          # wait_green에서 빨간불을 못 찾으면 후진해서 다시 찾을지 (True / False)
@@ -125,7 +126,8 @@ def _step(do, angle, sec, until, **opt):
 
 
 def _auto(step, speed, default):
-    return dict(step, speed=default, auto=True) if speed is None else step
+    # own_speed: 속도를 직접 준 단계. set_speed()는 적용 안 하지만 set_steer()/set_style()은 적용
+    return dict(step, speed=default, auto=True) if speed is None else dict(step, own_speed=True)
 
 
 def set_steer(deg=None):
@@ -459,7 +461,7 @@ def _cruise(steps, speed):
     if speed is None:
         steps = [dict(s, speed=SPEED, keep_speed=True) for s in steps]
     else:
-        steps = [dict(s, keep_speed=True) for s in steps]
+        steps = [dict(s, keep_speed=True, turn_part=True) for s in steps]     # 회전 묶음: set_steer()/set_style() 적용 안 함
     # tr()/tl() 속도: speed= > set_speed() > 기본(TURN_SPEED, ALIGN_SPEED, SETTLE_SPEED). set_speed()가 있으면 회전, 정렬, 천천히 주행 모두 그 속도
     if speed is not None:
         return steps
@@ -503,9 +505,11 @@ def _flat(steps):
                 s = dict(s, speed=cruise)
                 if s.get("turn_blind"):     # A faster turn sweeps past the old lane sooner, so it looks away for less time.
                     s["blind"] = round(TURN_BLIND * TURN_BLIND_SPEED / max(cruise, TURN_BLIND_SPEED), 2)
-            if steer is not None and s.get("auto") and s["do"] == "follow" and s.get("steer") is None and not s.get("turn_part"):
+            # 조향 제한·스타일은 속도와 무관: speed=를 준 단계(own_speed)에도 적용
+            mine = s.get("auto") or s.get("own_speed")
+            if steer is not None and mine and s["do"] == "follow" and s.get("steer") is None and not s.get("turn_part"):
                 s = dict(s, steer=steer)
-            if style is not None and s.get("auto") and s["do"] == "follow" and s.get("style") is None and not s.get("turn_part"):
+            if style is not None and mine and s["do"] == "follow" and s.get("style") is None and not s.get("turn_part"):
                 s = dict(s, style=style)
             out.append(s)
     return out
@@ -557,6 +561,9 @@ def _apply_common(name, out, extra):
             st[_STEP_KEY.get(k, k)] = v
             if k == "speed" and v is not None:
                 st.pop("auto", None)        # A speed given here is kept: set_speed() does not change it.
+                st["own_speed"] = True
+            if k == "blind_sec":
+                st.pop("turn_blind", None)  # 직접 준 blind_sec는 set_speed()가 다시 계산하지 않음
         if is_main and (extra.get("until", "junction") != "junction" or "cm" in extra or "at" in extra):
             st.pop("cm_default", None)      # The lane-end default only fits a junction end with no other distance given.
         if is_main and "nth" in extra and "gap" not in extra and nth is None:
