@@ -5,7 +5,8 @@ arguments, minus the image. It keeps the commands instead of painting. Then:
   - render() paints them with OpenCV in the same order onto the base picture: the same pixels the old in-place drawing
     gave (replay video, saved calibration view, the legacy /video stream).
   - payload() is what the web page gets: the real pictures as JPEG (a plain panel is only its color), the commands
-    as JSON, line masks as packed bits (zlib).
+    as JSON, line masks as packed bits (zlib), and with extra set, values the page lays out itself (state) and small
+    close-up pictures (minis, JPEG).
     The page paints the commands itself, so the Pi spends no time drawing or encoding the drawn picture.
 
 ImageDraw has the same methods but paints straight onto an ndarray, so the helpers (chip, dashed_hline, ...) take either.
@@ -54,6 +55,15 @@ def _paint(img, op):
         _, top, on, lut, _color, _alpha = op
         roi = img[top:top + on.shape[0]]
         cv2.copyTo(cv2.LUT(roi, lut), on.view(np.uint8), roi)
+    elif kind == "fpoly":
+        _, pts, color, alpha = op
+        x0, y0 = np.maximum(pts.min(axis=0), 0)
+        x1, y1 = pts.max(axis=0) + 1
+        roi = img[y0:y1, x0:x1]       # Only the polygon's box is blended, not the whole picture.
+        if roi.size:
+            over = roi.copy()
+            cv2.fillPoly(over, [pts - (x0, y0)], color, cv2.LINE_AA)
+            cv2.addWeighted(over, alpha, roi, round(1 - alpha, 9), 0, roi)
     elif kind == "shade":
         _, (x0, y0, x1, y1), color, alpha = op
         over = img.copy()
@@ -94,6 +104,12 @@ class _Draw:
         pts = np.asarray(pts, dtype=np.int32).reshape(-1, 2)
         if len(pts) >= 2:
             self._add(("poly", pts, tuple(color), int(thickness), lineType))
+
+    def fill_poly(self, pts, color, alpha):
+        """A filled polygon (N x 2 screen pixels) blended over the picture: alpha * color + (1 - alpha) * pixel."""
+        pts = np.asarray(pts, dtype=np.int32).reshape(-1, 2)
+        if len(pts) >= 3:
+            self._add(("fpoly", pts, tuple(color), float(alpha)))
 
     def dashed(self, x0, y, x1, color, dash, gap, thick):
         """Horizontal dashed line (one command instead of one per dash)."""
@@ -142,6 +158,7 @@ class Canvas(_Draw):
             self.base, (self.h, self.w) = None, base
         self.fill = fill
         self.parts = [[0, self.w, []]]      # [x offset, width, commands]
+        self.extra = None       # For the page only: {"state": JSON-able dict, "minis": {name: small BGR picture}}. Not painted.
 
     @property
     def shape(self):
@@ -216,6 +233,10 @@ class Canvas(_Draw):
                 blobs.append(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes())
                 sent[id(img)] = len(blobs) - 1
             pics.append([x, w, sent[id(img)]])
+        minis = {}
+        for name, img in ((self.extra or {}).get("minis") or {}).items():     # Small close-ups the page shows beside the view.
+            blobs.append(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes())
+            minis[name] = len(blobs) - 1
         masks, parts = [], []
         for dx, w, ops in self.parts:
             out = []
@@ -241,8 +262,12 @@ class Canvas(_Draw):
                     out.append(["m", op[1], len(blobs) + len(masks) - 1, _css(op[4]), op[5], on.shape[1], on.shape[0]])
                 elif kind == "shade":
                     out.append(["s", *op[1], _css(op[2]), op[3]])
+                elif kind == "fpoly":
+                    out.append(["f", op[1].ravel().tolist(), _css(op[2]), op[3]])
             parts.append([dx, w, out])
         blobs += masks
-        head = json.dumps({"w": self.w, "h": self.h, "pics": pics, "blobs": [len(b) for b in blobs], "parts": parts},
-                          separators=(",", ":")).encode()
+        head = {"w": self.w, "h": self.h, "pics": pics, "blobs": [len(b) for b in blobs], "parts": parts}
+        if self.extra is not None:
+            head["state"], head["minis"] = self.extra.get("state"), minis
+        head = json.dumps(head, separators=(",", ":")).encode()
         return b"".join([MAGIC, struct.pack(">I", len(head)), head, *blobs])

@@ -38,6 +38,7 @@ PAIR_SMOOTH = 0.05          # Pull toward the last frame's lane, likewise.
 PAIR_WIDTH_RANGE = (0.75, 1.33)  # A fitted width outside this share of the calibrated one is not a lane: the band answer stands.
 PAIR_MIN_PIECES = 6         # Pieces needed in all.
 PAIR_MIN_ROWS = 3           # Sample rows that must give at least one piece.
+PAIR_VIEW_SMOOTH = 0.5      # The drawn curves keep this share of the last frame's (view only, never the steering).
 PAIR_RELOCK = (0.4, 3)      # The band method sure (both lines in 3+ bands) and this far off (position) this many frames in a row:
                             # start again from it.
 
@@ -49,9 +50,10 @@ class LanePairs:
         self.rows_y = None      # Last frame's sample rows (frame y).
         self.off = 0            # Frames in a row far from a sure band answer.
         self.used = False       # This frame's answer came from the pair fit.
+        self.drawn = {}         # The view's last drawn curve of each line (curve_points).
 
     def reset(self):
-        self.p, self.off = None, 0
+        self.p, self.off, self.drawn = None, 0, {}
 
     # --- where to read ---
     @staticmethod
@@ -188,6 +190,32 @@ class LanePairs:
         self.p = p
         self.used = True
         return out
+
+    def curve_points(self, lf, which, top, n=16):
+        """For the view only: the left (-1) or right (1) line as it really runs, through its own pieces, so a curve shows
+        as one. A 2nd-degree fit of x over y from the frame bottom up to its farthest piece. The straight pair line when
+        the pieces are too few, or the curve strays more than half a lane width from it (a misread, not a bend)."""
+        straight = self.line_points(lf, which, top)
+        if self.pieces is None or straight is None:
+            return straight
+        ys, xs, sides = self.pieces
+        on = sides == which
+        if len(np.unique(ys[on])) < 4:
+            return straight
+        y_top = max(float(ys[on].min()), top)
+        y = np.linspace(lf.FRAME_H - 1, y_top, n)
+        x = np.polyval(np.polyfit(ys[on], xs[on], 2), y)
+        b = self.p[1] if which < 0 else self.p[2]
+        x_line = self.p[0] + b * (y - lf.HORIZON_Y)
+        lane = (self.p[2] - self.p[1]) * np.maximum(y - lf.HORIZON_Y, 1.0)
+        if np.any(np.abs(x - x_line) > 0.5 * lane):
+            return straight
+        pts = np.stack([x, y], axis=1)
+        last = self.drawn.get(which)
+        if last is not None and last.shape == pts.shape and abs(last[-1, 1] - pts[-1, 1]) < 20:
+            pts = PAIR_VIEW_SMOOTH * last + (1 - PAIR_VIEW_SMOOTH) * pts     # Steadier on screen: a piece more or less moves it less.
+        self.drawn[which] = pts
+        return pts
 
     def line_points(self, lf, which, top):
         """Screen points of the left (-1), right (1) or center (0) line over the band area, for the view."""

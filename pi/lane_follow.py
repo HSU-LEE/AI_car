@@ -508,9 +508,13 @@ def percentile_u8(img, q):
 
 # --- Detection Overlay (Browser Live View) ---
 # Colors (BGR) drawn on the debug view.
+VIEW_DETAIL = False     # The view shows only what drives the car (lane, events, steering). True: also reflection boxes, points
+                        # left out, the pair fit's pieces, for checking detection.
+VIEW_TINT = 0.35        # How strongly the detected line pixels are colored in the view (0 to 1).
+LANE_FILL = 0.1         # The followed lane between its two lines, filled this strongly (LANE_POINTS = "pairs"). 0 = not filled.
 C_LANE = (255, 210, 60)     # Pixels detected as the white line (translucent).
 # The view paints line pixels 0.45 * pixel + 0.55 * C_LANE: per channel, as a lookup table (much faster than float math on the Pi).
-LANE_TINT = np.stack([(0.45 * np.arange(256) + 0.55 * c).astype(np.uint8) for c in C_LANE], axis=1).reshape(1, 256, 3)
+LANE_TINT = np.stack([((1 - VIEW_TINT) * np.arange(256) + VIEW_TINT * c).astype(np.uint8) for c in C_LANE], axis=1).reshape(1, 256, 3)
 C_LEFT, C_RIGHT = (255, 140, 40), (60, 60, 255)    # Left line / right line.
 C_PATH = (80, 230, 80)      # Lane center the car follows.
 C_JUNC = (255, 0, 255)      # Junction (horizontal line).
@@ -545,12 +549,14 @@ def dashed_hline(img, y, color, x0=0, x1=None, dash=10, gap=6, thick=1):
     d.dashed(x0, y, x1, color, dash, gap, thick)
 
 
-def draw_person(dbg, detector, at):
-    """LEGO figure on the view: the line its feet must pass to count, blobs of the right size with the wrong colors, and the match."""
+def draw_person(dbg, detector, at, detail=None):
+    """LEGO figure on the view: the line its feet must pass to count, blobs of the right size with the wrong colors, and the match.
+    detail: the line and the near misses too (default VIEW_DETAIL; the tuning tools always want them)."""
+    detail = VIEW_DETAIL if detail is None else detail
     dbg = as_draw(dbg)
-    if at is not None:
+    if at is not None and detail:
         dashed_hline(dbg, int(at * FRAME_H), C_PERSON, dash=4, gap=8)
-    for x, y, w, h, color, shape in detector.near:
+    for x, y, w, h, color, shape in detector.near if detail else ():     # Candidates that did not match.
         dbg.rectangle((x, y), (x + w, y + h), C_DIM, 1)
         chip(dbg, f"c{color:.2f} s{shape:.2f}", x, y - 18, C_DIM, 0.35)
     if detector.found:
@@ -558,7 +564,7 @@ def draw_person(dbg, detector, at):
         x, y, w, h = figure_box(f["x"], f["y"], f["w"], f["h"], f["feet"])      # The whole figure, though only its colored part was matched.
         dbg.rectangle((x, y), (x + w, y + h), C_PERSON, 2, cv2.LINE_AA)
         look = "" if f.get("look") is None else f" L{f['look']:.2f}"     # L: how much it looks like the registered figure (EMBED_MIN).
-        chip(dbg, f"PERSON c{f['score']:.2f} s{f['shape']:.2f}{look}", f["x"], f["y"] - 22, C_PERSON, 0.38)
+        chip(dbg, f"PERSON c{f['score']:.2f} s{f['shape']:.2f}{look}" if detail else "PERSON", f["x"], f["y"] - 22, C_PERSON, 0.38)
 
 
 class LaneDetector:
@@ -1512,11 +1518,15 @@ class LaneDetector:
         """The pair fit: its pieces (left out: grey), both lines and the center. The band path when the fit was not used."""
         pairs = self.pairs
         if pairs.used:
+            lf_ = sys.modules[__name__]
+            left, right = pairs.curve_points(lf_, -1, top), pairs.curve_points(lf_, 1, top)   # As the lines really run.
+            if LANE_FILL > 0:     # The lane the car follows, lightly filled.
+                dbg.fill_poly(np.vstack([left, right[::-1]]), C_PATH, LANE_FILL)
             ys, xs, sides = pairs.pieces
-            for y, x, sd in zip(ys[::2], xs[::2], sides[::2]):     # Every other piece: the strips are thin, the view stays light.
+            for y, x, sd in zip(ys[::2], xs[::2], sides[::2]) if VIEW_DETAIL else ():     # Every other piece: the view stays light.
                 dbg.circle((int(x), int(y)), 2, C_LEFT if sd < 0 else C_RIGHT if sd > 0 else C_DIM, -1)
-            for which, col, thick in ((-1, C_LEFT, 2), (1, C_RIGHT, 2), (0, C_PATH, 3)):
-                pts = pairs.line_points(sys.modules[__name__], which, top)
+            # Both lines as they run; the center is the straight line the car steers by.
+            for pts, col, thick in ((left, C_LEFT, 2), (right, C_RIGHT, 2), (pairs.line_points(lf_, 0, top), C_PATH, 3)):
                 dbg.polyline(pts, (20, 20, 20), thick + 3, cv2.LINE_AA)
                 dbg.polyline(pts, col, thick, cv2.LINE_AA)
         elif self.band_line is not None:
@@ -1584,9 +1594,9 @@ class LaneDetector:
 
         dbg = Canvas(frame) if draw else None   # Drawing commands only: the browser paints them (overlay.py).
         if draw:
-            dbg.tint(top, mask > 0, LANE_TINT, C_LANE, 0.55)    # White-line pixels translucent, 0.45 * pixel + 0.55 * color, so the original image still shows.
+            dbg.tint(top, mask > 0, LANE_TINT, C_LANE, VIEW_TINT)   # White-line pixels translucent, so the original image still shows.
             dashed_hline(dbg, top, C_DIM)       # Only below this line is used for lane detection.
-            for bx, by, bw, bh in self.reflect_boxes:      # Light reflections left out of the lane lines.
+            for bx, by, bw, bh in self.reflect_boxes if VIEW_DETAIL else ():      # Light reflections left out of the lane lines.
                 dbg.rectangle((bx, top + by), (bx + bw, top + by + bh), C_DIM, 1)
             for bx, by, bw, bh in self.xwalk2_boxes:       # Stripes of the registered crosswalk.
                 dbg.rectangle((bx, top + by), (bx + bw, top + by + bh), C_AT, 2)
@@ -1605,7 +1615,7 @@ class LaneDetector:
             self.crosswalk = self.crosswalk_y >= jy
             if draw:
                 for sx, sy, sw, sh in self.stripes:
-                    dbg.rectangle((sx - sw // 2, sy - sh // 2), (sx + sw // 2, sy + sh // 2), C_XWALK, 2)
+                    dbg.rectangle((sx - sw // 2, sy - sh // 2), (sx + sw // 2, sy + sh // 2), C_XWALK, 2 if VIEW_DETAIL else 1)
                 marks.setdefault("CROSSWALK", (C_XWALK, self.crosswalk_y))
         ys, ls, rs, pending = [], [], [], []
         bands = []      # Per band: (y, line x list, horizontal line or crosswalk). Used for the lane-gap test.
@@ -1743,7 +1753,7 @@ class LaneDetector:
                     if len(inl) > len(best):
                         best = inl
             if len(best) >= 2:
-                if draw and BAND_VIEW():
+                if draw and BAND_VIEW() and VIEW_DETAIL:
                     for y, x in pts:
                         if (y, x) not in best:
                             dbg.circle((int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # Point dropped as a misdetect.
@@ -1797,6 +1807,7 @@ class TrafficLight:
     def __init__(self):
         self.state = None
         self.boxes = []         # (x, y, w, h, color) for the on-screen display.
+        self.floor_signs = None     # (ROI top, mask) of red signs painted on the floor this frame (LaneDetector.signs), set by Driver.
         self.local = []
         self.lamps = {}         # Largest lamp box per color {"red": (x, y, w, h), "green": ...}. Compared by position in wait_green.
         self.mask_vis = None    # Color mask shown by tune_light.py, only when keep_mask=True.
@@ -1828,7 +1839,15 @@ class TrafficLight:
         self.local = []         # Spots re-read by color_at (for the on-screen display).
         biggest = {"red": 0, "green": 0}
 
+        signs = self.floor_signs
+
         def add(color, x, y, w, h, area):
+            if signs is not None:       # On a red floor sign (a "30" or "70" ring): paint, not a lamp.
+                top, on = signs
+                cx, cy = int(x + w / 2), int(y + h / 2) - top
+                if 0 <= cy < on.shape[0] and 0 <= cx < on.shape[1] and on[cy, cx]:
+                    self.painted.append((x, y, w, h))
+                    return
             self.boxes.append((x, y, w, h, color))
             if area > biggest[color]:
                 biggest[color] = area
@@ -2782,41 +2801,75 @@ class Stream:
     PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>__TITLE__</title>
 <style>
-:root{--bg:#111;--panel:#1b1b1b;--line:#2a2a2a;--txt:#ddd;--dim:#8a8a8a;--ok:#3cdc3c;--bad:#ff4040;--warn:#ffb020}
+:root{--bg:#000;--panel:#161616;--line:#2a2a2a;--g:#50e650;--txt:#f0f0f0;--dim:#969696;--off:#373737;--red:#ff4040;--amb:#ffc83c;
+ --ok:#50e650;--bad:#ff4040;--warn:#ffb020}
 *{box-sizing:border-box} html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--txt);font:14px -apple-system,"Apple SD Gothic Neo",sans-serif;
- display:flex;flex-direction:column}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px -apple-system,"Apple SD Gothic Neo",sans-serif;display:flex;flex-direction:column}
 header{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-header b{color:#fff;font-size:15px} header small{color:var(--dim)}
+.logo{color:#fff;font-weight:700;font-size:15px}
 #st{display:flex;align-items:center;gap:6px;color:#aaa;font-size:13px;margin-left:auto}
-#dot{width:10px;height:10px;border-radius:50%;background:#666;transition:background .2s}
+#dot{width:10px;height:10px;border-radius:50%;background:#666}
 .tools{display:flex;gap:6px}
-button{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 10px;
- font:inherit;font-size:13px;cursor:pointer} button:hover{border-color:#555} button.on{border-color:var(--warn);color:var(--warn)}
+button{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:5px 10px;font:inherit;font-size:13px;cursor:pointer}
+button:hover{border-color:#555} button.on{border-color:var(--warn);color:var(--warn)}
 kbd{font:11px ui-monospace,monospace;color:var(--dim);margin-left:4px}
-.wrap{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;background:#000}
+main{flex:1;min-height:0;display:flex}
+.wrap{position:relative;flex:1;min-width:0;min-height:0;display:flex;align-items:center;justify-content:center;background:#000}
 #v{display:block;width:100%;height:100%;object-fit:contain}
-#msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+#msg{position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:3;
  background:rgba(0,0,0,.55);color:#fff;font-size:18px;font-weight:600;text-align:center;padding:16px}
-#paused{position:absolute;top:10px;left:10px;display:none;background:rgba(0,0,0,.7);color:var(--warn);
+#paused{position:absolute;top:10px;left:10px;display:none;background:rgba(0,0,0,.7);color:var(--warn);z-index:2;
  border:1px solid var(--warn);border-radius:6px;padding:4px 10px;font-weight:600}
+#alert{position:absolute;top:10px;left:50%;transform:translateX(-50%);display:none;z-index:2;max-width:92%;color:#fff;
+ padding:7px 16px;border-radius:4px;font-weight:700;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:.92}
 #drag{position:absolute;display:none;border:2px solid var(--ok);background:rgba(60,220,60,.15);pointer-events:none}
 .wrap.drag{cursor:crosshair;touch-action:none} .wrap.drag #v{user-select:none;-webkit-user-select:none}
-#toast{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;
+#toast{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.75);color:#fff;z-index:3;
  border-radius:6px;padding:6px 12px;opacity:0;transition:opacity .3s;pointer-events:none}
+aside{display:none;width:290px;flex:0 0 290px;flex-direction:column;background:var(--panel);overflow:auto}
+body.dash aside{display:flex}
+.sec{padding:10px 14px;border-bottom:1px solid var(--line)}
+.cap{display:flex;justify-content:space-between;color:var(--dim);font-size:12px;margin-bottom:4px}
+#title{color:#fff;font-size:18px;font-weight:700;margin:4px 0 2px}
+#until{color:var(--amb);font-size:12px}
+.two{display:flex;gap:14px} .two>div{flex:1;min-width:0}
+.big{font-size:18px;font-weight:600}
+.bar{position:relative;height:8px;background:#464646;margin-top:5px}
+.bar i{position:absolute;top:0;bottom:0;left:0;background:var(--g)}
+.bar.mid i{background:#50c8ff} .bar.mid::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:#fff;z-index:1}
+#flags{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.flag{background:var(--off);color:var(--dim);font-size:11px;padding:3px 6px;border-radius:2px;display:flex;justify-content:space-between;white-space:nowrap;overflow:hidden}
+.flag.on{color:#fff} .flag.dark{color:#141414}
+.mini canvas{display:block;width:100%;aspect-ratio:4/3;background:#000;border:1px solid var(--line)}
+.mini .tag{display:block;margin-top:5px;font-weight:700;font-size:13px}
+.scr{position:relative;max-width:220px} .scr.none::after{content:"없음";position:absolute;inset:0;display:flex;align-items:center;
+ justify-content:center;color:#555;font-size:12px}
 #keys{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
 #keys label{color:#fff;font-weight:600;font-size:13px} #kstate{color:var(--ok);font-size:12px} #keys small{color:var(--dim);flex:1 1 200px}
-@media (max-width:600px){header small,kbd{display:none} .tools{width:100%} button{flex:1} #keys small{flex-basis:100%}}
+@media (max-width:900px){main{flex-direction:column;overflow:auto} .wrap{flex:none;aspect-ratio:16/9} aside{width:100%;flex:none;overflow:visible}}
+@media (max-width:600px){kbd{display:none} .tools{width:100%} button{flex:1} #keys small{flex-basis:100%}}
 </style></head><body>
-<header><b>__TITLE__</b><small>live detection view</small>
+<header><span class="logo">__TITLE__</span>
 <span id="st"><i id="dot"></i><span id="stt">connecting…</span></span>
 <span class="tools">
  <button id="bPause" title="pause / resume the view">Pause<kbd>Space</kbd></button>
- <button id="bSave" title="save the view as a photo">Save photo<kbd>S</kbd></button>
- <button id="bFull" title="full screen (double click too)">Full screen<kbd>F</kbd></button>
+ <button id="bSave" title="save the view as a photo">Save<kbd>S</kbd></button>
+ <button id="bFull" title="full screen (double click too)">Full<kbd>F</kbd></button>
 </span></header>
-<div class="wrap" id="wrap"><canvas id="v" width="0" height="0"></canvas><div id="drag"></div><div id="paused">Paused</div>
+<main>
+<div class="wrap" id="wrap"><canvas id="v" width="0" height="0"></canvas><div id="alert"></div><div id="drag"></div><div id="paused">Paused</div>
 <div id="msg">Disconnected · reconnecting…</div><div id="toast"></div></div>
+<aside id="side">
+ <div class="sec"><div class="cap"><span id="stepn">-</span><span id="el"></span></div><div id="title">-</div><div id="until"></div></div>
+ <div class="sec two"><div><div class="cap">SPEED</div><div class="big" id="spd">0.00</div><div class="bar"><i id="spdb"></i></div></div>
+  <div><div class="cap">STEER</div><div class="big" id="str">0°</div><div class="bar mid"><i id="strb"></i></div></div></div>
+ <div class="sec"><div id="flags"></div></div>
+ <div class="sec two">
+  <div class="mini"><div class="cap">LIGHT</div><div class="scr"><canvas id="mLight" width="160" height="120"></canvas></div><span class="tag" id="tLight">-</span></div>
+  <div class="mini" id="cPerson"><div class="cap">PERSON</div><div class="scr"><canvas id="mPerson" width="160" height="120"></canvas></div><span class="tag" id="tPerson">-</span></div>
+ </div>
+</aside>
+</main>
 <div id="keys"><label id="klabel">Terminal keys</label>
 <button id="bEnter">Enter</button><button id="bStop">Ctrl+C</button><span id="kstate"></span><small>__KEYS_HELP__</small></div>
 <script>
@@ -2913,6 +2966,14 @@ function paint(ops, blobs) {
         ctx.globalAlpha = a; ctx.drawImage(tint, 0, top); ctx.globalAlpha = 1;
         break;
       }
+      case "f": {     // A filled polygon [x0, y0, x1, y1, ...] at alpha.
+        const [, pts, c, a] = o;
+        if (pts.length < 6) break;
+        ctx.globalAlpha = a; ctx.fillStyle = c; ctx.beginPath(); ctx.moveTo(pts[0], pts[1]);
+        for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i], pts[i + 1]);
+        ctx.closePath(); ctx.fill(); ctx.globalAlpha = 1;
+        break;
+      }
       case "s": { const [, x0, y0, x1, y1, c, a] = o; ctx.globalAlpha = a; ctx.fillStyle = c; ctx.fillRect(x0, y0, x1 - x0 + 1, y1 - y0 + 1); ctx.globalAlpha = 1; break; }
     }
   }
@@ -2928,6 +2989,7 @@ async function show(buf) {
   let at = 8 + n;
   const raw = head.blobs.map(len => { const b = u8.subarray(at, at + len); at += len; return b; });
   const jpegs = new Set(head.pics.filter(p => typeof p[2] === "number").map(p => p[2]));
+  for (const k of Object.values(head.minis || {})) jpegs.add(k);
   const blobs = await Promise.all(raw.map((b, k) => jpegs.has(k) ? createImageBitmap(new Blob([b], {type: "image/jpeg"})) : inflate(b)));
   if (cv.width !== head.w || cv.height !== head.h) { cv.width = head.w; cv.height = head.h; }
   for (const [x, w, src] of head.pics) {      // The camera pictures, and plain panels as their color.
@@ -2939,8 +3001,65 @@ async function show(buf) {
     paint(ops, blobs);
     ctx.restore();
   }
+  if (head.state) {
+    const m = {};
+    for (const [name, k] of Object.entries(head.minis || {})) m[name] = blobs[k];
+    dashboard(head.state, m);
+  }
   for (const k of jpegs) blobs[k].close();
   drawn = true;
+}
+// --- The drive dashboard: the Pi sends its values (head.state) and close-ups (head.minis), the page lays them out. ---
+function esc(t) { return String(t).replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"})[c]); }
+const miniSeen = {};      // Last time each close-up had a picture: a lamp or a figure missed for a frame or two keeps its picture.
+function mini(id, bmp) {
+  const c = $(id), x = c.getContext("2d"), now = performance.now();
+  if (!bmp) {
+    if (now - (miniSeen[id] || -1e9) < 700) return;      // Keep the last one a moment, so it does not flicker.
+    c.parentElement.classList.add("none");
+    x.fillStyle = "#000"; x.fillRect(0, 0, c.width, c.height);
+    return;
+  }
+  miniSeen[id] = now;
+  c.parentElement.classList.remove("none");
+  x.fillStyle = "#000"; x.fillRect(0, 0, c.width, c.height);
+  // Fills the box (cover): a close-up cut at the frame edge is not 4:3, and black bands would make it look smaller.
+  const k = Math.max(c.width / bmp.width, c.height / bmp.height), w = bmp.width * k, h = bmp.height * k;
+  x.drawImage(bmp, (c.width - w) / 2, (c.height - h) / 2, w, h);
+}
+let piFps = null;
+function dashboard(S, minis) {
+  document.body.classList.add("dash");
+  piFps = S.fps;
+  const st = S.step;
+  $("stepn").textContent = `${st.i} / ${st.n}`;
+  $("el").textContent = st.el.toFixed(1) + "s" + (st.lim ? ` / ${st.lim}s` : "");
+  $("title").textContent = st.title;
+  $("until").textContent = st.lines.find(l => l.startsWith("until")) || st.lines[0] || "";
+  $("spd").textContent = S.speed.toFixed(2);
+  $("spd").style.color = S.speed > 0 ? "var(--txt)" : "var(--red)";
+  $("spdb").style.width = Math.min(100, 100 * S.speed / 0.6).toFixed(1) + "%";     // Same scale as the drawn panel.
+  $("spdb").style.background = S.speed > 0 ? "var(--g)" : "var(--red)";
+  const a = S.steer, f = Math.max(-1, Math.min(1, a / S.steer_max));
+  $("str").textContent = (a < -0.5 ? "L " : a > 0.5 ? "R " : "") + Math.abs(a).toFixed(0) + " deg";
+  Object.assign($("strb").style, {left: (50 + Math.min(0, f) * 50) + "%", width: Math.abs(f) * 50 + "%"});
+  // The status marks as in the drawn panel: colored only when on.
+  $("flags").innerHTML = S.flags.map(([n, on, c, v]) => {
+    const dark = on && parseInt(c.slice(1, 3), 16) + parseInt(c.slice(3, 5), 16) + parseInt(c.slice(5, 7), 16) > 380;
+    return `<div class="flag${on ? " on" : ""}${dark ? " dark" : ""}"${on ? ` style="background:${c}"` : ""}><span>${esc(n)}</span><span>${v == null ? "" : esc(v)}</span></div>`;
+  }).join("");
+  const al = $("alert");
+  if (S.banner) { al.textContent = S.banner[0]; al.style.background = S.banner[1]; al.style.display = "block"; }
+  else al.style.display = "none";
+  const L = S.light, lt = $("tLight");
+  lt.textContent = L.state ? L.state.toUpperCase() : "-";
+  lt.style.color = L.state === "red" ? "#ff2828" : L.state === "green" ? "#3cdc3c" : "var(--dim)";
+  mini("mLight", minis.light);
+  const P = S.person, pt = $("tPerson");
+  $("cPerson").style.display = P ? "" : "none";      // Figure detection off (PERSON_ON = False): nothing to show.
+  pt.textContent = P ? (P.state === "CLEAR" ? "-" : P.state) : "off";
+  pt.style.color = !P || P.state === "CLEAR" ? "var(--dim)" : P.state === "SEEN" ? "var(--amb)" : "var(--red)";
+  mini("mPerson", minis.person);
 }
 function full() { document.fullscreenElement ? document.exitFullscreen() : wrap.requestFullscreen?.(); }
 $("bPause").onclick = () => setPaused(!paused); $("bSave").onclick = save; $("bFull").onclick = full; wrap.ondblclick = full;
@@ -3085,7 +3204,8 @@ async function loop() {
       await show(buf);
       seq = next; fails = 0; msg.style.display = "none";
       const now = performance.now(); shown.push(now); shown = shown.filter(x => now - x < 2000);
-      status(true, "connected · " + (shown.length / 2).toFixed(0) + " fps");
+      status(true, "connected · " + (shown.length / 2).toFixed(0) + " fps" + (piFps ? ` · Pi ${piFps} fps` : ""));
+      if (piFps && piFps < 15) { stt.style.color = "var(--amb)"; } else stt.style.color = "";      // A slow Pi steers late.
     } catch (e) {
       fails++;
       if (fails >= 2) { msg.style.display = "flex"; status(false, "disconnected · reconnecting"); }
@@ -3684,8 +3804,11 @@ class Driver:
                 tags.append(fmt.format(step[key]))
         return title, [c for c in (cond, "  ".join(tags[:2]), "  ".join(tags[2:])) if c]
 
-    def view(self, dbg, now, fps=None):
-        """Camera detection view with the info panel on the right."""
+    def view(self, dbg, now, fps=None, web=False):
+        """Camera detection view with the info panel on the right.
+
+        web=True: for the web page. The camera view only, with the panel's values as data (dbg.extra: web_state and the
+        light and figure close-ups), which the page lays out itself. The banner goes there too instead of onto the picture."""
         course, detect, steering = self.course, self.detect, self.steering
         step = course.step()
         (self.traffic if course.needs_light() else self.traffic_view).draw(dbg, regions=course.needs_light())
@@ -3707,8 +3830,8 @@ class Driver:
         cx0, by = int(FRAME_W * CAMERA_X), FRAME_H - 6
         a = np.radians(steering.angle * 1.6)
         tip = (int(cx0 + 70 * np.sin(a)), int(by - 70 * np.cos(a)))
-        dbg.arrowedLine((cx0, by), tip, (20, 20, 20), 7, cv2.LINE_AA, tipLength=0.3)
-        dbg.arrowedLine((cx0, by), tip, (255, 255, 255), 3, cv2.LINE_AA, tipLength=0.3)
+        dbg.arrowedLine((cx0, by), tip, (20, 20, 20), 5, cv2.LINE_AA, tipLength=0.25)
+        dbg.arrowedLine((cx0, by), tip, (255, 255, 255), 2, cv2.LINE_AA, tipLength=0.25)
 
         # One large notice at the top center, only the most important.
         lost = self.det is None
@@ -3734,6 +3857,9 @@ class Driver:
             banner = ("STOPPED (LANE LOST)" if lost else "STOPPED", (40, 40, 220))
         elif lost and self.lost_since is not None:
             banner = (f"LANE LOST {now - self.lost_since:.1f}s", (0, 140, 255))
+        if web:
+            dbg.extra = {"state": self.web_state(now, fps, banner), "minis": self.close_ups(dbg.base_image())}
+            return dbg
         if banner:
             (tw, _), _ = cv2.getTextSize(banner[0], cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
             x = (FRAME_W - tw) // 2 - 12
@@ -3792,17 +3918,7 @@ class Driver:
         p.line((12, 236), (W - 12, 236), (70, 70, 70), 1)
 
         # Status marks, colored only when on.
-        on_light = course.local_light or self.light     # Re-reading the spot that was red is more accurate.
-        items = [("LANE", True, (60, 200, 60) if not lost else (40, 40, 220), "OK" if not lost else "LOST"),
-                 ("JUNCTION", detect.junction_y is not None or detect.far_y is not None, C_JUNC, None),
-                 ("CROSSWALK", detect.crosswalk_any, C_XWALK, None),
-                 ("LANE ENDS", detect.gap_y is not None, C_GAP, None),
-                 ("LIGHT", on_light is not None,
-                  (40, 40, 255) if on_light == "red" else (60, 220, 60), (on_light or "").upper() or None),
-                 ("OBSTACLE", bool(self.obs and self.obs.near), (0, 140, 255), None),
-                 ("PERSON", bool(self.person and self.person.seen), C_PERSON, None),
-                 ("CHECK", JUNCTION_TRACK_ASSIST and detect.tracker is not None and detect.tracker.p is not None, C_AT,
-                  f"{detect.tracker.conf:.0%}" if detect.tracker is not None and detect.tracker.p is not None else None)]
+        items = self.status_items()
         for k, (name, on, color, val) in enumerate(items):
             x, yy = 12 + (k % 2) * ((W - 24) // 2 + 2), 242 + (k // 2) * 24
             w = (W - 24) // 2 - 2
@@ -3819,6 +3935,88 @@ class Driver:
             foot += f"   {fps:.0f} fps"
         text(foot, 12, FRAME_H - 12, 0.4, grey)
         return Canvas.hstack([dbg, p])
+
+    def status_items(self):
+        """The status marks: (name, on, BGR color, value or None)."""
+        course, detect = self.course, self.detect
+        lost = self.det is None
+        on_light = course.local_light or self.light     # Re-reading the spot that was red is more accurate.
+        held = detect.tracker is not None and detect.tracker.p is not None
+        return [("LANE", True, (60, 200, 60) if not lost else (40, 40, 220), "OK" if not lost else "LOST"),
+                ("JUNCTION", detect.junction_y is not None or detect.far_y is not None, C_JUNC, None),
+                ("CROSSWALK", detect.crosswalk_any, C_XWALK, None),
+                ("LANE ENDS", detect.gap_y is not None, C_GAP, None),
+                ("LIGHT", on_light is not None,
+                 (40, 40, 255) if on_light == "red" else (60, 220, 60), (on_light or "").upper() or None),
+                ("OBSTACLE", bool(self.obs and self.obs.near), (0, 140, 255), None),
+                ("PERSON", bool(self.person and self.person.seen), C_PERSON, None),
+                ("CHECK", JUNCTION_TRACK_ASSIST and held, C_AT, f"{detect.tracker.conf:.0%}" if held else None)]
+
+    def web_state(self, now, fps, banner):
+        """The panel's values for the web page, which draws the panel itself (plain numbers and text, a few hundred bytes)."""
+        course, detect, steering = self.course, self.detect, self.steering
+        step = course.step()
+        n = len(course.course)
+        title, lines = self.step_text(step)
+        nxt = course.course[course.idx + 1] if course.idx + 1 < n else None
+        el = now - course.step_start if course.step_start is not None else 0.0
+        lim = None if course.needs_light() and course.red_seen else step and (step["sec"] or step["max"])
+        css = lambda bgr: "#%02x%02x%02x" % (int(bgr[2]), int(bgr[1]), int(bgr[0]))
+        on_light = course.local_light or self.light
+        person = self.person
+        if person is None:
+            who = None
+        elif person.hold:
+            gone = person.gone_since
+            who = ("CHECKING" if person.checking else "STOP" if gone is None
+                   else f"GO IN {max(person.resume_delay - (now - gone), 0):.1f}s")
+        else:
+            who = "SEEN" if person.seen else "CLEAR"
+        det = self.det
+        return {
+            "step": {"i": min(course.idx + 1, n), "n": n, "done": course.idx / max(n, 1), "title": title, "lines": lines,
+                     "el": round(el, 1), "lim": lim, "next": self.step_text(nxt)[0] if nxt else None},
+            "speed": round(self.speed, 2), "slow": course.opt("slow"),
+            "steer": round(steering.angle, 1), "steer_max": AUTO_STEER_MAX,
+            "lane": None if det is None else [round(det[0], 3), round(det[1], 3)],
+            "flags": [[name, bool(on), css(color), val] for name, on, color, val in self.status_items()],
+            "banner": None if banner is None else [banner[0], css(banner[1])],
+            "light": {"state": on_light, "wait": course.needs_light(), "red_seen": bool(course.red_seen)},
+            "person": None if person is None else {"state": who},
+            "line": LINE_COLOR, "thr": round(float(detect.thr)), "thr_auto": WHITE_THR is None, "fps": None if fps is None else round(fps),
+            "method": LANE_POINTS if LANE_MODEL != "track" else "track",
+        }
+
+    MINI = (160, 120)   # Largest close-up sent to the page (w, h).
+    MINI_HALF = 36      # A close-up is at least twice this tall (frame px): a lamp a few px wide still shows its pole and housing.
+
+    def close_ups(self, frame):
+        """Small pictures of the traffic light and the LEGO figure, for the page's side views: {name: BGR image}.
+        Only what was found this frame, each a few kilobytes."""
+        out = {}
+        course = self.course
+        light = self.traffic if course.needs_light() else self.traffic_view
+        boxes = [(x, y, w, h) for x, y, w, h, _ in light.boxes] or [(x0, y0, x1 - x0, y1 - y0) for x0, y0, x1, y1, _ in light.local]
+        if boxes:
+            x, y, w, h = max(boxes, key=lambda b: b[2] * b[3])
+            out["light"] = self._crop(frame, x, y, w, h, 2.5)
+        if self.person is not None and self.person.detector.found:
+            f = self.person.detector.found
+            x, y, w, h = figure_box(f["x"], f["y"], f["w"], f["h"], f["feet"])
+            out["person"] = self._crop(frame, x, y, w, h, 1.6)
+        return {k: v for k, v in out.items() if v is not None}
+
+    def _crop(self, frame, x, y, w, h, grow):
+        """The box grown grow times around its center, inside the frame, scaled to fit MINI."""
+        cx, cy, half = x + w / 2, y + h / 2, max(max(w, h) * grow / 2, self.MINI_HALF)
+        x0, y0 = int(max(cx - half * 4 / 3, 0)), int(max(cy - half, 0))
+        x1, y1 = int(min(cx + half * 4 / 3, frame.shape[1])), int(min(cy + half, frame.shape[0]))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            return None
+        crop = frame[y0:y1, x0:x1]
+        k = min(self.MINI[0] / crop.shape[1], self.MINI[1] / crop.shape[0])
+        size = (max(int(crop.shape[1] * k), 1), max(int(crop.shape[0] * k), 1))
+        return cv2.resize(crop, size, interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR)
 
     def tick(self, frame, now, show=False):
         """Return (steering angle, or None to hold, motor command, debug image)."""
@@ -3843,6 +4041,8 @@ class Driver:
         course.stop_whole = bool(self.stop_found and self.stop_found.get("whole"))
         # Traffic light: every frame while waiting for green. For the view only, every LIGHT_VIEW_EVERY frames (the last result is shown between).
         need_light = course.needs_light()
+        signs = None if detect.signs is None else (int(FRAME_H * ROI_TOP), detect.signs)
+        self.traffic.floor_signs = self.traffic_view.floor_signs = signs
         if need_light:
             self.traffic(frame)
         elif show and self.light_tick % LIGHT_VIEW_EVERY == 0:
@@ -4266,7 +4466,7 @@ def main():
             frames += 1
             if show:
                 try:
-                    stream.update(driver.view(dbg, now, fps))
+                    stream.update(driver.view(dbg, now, fps, web=True))
                 except Exception as e:      # The view is for the page only: a fault in it must never stop the drive.
                     view_errors += 1
                     if view_errors == 1 or view_errors % 100 == 0:

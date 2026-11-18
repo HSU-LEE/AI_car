@@ -3345,6 +3345,34 @@ def test_lane_pairs():
         lf.LANE_POINTS = old
 
 
+def test_web_dashboard():
+    print("[drive page: the panel as values, close-ups of the light and the figure]")
+    import struct
+    import course as cs
+    with quiet():
+        d = lf.Driver(cs._flat([follow(5), finish()]))
+        img = lane_frame()
+        for i in range(3):
+            _, _, dbg = d.tick(img, i / 30, show=True)
+        d.traffic_view.boxes = [(100, 40, 8, 8, "red")]     # A lamp found this frame.
+        view = d.view(dbg, 0.1, 30.0, web=True)
+    check("web view: the camera view only, no panel drawn beside it", view.w == W and view.h == H, (view.w, view.h))
+    data = view.payload()
+    n = struct.unpack(">I", data[4:8])[0]
+    head = json.loads(data[8:8 + n])
+    st = head.get("state") or {}
+    check("the panel's values are sent as data", st.get("step", {}).get("title") == "FOLLOW LANE" and "speed" in st and "steer" in st
+          and len(st.get("flags", [])) == 8 and st["lane"] is not None, str(st)[:200])
+    check("the light close-up is sent as a small picture", "light" in head.get("minis", {}) and "person" not in head["minis"], head.get("minis"))
+    k = head["minis"]["light"]
+    at = 8 + n + sum(head["blobs"][:k])
+    mini = cv2.imdecode(np.frombuffer(data[at:at + head["blobs"][k]], np.uint8), cv2.IMREAD_COLOR)
+    check("the close-up fits 160 x 120", mini is not None and mini.shape[1] <= 160 and mini.shape[0] <= 120, None if mini is None else mini.shape)
+    json.dumps(st)      # Must be plain JSON.
+    old = d.view(dbg, 0.1, 30.0)
+    check("recordings and replays keep the drawn panel", old.w == W + d.PANEL_W and old.extra is None, old.w)
+
+
 def test_course_end_stops():
     print("[the last step ending stops the car]")
     import course as cs
@@ -4140,7 +4168,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

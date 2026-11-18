@@ -37,7 +37,7 @@ def main():
             traffic.draw(dbg)
             found = person(frame, lf.PERSON_X, (lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H)) * lf.FRAME_H) if person else None
             if person:
-                lf.draw_person(dbg, person, lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H))
+                lf.draw_person(dbg, person, lf.PERSON_AT if lf.PERSON_AT is not None else person.stop_at(lf.FRAME_H), detail=True)
             raw = lf.Canvas(frame)      # Drawing commands: the browser paints them.
             raw.putText(f"CAMERA  {fps:4.1f} fps", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             if det is None:

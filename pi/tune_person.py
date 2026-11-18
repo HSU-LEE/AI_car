@@ -105,7 +105,7 @@ def main():
             frame = cam.capture_array()
             found = detector(frame, lf.PERSON_X, show_at(detector) * lf.FRAME_H if detector.views else None)
             view = lf.Canvas(frame)     # Drawing commands: the browser paints them.
-            lf.draw_person(view, detector, show_at(detector))
+            lf.draw_person(view, detector, show_at(detector), detail=True)
             x0, y0, x1, y1 = guide_px(frame.shape, detector.box)
             view.rectangle((x0, y0), (x1, y1), lf.C_AT, 2)
             lf.chip(view, "FIGURE" if detector.marked else "STAND FIGURE IN HERE", x0, y0 - 22, lf.C_AT, 0.38)
