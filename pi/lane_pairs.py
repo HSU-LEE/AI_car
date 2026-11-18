@@ -38,6 +38,7 @@ PAIR_SMOOTH = 0.05          # Pull toward the last frame's lane, likewise.
 PAIR_WIDTH_RANGE = (0.75, 1.33)  # A fitted width outside this share of the calibrated one is not a lane: the band answer stands.
 PAIR_MIN_PIECES = 6         # Pieces needed in all.
 PAIR_MIN_ROWS = 3           # Sample rows that must give at least one piece.
+PAIR_VIEW_GROW = 0.12       # The drawn curve takes in pieces this near it (lane widths), row by row up the line (view only).
 PAIR_VIEW_SMOOTH = 0.5      # The drawn curves keep this share of the last frame's (view only, never the steering).
 PAIR_RELOCK = (0.4, 3)      # The band method sure (both lines in 3+ bands) and this far off (position) this many frames in a row:
                             # start again from it.
@@ -192,24 +193,38 @@ class LanePairs:
         return out
 
     def curve_points(self, lf, which, top, n=16):
-        """For the view only: the left (-1) or right (1) line as it really runs, through its own pieces, so a curve shows
-        as one. A 2nd-degree fit of x over y from the frame bottom up to its farthest piece. The straight pair line when
-        the pieces are too few, or the curve strays more than half a lane width from it (a misread, not a bend)."""
+        """For the view only: the left (-1) or right (1) line as it really runs, so a curve shows as one.
+
+        Starts from the pieces the pair fit gave this line, then grows up the line: a piece in the next sample row above
+        that lies near the curve so far (PAIR_VIEW_GROW lane widths) joins it, even if it is far from the straight pair
+        line (a bend), but never one the fit gave the other line. A 2nd-degree fit of x over y, from the frame bottom up
+        to the farthest piece. The straight pair line when there are too few pieces or the curve leaves the lane."""
         straight = self.line_points(lf, which, top)
         if self.pieces is None or straight is None:
             return straight
+        H = lf.HORIZON_Y
         ys, xs, sides = self.pieces
-        on = sides == which
-        if len(np.unique(ys[on])) < 4:
+        use = sides == which
+        if len(np.unique(ys[use])) < 3:
             return straight
-        y_top = max(float(ys[on].min()), top)
+        lane = (self.p[2] - self.p[1]) * np.maximum(ys - H, 1.0)
+        rows = self.rows_y if self.rows_y is not None and len(self.rows_y) > 1 else np.array([lf.FRAME_H, top])
+        step = float(np.abs(np.diff(rows)).max()) * 1.5 + PAIR_STRIP     # From one sample row to the next one up.
+        free = sides != -which
+        for _ in range(PAIR_ROWS):
+            c = np.polyfit(ys[use], xs[use], 2 if len(np.unique(ys[use])) >= 4 else 1)
+            reach = ys >= ys[use].min() - step
+            grow = use | (free & reach & (np.abs(xs - np.polyval(c, ys)) < PAIR_VIEW_GROW * lane))
+            if np.array_equal(grow, use):
+                break
+            use = grow
+        c = np.polyfit(ys[use], xs[use], 2 if len(np.unique(ys[use])) >= 4 else 1)
+        y_top = max(float(ys[use].min()), top)
         y = np.linspace(lf.FRAME_H - 1, y_top, n)
-        x = np.polyval(np.polyfit(ys[on], xs[on], 2), y)
+        x = np.polyval(c, y)
         b = self.p[1] if which < 0 else self.p[2]
-        x_line = self.p[0] + b * (y - lf.HORIZON_Y)
-        lane = (self.p[2] - self.p[1]) * np.maximum(y - lf.HORIZON_Y, 1.0)
-        if np.any(np.abs(x - x_line) > 0.5 * lane):
-            return straight
+        if np.any(np.abs(x - (self.p[0] + b * (y - H))) > (self.p[2] - self.p[1]) * np.maximum(y - H, 1.0)):
+            return straight     # More than a lane width off the pair line: a misread, not this line bending.
         pts = np.stack([x, y], axis=1)
         last = self.drawn.get(which)
         if last is not None and last.shape == pts.shape and abs(last[-1, 1] - pts[-1, 1]) < 20:

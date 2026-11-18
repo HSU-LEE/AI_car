@@ -1520,8 +1520,18 @@ class LaneDetector:
         if pairs.used:
             lf_ = sys.modules[__name__]
             left, right = pairs.curve_points(lf_, -1, top), pairs.curve_points(lf_, 1, top)   # As the lines really run.
-            if LANE_FILL > 0:     # The lane the car follows, lightly filled.
-                dbg.fill_poly(np.vstack([left, right[::-1]]), C_PATH, LANE_FILL)
+            if LANE_FILL > 0:     # The lane the car follows, lightly filled over the whole band area.
+                yy = np.linspace(FRAME_H - 1, top, 24)
+                edge = []
+                for which, pts in ((-1, left), (1, right)):
+                    # The drawn line where it is drawn; above its end, the pair line, moved to meet it there.
+                    line = pairs.line_points(lf_, which, top)
+                    x_line = np.interp(yy, line[::-1, 1], line[::-1, 0])
+                    end = pts[:, 1].min()
+                    shift = np.interp(end, pts[::-1, 1], pts[::-1, 0]) - np.interp(end, line[::-1, 1], line[::-1, 0])
+                    x = np.where(yy >= end, np.interp(yy, pts[::-1, 1], pts[::-1, 0]), x_line + shift)
+                    edge.append(np.stack([x, yy], axis=1))
+                dbg.fill_poly(np.vstack([edge[0], edge[1][::-1]]), C_PATH, LANE_FILL)
             ys, xs, sides = pairs.pieces
             for y, x, sd in zip(ys[::2], xs[::2], sides[::2]) if VIEW_DETAIL else ():     # Every other piece: the view stays light.
                 dbg.circle((int(x), int(y)), 2, C_LEFT if sd < 0 else C_RIGHT if sd > 0 else C_DIM, -1)
@@ -2798,7 +2808,7 @@ class Stream:
     Encoding runs on the browser request thread, not the main loop, and only while someone is watching (not while the page is paused or hidden).
     """
 
-    PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+    PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>__TITLE__</title>
 <style>
 :root{--bg:#000;--panel:#161616;--line:#2a2a2a;--g:#50e650;--txt:#f0f0f0;--dim:#969696;--off:#373737;--red:#ff4040;--amb:#ffc83c;
@@ -2836,13 +2846,17 @@ body.dash aside{display:flex}
 .big{font-size:18px;font-weight:600}
 .bar{position:relative;height:8px;background:#464646;margin-top:5px}
 .bar i{position:absolute;top:0;bottom:0;left:0;background:var(--g)}
+.bar.thin{height:3px;margin-top:8px} .bar.thin i{background:var(--dim)}
+.lanebar{position:relative;height:14px;margin:4px 0 2px;border-left:3px solid #288cff;border-right:3px solid #ff3c3c;background:#1f1f1f}
+.lanebar::before{content:"";position:absolute;left:50%;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--g)}
+.lanebar b{position:absolute;top:2px;width:10px;height:10px;margin-left:-5px;border-radius:50%;background:#fff;transition:left .1s linear}
 .bar.mid i{background:#50c8ff} .bar.mid::before{content:"";position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:#fff;z-index:1}
 #flags{display:grid;grid-template-columns:1fr 1fr;gap:4px}
 .flag{background:var(--off);color:var(--dim);font-size:11px;padding:3px 6px;border-radius:2px;display:flex;justify-content:space-between;white-space:nowrap;overflow:hidden}
 .flag.on{color:#fff} .flag.dark{color:#141414}
 .mini canvas{display:block;width:100%;aspect-ratio:4/3;background:#000;border:1px solid var(--line)}
 .mini .tag{display:block;margin-top:5px;font-weight:700;font-size:13px}
-.scr{position:relative;max-width:220px} .scr.none::after{content:"없음";position:absolute;inset:0;display:flex;align-items:center;
+.scr{position:relative;max-width:220px} .scr.none::after{content:"none";position:absolute;inset:0;display:flex;align-items:center;
  justify-content:center;color:#555;font-size:12px}
 #keys{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--line);flex-wrap:wrap}
 #keys label{color:#fff;font-weight:600;font-size:13px} #kstate{color:var(--ok);font-size:12px} #keys small{color:var(--dim);flex:1 1 200px}
@@ -2860,9 +2874,10 @@ body.dash aside{display:flex}
 <div class="wrap" id="wrap"><canvas id="v" width="0" height="0"></canvas><div id="alert"></div><div id="drag"></div><div id="paused">Paused</div>
 <div id="msg">Disconnected · reconnecting…</div><div id="toast"></div></div>
 <aside id="side">
- <div class="sec"><div class="cap"><span id="stepn">-</span><span id="el"></span></div><div id="title">-</div><div id="until"></div></div>
+ <div class="sec"><div class="cap"><span id="stepn">-</span><span id="el"></span></div><div id="title">-</div><div id="until"></div><div class="bar thin" id="limb"><i id="lim"></i></div></div>
  <div class="sec two"><div><div class="cap">SPEED</div><div class="big" id="spd">0.00</div><div class="bar"><i id="spdb"></i></div></div>
   <div><div class="cap">STEER</div><div class="big" id="str">0°</div><div class="bar mid"><i id="strb"></i></div></div></div>
+ <div class="sec"><div class="cap"><span>POSITION</span><span id="posv">-</span></div><div class="lanebar"><b id="pos"></b></div></div>
  <div class="sec"><div id="flags"></div></div>
  <div class="sec two">
   <div class="mini"><div class="cap">LIGHT</div><div class="scr"><canvas id="mLight" width="160" height="120"></canvas></div><span class="tag" id="tLight">-</span></div>
@@ -3035,6 +3050,8 @@ function dashboard(S, minis) {
   $("stepn").textContent = `${st.i} / ${st.n}`;
   $("el").textContent = st.el.toFixed(1) + "s" + (st.lim ? ` / ${st.lim}s` : "");
   $("title").textContent = st.title;
+  $("limb").style.display = st.lim ? "" : "none";      // How much of the step's time limit is used.
+  if (st.lim) { $("lim").style.width = Math.min(100, 100 * st.el / st.lim).toFixed(1) + "%"; $("lim").style.background = st.el / st.lim > 0.85 ? "var(--amb)" : "var(--dim)"; }
   $("until").textContent = st.lines.find(l => l.startsWith("until")) || st.lines[0] || "";
   $("spd").textContent = S.speed.toFixed(2);
   $("spd").style.color = S.speed > 0 ? "var(--txt)" : "var(--red)";
@@ -3043,6 +3060,13 @@ function dashboard(S, minis) {
   const a = S.steer, f = Math.max(-1, Math.min(1, a / S.steer_max));
   $("str").textContent = (a < -0.5 ? "L " : a > 0.5 ? "R " : "") + Math.abs(a).toFixed(0) + " deg";
   Object.assign($("strb").style, {left: (50 + Math.min(0, f) * 50) + "%", width: Math.abs(f) * 50 + "%"});
+  // The car in its lane: offset -1 / +1 is the left / right edge of the position range (the steering unit).
+  const pos = $("pos");
+  if (S.lane) {
+    pos.style.display = ""; pos.style.left = (50 + 50 * Math.max(-1, Math.min(1, S.lane[0]))).toFixed(1) + "%";
+    pos.style.background = Math.abs(S.lane[0]) > 0.5 ? "var(--amb)" : "#fff";
+    $("posv").textContent = Math.abs(S.lane[0]) < 0.05 ? "center" : (S.lane[0] < 0 ? "left " : "right ") + Math.abs(S.lane[0]).toFixed(2);
+  } else { pos.style.display = "none"; $("posv").textContent = "lane lost"; }
   // The status marks as in the drawn panel: colored only when on.
   $("flags").innerHTML = S.flags.map(([n, on, c, v]) => {
     const dark = on && parseInt(c.slice(1, 3), 16) + parseInt(c.slice(3, 5), 16) + parseInt(c.slice(5, 7), 16) > 380;
