@@ -179,6 +179,27 @@ class Camera:
         return cv2.imdecode(cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 88])[1], cv2.IMREAD_COLOR)
 
 
+_SETTINGS = ("LANE_WIDTH_PX", "HORIZON_Y", "CAMERA_X", "LINE_COLOR", "WHITE_THR", "LINE_MODEL", "XWALK_MODEL", "STOP_MODEL",
+             "LIGHT_MODEL", "LANE_MODEL")
+
+
+def _keeps_settings(fn):
+    """run() and accuracy() set lane_follow's camera and model for the simulator: put them back afterwards, so a caller
+    (the tests) goes on with its own settings."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapped(*a, **k):
+        saved = {n: getattr(lf, n) for n in _SETTINGS}
+        try:
+            return fn(*a, **k)
+        finally:
+            for n, v in saved.items():
+                setattr(lf, n, v)
+    return wrapped
+
+
+@_keeps_settings
 def run(track_name, model, speed=0.5, steer=26, seconds=None, video=None, seed=0, quiet=True, mismatch=True):
     """One drive. Returns the metrics."""
     for k, v in PI_VISION.items():
@@ -288,6 +309,7 @@ def truth(cam, track, x, y, th, rows):
     return out
 
 
+@_keeps_settings
 def accuracy(track_name, model, seed=0, step_cm=1.0, wobble_cm=4.0, wobble_deg=8.0):
     """Open loop: the car moves along the track with a known wobble; how close each frame's (offset, heading) is to the truth."""
     for k, v in PI_VISION.items():

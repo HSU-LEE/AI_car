@@ -55,6 +55,8 @@ def setup(run, code, lane_model, sets=None):
             for name in dir(module):
                 if name.startswith("PERSON_") or name in ("RED_BACK_ON", "JUNCTION_TRACK_ASSIST"):
                     setattr(lf, name, getattr(module, name))
+            lf.JUNCTION_TRACK_ASSIST = getattr(module, "JUNCTION_TRACK_ASSIST", False)    # As replay.py: off before it existed.
+            apply_sets(sets)        # ... but an override given for an experiment still wins.
         saved = json.loads((run / "run.json").read_text()) if (run / "run.json").exists() else {}
         for kv in saved.get("set", []):
             key, val = kv.split("=", 1)
