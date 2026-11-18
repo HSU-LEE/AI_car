@@ -1304,7 +1304,7 @@ class LaneDetector:
         hit = lambda r, a, b: cs[r, min(max(b, 0), cols_n)] > cs[r, min(max(a, 0), cols_n)]
         self._row_sums = cs
         self._row_xsums = None      # Made by walk_line only if it is needed this frame.
-        best = None
+        ends = []
         walks = {}
         for side, xs in (("left", self.left), ("right", self.right)):
             pts = [(self.band_y[i] - top, xs[i]) for i in range(SLICES) if xs[i] is not None]
@@ -1337,24 +1337,23 @@ class LaneDetector:
                 continue        # The whole lane curves here: both lines bend the same way.
             if curve is None and self.curve_t is not None and 0 <= now - self.curve_t <= LANEEND_CURVE_HOLD:
                 continue        # The other line is out of sight, and the lane was curving a moment ago: still the curve.
-            if best is None or last > best[0]:
-                best = (last, side)
-        if best is not None:
-            self.end_y, self.end_side = top + best[0], best[1]
-            self.drop_continued_end(top, best[0], best[1])
+            ends.append((last, side, curve))
+        # The nearer end first. One the tracker shows running on is dropped, and the other side's end still counts.
+        for last, side, curve in sorted(ends, reverse=True):
+            if not self.end_continues(top, last, side, curve):
+                self.end_y, self.end_side = top + last, side
+                break
         return self.end_y
 
-    def drop_continued_end(self, top, last, side):
-        """Drop a lane end the other line could not confirm, when the ending line itself runs on along the tracked lane.
+    def end_continues(self, top, last, side, curve):
+        """Whether a lane end the other line could not confirm (curve None) is false: the ending line runs on along the tracked lane.
 
         lane_bends needs the other line. With it out of sight the end stands, and a curve is read as the lane ending.
         The line has to still lie on the tracked lane above the end, including the rows just above it where a curve
         has left the straight fit but not the lane (runs 20261110-103523 frame 109, 183806 frame 132)."""
         t = self.tracker
-        if not JUNCTION_TRACK_ASSIST or t is None or not t.ready(self.assist_turn):
-            return
-        if self.lane_bends(side, last, self.mask > 0, top, {}) is not None:
-            return
+        if not JUNCTION_TRACK_ASSIST or curve is not None or t is None or not t.ready(self.assist_turn):
+            return False
         import lane_track
         mask = self.mask > 0
         which = -1 if side == "left" else 1
@@ -1376,8 +1375,7 @@ class LaneDetector:
                     hit += 1
             return rows >= least and hit / rows >= need
 
-        if along(2, 16, 0.35, lane_track.TRACK_END_NEAR, 6) or along(6, 36, 0.2, lane_track.TRACK_END_CONTINUE, 8):
-            self.end_y = self.end_side = None
+        return along(2, 16, 0.35, lane_track.TRACK_END_NEAR, 6) or along(6, 36, 0.2, lane_track.TRACK_END_CONTINUE, 8)
 
     def lane_bends(self, side, last, mask, top, walks):
         """Whether the whole lane curves where this side's line left its straight path (row last): the other line bends the same way.
@@ -1475,7 +1473,15 @@ class LaneDetector:
                 if dbg is not None:
                     self.draw_track(dbg)
             else:
-                self.tracker.update(sys.modules[__name__], self, frame, self.now)     # Junction and lane-end checks only: the band reading stands.
+                # Junction and lane-end checks only: the band reading stands. A fault here must not cost the drive a frame:
+                # the tracker starts again and the checks are off until it holds the lane again.
+                try:
+                    self.tracker.update(sys.modules[__name__], self, frame, self.now)
+                except Exception as e:
+                    self.tracker.reset()
+                    if not getattr(self, "_assist_warned", False):
+                        self._assist_warned = True
+                        print(f"\n[warning] junction check skipped a frame: {type(e).__name__}: {e}")
         return det, junction, dbg
 
     def draw_track(self, dbg):

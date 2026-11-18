@@ -3166,9 +3166,7 @@ def test_lane_end_continues():
         d = lf.LaneDetector()
         d.left, d.right = [None] * lf.SLICES, [None] * lf.SLICES   # The other line is unseen, so nothing else can call this a curve.
         d.tracker, d.mask = t, mask
-        d.end_y, d.end_side = top + last, "right"
-        d.drop_continued_end(top, last, "right")
-        return d.end_y
+        return None if d.end_continues(top, last, "right", None) else top + last
 
     old = lf.JUNCTION_TRACK_ASSIST
     try:
@@ -3184,6 +3182,39 @@ def test_lane_end_continues():
         check("assist off: a line that runs on is still an end (detection unchanged)", end(paint(), False) == top + last)
     finally:
         lf.JUNCTION_TRACK_ASSIST = old
+
+
+def test_lane_end_other_side():
+    print("[a dropped lane end does not hide the other side's end]")
+    top = int(H * lf.ROI_TOP)
+    d = lf.LaneDetector()
+    d.mask = np.zeros((H - top, W), np.uint8)
+    called = []
+    d.end_continues = lambda top_, last, side, curve: called.append(side) or side == "right"
+    rows = [int(y) - top for y in d.band_y]
+    d.left = [200 + 10 * i for i in range(lf.SLICES)]
+    d.right = [440 - 10 * i for i in range(lf.SLICES)]
+    # Both lines run up from the bottom and end, the right one nearer the car. Bands above an end keep their old points.
+    cv2.line(d.mask, (d.left[0], rows[0]), (d.left[3], rows[3]), 255, 5)
+    cv2.line(d.mask, (d.right[0], rows[0]), (d.right[2], rows[2]), 255, 5)
+    d.lane_bends = lambda *a: None
+    got = d.lane_end()
+    check("the nearer end (right) is dropped, the left end still stands",
+          called[:1] == ["right"] and d.end_side == "left" and got is not None, f"{called} {d.end_side} {got}")
+
+
+def test_assist_fault():
+    print("[a fault in the junction check never costs the drive a frame]")
+    import lane_track as lt
+    old, upd = lf.JUNCTION_TRACK_ASSIST, lt.LaneTracker.update
+    try:
+        lf.JUNCTION_TRACK_ASSIST = True
+        lt.LaneTracker.update = lambda *a, **k: (_ for _ in ()).throw(np.linalg.LinAlgError("test"))
+        d = lf.LaneDetector()
+        det, _, _ = d(lane_frame(), draw=False)
+        check("the band reading still comes out, the tracker starts again", det is not None and d.tracker.p is None, str(det))
+    finally:
+        lf.JUNCTION_TRACK_ASSIST, lt.LaneTracker.update = old, upd
 
 
 def test_course_end_stops():
@@ -3981,7 +4012,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
