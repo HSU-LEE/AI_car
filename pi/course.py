@@ -5,6 +5,8 @@ STOP_POINTS_ON = False       # 정지 지점 검색 (go_to). False = go_to("A")�
 SLOWDOWN_ON = False         # 감속. False = 모든 감속 없음: slow= 무시, 차선 놓쳐도 그 속도, uturn·to_end도 SPEED (True = 예전처럼 감속)
 SPEED = 0.75                 # 기본 주행 속도. 코스 중간에 바꾸려면 set_speed(0.4)
 STEER_MAX = 10            # 차선 주행 최대 조향각 (도, 1~26). None = lane_follow.py AUTO_STEER_MAX(26). 코스 중간에 바꾸려면 set_steer(15)
+LANE_MODEL = "bands"         # 차선 인식. "bands" = 기존 방식 (가까운 띠 6개에 점을 찍어 직선으로)
+                             #          "track" = 시험 중인 새 방식 (화면 전체의 선으로 차선 모양을 맞춤). 실제 녹화 일부에서 차선을 잘못 잡아 아직 기본값 아님
 
 # --- 신호등 ---
 RED_BACK_ON = False          # wait_green에서 빨간불을 못 찾으면 후진해서 다시 찾을지 (True / False)
@@ -268,7 +270,22 @@ def _nth(nth, name):
     return nth if nth > 1 else None
 
 
-def to_junction(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None, gap=None):
+_LANE_CM = 20.0     # The lane width the arena is built with (lane_follow.py LANE_CM).
+
+
+def _lanes_cm(lanes, cm, who):
+    """lanes=1.2: stop when the lane end is 1.2 lane widths ahead, the same as cm= that many lane widths."""
+    if lanes is None:
+        return cm
+    if cm is not None:
+        raise ValueError(f"{who}(): give lanes= or cm=, not both")
+    if isinstance(lanes, bool) or not isinstance(lanes, (int, float)) or not 0 <= lanes <= 3:
+        raise ValueError(f"{who}(): lanes must be 0 to 3 lane widths ({lanes})")
+    return round(lanes * _LANE_CM, 1)
+
+
+def to_junction(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None, gap=None, lanes=None):
+    cm = _lanes_cm(lanes, cm, "to_junction")
     if nth is None:
         nth = 1
     if isinstance(nth, bool) or not isinstance(nth, int) or nth < 1:
@@ -279,7 +296,8 @@ def to_junction(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, s
     # cm, at 둘 다 없으면 lane_follow.py LANEEND_BASE_CM(기본 10cm)을 주행 시작 때 채움 (여기서 lane_follow를 부르면 순환 import)
     return dict(step, cm_default=True) if cm is None and at is None else step
 
-def go(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None, gap=None):
+def go(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None, gap=None, lanes=None):
+    cm = _lanes_cm(lanes, cm, "go")
     if nth is None:
         nth = 1
     if isinstance(nth, bool) or not isinstance(nth, int) or nth < 1:
@@ -320,7 +338,8 @@ def _to_crosswalk(at=0.67, slow=None, speed=None, steer=None, sec=None, min_spee
     return _auto(follow(until="_crosswalk", nth=_nth(nth, "_to_crosswalk"), gap=gap, blind_sec=blind_sec, shift=shift, speed=speed, at=at, slow=slow, steer=steer, max_sec=sec, min_speed=min_speed), speed, SPEED)
 
 
-def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, min_speed=None, blind_sec=0.5, shift=None, gap=None, cm=None):
+def go_to(name, offset=0, nth=1, slow=None, speed=None, steer=None, sec=None, min_speed=None, blind_sec=0.5, shift=None, gap=None, cm=None, lanes=None):
+    cm = _lanes_cm(lanes, cm, "go_to")
     # cm=12: STOP_POINTS_ON = False일 때 go(cm=12)처럼 차선 끝 12cm에서 정지 (켜져 있으면 등록 위치에서 정지, 앞뒤 조절은 offset=)
     # 등록한 정지 지점(aicar stoppoint, 메뉴 t)까지 가서 정지. 차를 그 자리에 놓고 등록한 모양이 등록 때 위치에 오면 끝
     # offset=3: 등록 위치보다 3cm 더 가서 / -3: 덜 가서.  nth=2: 같은 모양을 하나 지나치고 두 번째에서
@@ -357,7 +376,8 @@ def to_gap(at=0.85, slow=None, speed=None, steer=None, min_speed=None, shift=Non
                         blind_sec=blind_sec, nth=_nth(nth, "to_gap"), gap=gap), speed, SPEED)
 
 
-def to_end(at=0.5, slow=None, blind_sec=0.0, speed=None, shift=None, cm=None, max_sec=None, steer=None, min_speed=None, sec=None):
+def to_end(at=0.5, slow=None, blind_sec=0.0, speed=None, shift=None, cm=None, max_sec=None, steer=None, min_speed=None, sec=None, lanes=None):
+    cm = _lanes_cm(lanes, cm, "to_end")
     # sec=는 max_sec=와 같음 (다른 함수와 맞춤)
     if sec is not None and max_sec is not None:
         raise ValueError("to_end(): give sec= or max_sec=, not both")
@@ -626,6 +646,7 @@ def describe(step):
 # go(cm, nth) / to_junction 교차로 앞 차선 끝까지 가서 끝 (cm 없으면 10cm). 아래까지 보였다가 사라져도 끝
 #                           go(sec=3) / to_junction(sec=3): 교차로에서 멈추거나 3초가 지나면 끝 (먼저 오는 쪽)
 #                           go(cm=25): 화면의 LANE END 거리가 25cm가 되면 끝 (차로 선이 교차로에서 끝나는 곳까지 거리)
+#                           go(lanes=1.2): 차선 끝이 차선 폭 1.2개만큼 앞에 오면 끝 (cm 대신 차선 폭 기준. cm=와 같이 쓸 수 없음)
 #                                            거리는 차 앞쪽 기준. 4.5보다 작게 주면 선이 화면에서 안 보여 4.5에서 끝냄. 화면 값과 줄자 값이 다르면 lane_follow.py LANEEND_OFFSET_CM
 # go_dis()                  차선을 따라가다 앞 거리센서에 차단바(물체)가 잡히면 끝. go_dis(sec=5): 못 만나도 5초 뒤 끝
 #                           바로 뒤에 start_gate()를 쓰면 차단바가 올라갈 때까지 서서 기다렸다 출발. 예: go_dis(), start_gate(1)

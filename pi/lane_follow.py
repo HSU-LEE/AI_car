@@ -61,6 +61,17 @@ CAMERA_X = 0.5          # Where the car centerline falls across the frame. visio
 
 LINE_MODE = "lane"      # "lane": drive between both lines. "line": follow a single line.
 ROI_TOP = 0.4           # Use only from this fraction of the frame height downward. A smaller value looks farther ahead.
+LANE_MODEL = getattr(_course, "LANE_MODEL", "bands")    # course.py. "bands": a point per line in each of SLICES bands, a straight line through them (the method so far).
+                        # "track": one lane model fitted to every line pixel up to near the horizon, tracked frame to frame (lane_track.py).
+STEER_MODE = "pursuit"  # With LANE_MODEL = "track": "pursuit" steers onto an arc through the lane center LOOK_LW ahead (uses the bend of
+                        # the lane); "pd" keeps the position / heading steering (KP, KH). The band method always uses "pd".
+LOOK_LW = 0.5           # pursuit: target this many lane widths ahead of the camera. Longer = smoother, shorter = tighter in curves.
+LOOK_SPEED_LW = 0.2     # pursuit: plus this much per unit of speed command (faster looks farther).
+WHEELBASE_LW = 0.7      # The car's wheelbase in lane widths (rear axle to front axle over the lane width).
+CAM_AHEAD_LW = 0.5      # How far the camera sits ahead of the rear axle, in lane widths.
+TRACK_CONF_MIN = 0.0    # pursuit: below this tracker confidence, the position / heading steering is used instead. 0: the tracker's held
+                        # lane carries through gaps (dashed lines); switching back and forth made the steering jump.
+STYLE_LOOK = {"soft": 1.25, "normal": 1.0, "sharp": 0.8}    # set_style(): scales the look-ahead (soft looks farther, sharp nearer).
 SLICES = 6              # Number of horizontal bands the ROI is split into.
 
 # White-line detection. The default recalibrates every frame. tune_white.py stores a manual value in vision.json.
@@ -406,6 +417,10 @@ _COLUMNS = np.arange(4096)      # Column numbers, made once (find_lines).
 _OPEN_K3 = np.ones((3, 3), np.uint8)
 
 
+MAT_BRIDGE_K = np.ones((15, 1), np.uint8)    # mat_mask: bridges a line across the mat up to 60 px tall (quarter size x 4).
+MAT_BRIDGE_Y = 0.55     # mat_mask: the bridge works below this frame height only (the mat-edge stop looks at EDGE_STOP_Y 0.63).
+
+
 def tophat_ellipse(img, size):
     """Faster equivalent of cv2.morphologyEx(img, MORPH_TOPHAT, ellipse kernel).
 
@@ -541,6 +556,8 @@ class LaneDetector:
         self.roi = None
         self.curve_t = None                     # Last time a line leaving its straight path was judged a curve of the whole lane.
         self.now, self.moving = None, False     # Set by Driver before each frame: time, and driving forward without a big steer (motion test).
+        self.tracker = None         # LANE_MODEL = "track": the lane tracker (lane_track.py), made on first use.
+        self.det_bands = None       # The band method's own answer this frame, whichever LANE_MODEL drives.
         self.moving_since = None
         self.history = collections.deque(maxlen=40)     # (time, gray ROI) of recent frames for the motion test.
         self.glare_spots = []                   # (x0, y0, x1, y1, time) of blobs judged reflections by motion, in ROI px.
@@ -624,8 +641,11 @@ class LaneDetector:
         self.width[i] = w if self.width[i] is None else 0.9 * self.width[i] + 0.1 * w
 
     @staticmethod
-    def mat_mask(gray):
-        """Black-mat region: the convex hull of the largest dark region connected to the bottom. None when the whole frame is mat."""
+    def mat_mask(gray, bridge=False):
+        """Black-mat region: the convex hull of the largest dark region connected to the bottom. None when the whole frame is mat.
+
+        bridge=True also joins the mat across a line running across it near the car (see MAT_BRIDGE_K). Only the mat-edge stop
+        uses that one: the line pixels keep the mat as it always was."""
         small = cv2.resize(gray, (gray.shape[1] // 4, gray.shape[0] // 4), interpolation=cv2.INTER_AREA)
         bg = cv2.medianBlur(small, 7)       # Floor brightness with the lines removed, used to test whether the mat and the outside really differ.
         bthr, _ = cv2.threshold(bg, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -636,6 +656,14 @@ class LaneDetector:
         dark = (small < thr).astype(np.uint8)
         dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((6, 6), np.uint8))  # Fill in the white lines so the mat is one blob. [narrow FOV 9x9]
         dark = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, np.ones((1, 21), np.uint8))  # Also bridge the gaps between crosswalk stripes. [narrow FOV 1x31]
+        # bridge: also across a line that runs across the lane (a junction). Near the car it is thicker than the 6x6 closing, split the
+        # mat in two, and the mat "ended" at it: the lane was lost and the mat-edge stop held the car there for good. Only near the car
+        # (below MAT_BRIDGE_Y): far away the bright floor beyond the mat's far edge is a thin strip, and bridging it joined the mat to
+        # dark furniture behind it.
+        near_row = max(int((FRAME_H * MAT_BRIDGE_Y - (FRAME_H - gray.shape[0])) / 4), 0)
+        if bridge and near_row < dark.shape[0]:
+            bridged = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, MAT_BRIDGE_K)
+            dark[near_row:] = bridged[near_row:]
         n, labels = cv2.connectedComponents(dark)
         if n <= 1:
             return None
@@ -996,6 +1024,14 @@ class LaneDetector:
             rows = np.flatnonzero(front.mean(axis=1) > 128)
             mat_top = int(FRAME_H * ROI_TOP) + (rows[0] if len(rows) else front.shape[0])
             self.mat_top = mat_top
+            if mat_top > FRAME_H * EDGE_STOP_Y:
+                # The mat seems to end near the car. A line across the lane can split the mat the same way: look again with the
+                # mat joined across such a line, and stop only if it still ends there (otherwise the car stopped at a junction for good).
+                joined = self.mat_mask(gray, bridge=True)
+                if joined is not None:
+                    front = joined[:, max(cx0 - FRAME_W // 12, 0):cx0 + FRAME_W // 12]
+                    rows = np.flatnonzero(front.mean(axis=1) > 128)
+                    mat_top = int(FRAME_H * ROI_TOP) + (rows[0] if len(rows) else front.shape[0])
             self.edge_hits = self.edge_hits + 1 if mat_top > FRAME_H * EDGE_STOP_Y else 0
             self.edge = self.edge_hits >= 3     # Only after 3 frames in a row, so one bad frame does not stop the car.
 
@@ -1362,9 +1398,35 @@ class LaneDetector:
         """
         self._sharp_cache = {}      # This frame's gray and edge pictures, shared by every blob_sharpness() call inside it.
         try:
-            return self._detect(frame, side, draw)
+            det, junction, dbg = self._detect(frame, side, draw)
         finally:
             self._sharp_cache = None
+        self.det_bands = det
+        if LANE_MODEL == "track":
+            if self.tracker is None:
+                from lane_track import LaneTracker
+                self.tracker = LaneTracker()
+            if side != "center":        # side= (follow one line only) is the band method's job: the tracker starts again after it.
+                self.tracker.reset()
+            else:
+                det = self.tracker.update(sys.modules[__name__], self, frame, self.now)
+                if dbg is not None:
+                    self.draw_track(dbg)
+        return det, junction, dbg
+
+    def draw_track(self, dbg):
+        """The tracked lane: both lines and the center, over the whole height it was fitted on."""
+        t = self.tracker
+        if t is None or t.p is None:
+            return
+        color = C_PATH if t.conf >= 0.5 else C_AT
+        for which, col, thick in ((-1, C_LEFT, 2), (1, C_RIGHT, 2), (0, color, 3)):
+            pts = t.curve_points(sys.modules[__name__], which)
+            if pts is not None:
+                dbg.polyline(pts, (20, 20, 20), thick + 3, cv2.LINE_AA)
+                dbg.polyline(pts, col, thick, cv2.LINE_AA)
+        relock = t.relocked_at is not None and self.now is not None and self.now - t.relocked_at < 0.5
+        chip(dbg, "TRACK RE-LOCK" if relock else f"TRACK {t.conf:.0%}", FRAME_W - 130, FRAME_H - 30, C_AT if relock else color, 0.4)
 
     def _detect(self, frame, side="center", draw=True):
         """Return ((position error, heading error) or None, junction detected, debug image).
@@ -1506,13 +1568,13 @@ class LaneDetector:
             else:
                 c = None
             self.center[i] = c
-            if draw:
+            if draw and LANE_MODEL != "track":     # The band points: with the tracker its lines are drawn instead.
                 for x, color in ((l, C_LEFT), (r, C_RIGHT)):
                     if x is not None:
                         dbg.circle((int(x), cy), 5, (20, 20, 20), -1, cv2.LINE_AA)
                         dbg.circle((int(x), cy), 4, color, -1, cv2.LINE_AA)
             if c is not None:
-                if draw:
+                if draw and LANE_MODEL != "track":
                     dbg.circle((int(c), cy), 3, C_PATH, -1, cv2.LINE_AA)
                 pts.append((cy, c))
 
@@ -1540,7 +1602,7 @@ class LaneDetector:
                     if len(inl) > len(best):
                         best = inl
             if len(best) >= 2:
-                if draw:
+                if draw and LANE_MODEL != "track":
                     for y, x in pts:
                         if (y, x) not in best:
                             dbg.circle((int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # Point dropped as a misdetect.
@@ -1552,7 +1614,7 @@ class LaneDetector:
             x_near, x_far = np.polyval(fit, near_y), np.polyval(fit, far_y)
         else:
             x_near = x_far = pts[0][1]
-        if draw:
+        if draw and LANE_MODEL != "track":      # With the tracker, its own lane is drawn instead (draw_track).
             dbg.line((int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
             dbg.line((int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
 
@@ -2679,6 +2741,16 @@ function paint(ops, blobs) {
         for (const k of [1, -1]) seg(x1, y1, Math.round(x1 + len * Math.cos(ang + k * Math.PI / 4)), Math.round(y1 + len * Math.sin(ang + k * Math.PI / 4)), c, t);
         break;
       }
+      case "p": {     // An open line through the points [x0, y0, x1, y1, ...].
+        const [, pts, c, t] = o;
+        if (pts.length < 4) break;
+        const f = t % 2 ? 0.5 : 0;
+        ctx.strokeStyle = c; ctx.lineWidth = t; ctx.lineCap = "round"; ctx.lineJoin = "round";
+        ctx.beginPath(); ctx.moveTo(pts[0] + f, pts[1] + f);
+        for (let i = 2; i < pts.length; i += 2) ctx.lineTo(pts[i] + f, pts[i + 1] + f);
+        ctx.stroke();
+        break;
+      }
       case "d": { const [, x0, y, x1, c, dash, gap, t] = o; for (let x = x0; x < x1; x += dash + gap) seg(x, y, Math.min(x + dash, x1), y, c, t); break; }
       case "m": {     // Line mask (np.packbits rows): its pixels in the color at alpha, the rest untouched.
         const [, top, k, c, a, w, h] = o, bits = blobs[k];
@@ -3214,6 +3286,7 @@ class Driver:
         self.light_tick = 0         # Frames since start, for LIGHT_VIEW_EVERY.
         self.red = None             # wait_green looking for red: action index, back-ups used, when this look began, back-up in progress.
         self.hline_t = None         # While aligning: last time heading said the horizontal line in view is a real one.
+        self.aim = None             # STEER_MODE "pursuit": the target point on screen this frame (for the view).
         self.stop_found = None      # go_to("A"): where the registered shape was found this frame ({"x","y","w","h","score","scale"}), or None.
         self.stop_y = self.stop_target = None   # Its center, and where the center must come to (frame y).
         self.stop_idx, self.stop_last, self.stop_tick, self.stop_hist = -1, {}, 0, {}
@@ -3381,6 +3454,20 @@ class Driver:
         self.back, self.lost_since, self.cw_since = None, None, None
         self.speed = 0.0
 
+    def pursuit_angle(self, course, base):
+        """LANE_MODEL "track" with STEER_MODE "pursuit": the arc steering from the tracked lane, or None to use KP / KH."""
+        t = self.detect.tracker
+        if LANE_MODEL != "track" or STEER_MODE != "pursuit" or t is None or t.p is None or t.conf < TRACK_CONF_MIN:
+            self.aim = None
+            return None
+        look = (LOOK_LW + LOOK_SPEED_LW * max(base, 0.0)) * STYLE_LOOK.get(course.opt("style", "normal"), 1.0)
+        out = t.pursuit(sys.modules[__name__], look, WHEELBASE_LW, CAM_AHEAD_LW)
+        if out is None:
+            self.aim = None
+            return None
+        angle, self.aim = out
+        return float(np.clip(angle, -AUTO_STEER_MAX, AUTO_STEER_MAX))
+
     def approach_speed(self, base, now):
         """slow=: ease from base down to the slow speed as the line approaches.
 
@@ -3467,6 +3554,10 @@ class Driver:
             dashed_hline(dbg, ay, C_AT, thick=2)
             chip(dbg, f"END @{at:g}", FRAME_W - 90, ay - 22, C_AT, 0.38)
 
+        if self.aim is not None and -FRAME_W < self.aim[0] < 2 * FRAME_W:     # STEER_MODE "pursuit": where the steering aims.
+            ax, ay = int(self.aim[0]), int(min(self.aim[1], FRAME_H - 4))
+            dbg.circle((ax, ay), 7, (20, 20, 20), -1, cv2.LINE_AA)
+            dbg.circle((ax, ay), 5, C_AT, -1, cv2.LINE_AA)
         # Car position (bottom center) and an arrow for the current steering direction.
         cx0, by = int(FRAME_W * CAMERA_X), FRAME_H - 6
         a = np.radians(steering.angle * 1.6)
@@ -3588,6 +3679,8 @@ class Driver:
         if course.turning(now):
             # During a turn the car rotates quickly, so remembered line positions from the previous frame are wrong. Judge each frame fresh.
             detect.left, detect.right, detect.center = [None] * SLICES, [None] * SLICES, [None] * SLICES
+            if detect.tracker is not None:      # Likewise the tracked lane: it is the old one. It starts again from the new lane.
+                detect.tracker.reset()
         detect.now = now
         detect.moving = self.speed > 0 and abs(steering.angle) < GLARE_STEER_MAX     # Driving forward: the motion test for reflections can run.
         det, junction, dbg = detect(frame, course.lane_side(now), draw=show)     # Skip drawing when the view is not being sent.
@@ -3685,6 +3778,13 @@ class Driver:
             if hold_heading:
                 h = 0.0
             lane = steering.lane(det[0], h, now, kp, kh)
+            aim = self.pursuit_angle(course, base)
+            if aim is not None and not hold_heading:
+                lane = aim
+                if (course.step() or {}).get("until") == "aligned" and (real_hline or detect.junction_y is not None):
+                    # The same care as the heading hold above: aligning with a line across in view, do not swing into it.
+                    # (The tracked heading does not jump at a line across, so the line itself is the sign here.)
+                    lane = float(np.clip(lane, -ALIGN_STEER_MAX, ALIGN_STEER_MAX))
             if hold_heading:
                 lane = float(np.clip(lane, -ALIGN_STEER_MAX, ALIGN_STEER_MAX))
             # When a junction line is visible ahead, do not snap the steering toward a large position error.

@@ -43,6 +43,9 @@ def _paint(img, op):
     elif kind == "arrow":
         _, (x0, y0, x1, y1), color, thick, lt, tip = op
         cv2.arrowedLine(img, (x0, y0), (x1, y1), color, thick, lt, tipLength=tip)
+    elif kind == "poly":
+        _, pts, color, thick, lt = op
+        cv2.polylines(img, [pts], False, color, thick, lt)
     elif kind == "dash":
         _, (x0, y, x1), color, dash, gap, thick = op
         for x in range(x0, x1, dash + gap):
@@ -85,6 +88,12 @@ class _Draw:
 
     def arrowedLine(self, p0, p1, color, thickness=1, lineType=cv2.LINE_8, tipLength=0.1):
         self._add(("arrow", _ints(*p0, *p1), tuple(color), int(thickness), lineType, float(tipLength)))
+
+    def polyline(self, pts, color, thickness=1, lineType=cv2.LINE_8):
+        """An open line through these points (an N x 2 array of screen pixels)."""
+        pts = np.asarray(pts, dtype=np.int32).reshape(-1, 2)
+        if len(pts) >= 2:
+            self._add(("poly", pts, tuple(color), int(thickness), lineType))
 
     def dashed(self, x0, y, x1, color, dash, gap, thick):
         """Horizontal dashed line (one command instead of one per dash)."""
@@ -224,6 +233,8 @@ class Canvas(_Draw):
                     out.append(["a", *op[1], _css(op[2]), op[3], op[5]])
                 elif kind == "dash":
                     out.append(["d", *op[1], _css(op[2]), op[3], op[4], op[5]])
+                elif kind == "poly":
+                    out.append(["p", op[1].ravel().tolist(), _css(op[2]), op[3]])
                 elif kind == "tint":
                     on = op[2]
                     masks.append(zlib.compress(np.packbits(on, axis=1).tobytes(), 1))

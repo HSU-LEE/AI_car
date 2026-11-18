@@ -2147,6 +2147,15 @@ def _test_end_ruler():
 def test_align_steer():
     print("[align: steering limit]")
     from course import to_end as cs_to_end
+    old_model = lf.LANE_MODEL
+    lf.LANE_MODEL = "bands"     # These feed the band method's position / heading straight in (Fixed below): its own steering is tested.
+    try:
+        _align_steer_checks(cs_to_end)
+    finally:
+        lf.LANE_MODEL = old_model
+
+
+def _align_steer_checks(cs_to_end):
 
     class Fixed(lf.LaneDetector):
         """The real detector, reporting a chosen lane error with a horizontal line in view."""
@@ -2850,6 +2859,117 @@ def test_start_checks():
     tail = main[opened:main.index("print(calibration_note())")]
     check("every refusal after opening goes through refuse() (motor, camera and sensor released)",
           "raise SystemExit" not in tail.replace("raise SystemExit(message)", "") and "except SystemExit as e:" in tail and "refuse(" in tail)
+
+
+def test_lane_track():
+    print("[lane tracker: one lane model over every line pixel (LANE_MODEL = track)]")
+    import course as cs
+    import lane_track as lt
+    import overlay
+    old = (lf.LANE_MODEL, lf.STEER_MODE)
+    try:
+        lf.LANE_MODEL = "track"
+        img = lane_frame()
+        d = lf.LaneDetector()
+        for _ in range(6):
+            det, _, _ = d(img, draw=False)
+        bands = d.det_bands
+        check("straight lane: tracked, sure of it, and the same reading as the band method", det is not None and d.tracker.conf > 0.8
+              and abs(det[0] - bands[0]) < 0.05 and abs(det[1] - bands[1]) < 0.08, f"{det} vs {bands}, conf {d.tracker.conf:.2f}")
+        one = lf.LaneDetector()
+        for _ in range(4):
+            one(img, draw=False)
+        for _ in range(6):
+            det1, _, _ = one(lane_frame(right=False), draw=False)
+        check("right line gone: the lane is still read from the left one, near where it was", det1 is not None and abs(det1[0] - det[0]) < 0.08,
+              f"{det1} vs {det}")
+        p = np.array([300.0, 2.0, 1.5, 0.0, 0.0])
+        q = lt.LaneTracker.inside(p)
+        check("a model with the car outside the lane (one line taken for the other) is moved back by one lane width",
+              abs(q[1] - 0.5) < 1e-9 and q[2] == 1.5 and lt.LaneTracker.inside(np.array([300.0, 0.3, 1.5, 0.0, 0.0]))[1] == 0.3)
+        t = lt.LaneTracker()
+        t.p = np.array([lf.FRAME_W * lf.CAMERA_X, 0.0, 1.5, 0.0, 0.0])
+        straight = t.pursuit(lf, 0.6, 0.7, 0.5)[0]
+        t.p = np.array([lf.FRAME_W * lf.CAMERA_X, 0.3, 1.5, 0.0, 0.0])
+        right = t.pursuit(lf, 0.6, 0.7, 0.5)[0]
+        t.p = np.array([lf.FRAME_W * lf.CAMERA_X, 0.0, 1.5, -20000.0, 0.0])
+        bend_left = t.pursuit(lf, 0.6, 0.7, 0.5)[0]
+        check("pursuit: straight ahead 0, lane to the right steers right, lane bending left steers left",
+              abs(straight) < 1e-6 and right > 2 and bend_left < -2, f"{straight:.2f} {right:.2f} {bend_left:.2f}")
+        with quiet():
+            drv = lf.Driver(cs._flat([cs.right(max_sec=2), finish()]))
+            for i in range(3):
+                drv.tick(img, i / 30)
+        check("a turn starts the tracker again (the lane it held is the old one)", drv.detect.tracker is None or drv.detect.tracker.p is None
+              or drv.course.turning(3 / 30))
+        canvas = lf.Canvas(np.zeros((60, 80, 3), np.uint8))
+        pts = np.array([[5, 50], [30, 10], [70, 40]])
+        canvas.polyline(pts, (0, 255, 0), 2, cv2.LINE_AA)
+        want = np.zeros((60, 80, 3), np.uint8)
+        cv2.polylines(want, [pts.astype(np.int32)], False, (0, 255, 0), 2, cv2.LINE_AA)
+        import json as js
+        import struct
+        data = canvas.payload()
+        n = struct.unpack(">I", data[4:8])[0]
+        ops = js.loads(data[8:8 + n])["parts"][0][2]
+        check("view: the tracked lines are drawn the same by OpenCV, and sent to the page as a line command",
+              np.array_equal(canvas.image(), want) and ops[0][0] == "p" and ops[0][1] == [5, 50, 30, 10, 70, 40])
+        lf.LANE_MODEL = "bands"
+        b = lf.LaneDetector()
+        for _ in range(3):
+            b(img, draw=False)
+        check("LANE_MODEL = bands: the tracker is not made at all (the old method, unchanged)", b.tracker is None)
+        lf.LANE_MODEL = "track"
+        w = lf.LaneDetector()
+        for _ in range(4):
+            w(img, draw=False)
+        good = w.tracker.measure(lf)
+        w.tracker.p = w.tracker.p + np.array([0.0, 0.45, 0.0, 0.0, 0.0])     # A misread, shifted well to the side ...
+        old_prior = lt.TRACK_PRIOR
+        lt.TRACK_PRIOR = (1e9,) * 5     # ... and held: the tracker cannot move off it by the pixels alone.
+        steps = []
+        try:
+            for i in range(lt.TRACK_RELOCK_FRAMES + 3):
+                w.now = 1.0 + i / 30
+                dd, _, _ = w(img, draw=False)
+                steps.append(abs(dd[0] - good[0]))
+        finally:
+            lt.TRACK_PRIOR = old_prior
+        check("a held misread is dropped: the sure band method (both lines in several bands) takes over within a few frames",
+              steps[0] > lt.TRACK_RELOCK_DIFF and steps[-1] < 0.05 and w.tracker.relocked_at is not None,
+              f"error per frame {[round(e, 2) for e in steps]}")
+    finally:
+        lf.LANE_MODEL, lf.STEER_MODE = old
+    import sim
+    with quiet():
+        acc_t = sim.accuracy("oval", "track", step_cm=2.0)      # 2 cm a frame: about what the car moves between frames.
+        acc_b = sim.accuracy("oval", "bands", step_cm=2.0)
+        drive = sim.run("straight", "track", seconds=4)
+    check("simulator: on a curved track the tracker reads the lane closer to the truth than the band method",
+          acc_t["offset_err"] + acc_t["heading_err"] < acc_b["offset_err"] + acc_b["heading_err"],
+          f"track {acc_t['offset_err'] + acc_t['heading_err']:.3f} vs bands {acc_b['offset_err'] + acc_b['heading_err']:.3f}")
+    check("simulator: a closed-loop drive runs and keeps to the lane", drive["result"] in ("finished", "TIMED OUT") and drive["max"] < 5, str(drive))
+
+
+def test_junction_not_mat_edge():
+    print("[a line across the lane near the car is not the mat edge]")
+    import sim
+    old = (lf.LANE_WIDTH_PX, lf.HORIZON_Y, lf.CAMERA_X, lf.LINE_COLOR, lf.WHITE_THR)
+    try:
+        lf.LANE_WIDTH_PX, lf.HORIZON_Y, lf.CAMERA_X = 440.6, 55.0, 0.5189
+        lf.LINE_COLOR, lf.WHITE_THR = "white", None
+        track = sim.Track("straight")
+        cam = sim.Camera(lf.HORIZON_Y, lf.LANE_WIDTH_PX, lf.CAMERA_X)
+        d = lf.LaneDetector()
+        edges = []
+        for i, s_cm in enumerate(np.arange(104.0, 128.0, 0.5)):     # Up to and over the junction line, at 0.5 cm a frame (a real drive).
+            x, y, th = track.c[int(s_cm / 0.5)]
+            with quiet():
+                det, _, _ = d(cam.render(track, x, y, th, i / 30), draw=False)
+            edges.append(d.edge)
+    finally:
+        lf.LANE_WIDTH_PX, lf.HORIZON_Y, lf.CAMERA_X, lf.LINE_COLOR, lf.WHITE_THR = old
+    check("driving over a junction line: no mat-edge stop (it used to stop there for good)", not any(edges), str(edges))
 
 
 def test_key_inbox():
@@ -3614,7 +3734,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_junction_not_mat_edge):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
