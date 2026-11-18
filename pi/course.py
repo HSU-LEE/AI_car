@@ -5,6 +5,7 @@ SLOWDOWN_ON = False
 SPEED = 0.95
 STEER_MAX = 12
 JUNCTION_TRACK_ASSIST = True
+LANE_POINTS = "pairs"   # 차선 위치 계산. "pairs" = 양쪽 선을 한 쌍으로 맞춤 (덜 흔들림), "bands" = 예전 방식 (띠마다 중앙점)
 
 RED_BACK_ON = False
 

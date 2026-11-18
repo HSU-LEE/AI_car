@@ -730,14 +730,30 @@ def test_lost_and_far():
     check(f"backs up again when the lane is lost again (up to {lf.LOST_BACK_TRIES} per step)", min(second) < 0 and min(third) >= 0,
           f"2nd {min(second):+.2f}, 3rd {min(third):+.2f}")
 
-    with quiet():   # Retrace: drive forward steering +15, then lose the lane. Backing up replays +15.
+    with quiet():   # Retrace: drive forward steering, then lose the lane. Backing up replays what was driven, newest first.
         d = lf.Driver([follow(until="junction", max_sec=99), finish()])
         for i in range(30):
             d.tick(lane_frame(shift=60), i / 30)
-        hist = [a for _, a, _ in d.history[-10:]]
-        steers = [d.tick(blank, i / 30) for i in range(30, 120)]
+        steers, newest = [], None
+        for i in range(30, 120):
+            seen = d.history[-1][1] if d.history else None
+            out = d.tick(blank, i / 30)
+            if out[1] < 0 and newest is None:
+                newest = seen       # The last forward steering before the back-up began.
+            steers.append(out)
     back = [st for st, cmd, _ in steers if cmd < 0 and st is not None]
-    check("backing up replays the steering just used, in reverse", back and abs(back[0] - hist[-1]) < 3, f"before {hist[-1]:+.1f} / back-up {back[0] if back else None}")
+    # The wheels went back to straight while the lane was lost (LOST_CENTER_RATE): the retrace undoes that stretch first.
+    check("backing up replays the steering just used, in reverse", back and newest is not None and abs(back[0] - newest) < 3,
+          f"last driven {newest} / back-up {back[0] if back else None}")
+    with quiet():
+        d = lf.Driver([follow(until="junction", max_sec=99), finish()])
+        for i in range(30):
+            d.tick(lane_frame(shift=60), i / 30)
+        before = d.steering.angle
+        lost = [d.tick(blank, i / 30)[0] for i in range(30, 55)]
+    check("lane lost while following: the wheels ease back to straight, not held at the last turn",
+          abs(before) > 5 and lost[-1] is not None and abs(lost[-1]) < 1 and abs(lost[0]) > abs(before) - 2,
+          f"{before:+.1f} -> {lost[0]:+.1f} -> {lost[-1]:+.1f}")
 
     ym = lf.YawMeter()
     room = np.random.default_rng(3).integers(0, 255, (H, W + 80, 3), np.uint8)
@@ -3217,6 +3233,118 @@ def test_assist_fault():
         lf.JUNCTION_TRACK_ASSIST, lt.LaneTracker.update = old, upd
 
 
+def test_confirm_jump():
+    print("[a lane position that jumps for one frame is not steered after]")
+    d = lf.LaneDetector()
+    seq = [(0.0, 0.0), (0.05, 0.0), (0.8, 0.1), (0.06, 0.0), (0.7, 0.0), (0.72, 0.0), (0.74, 0.0)]
+    out = [d.confirm_jump(x, "center") for x in seq]
+    check("a single-frame jump is held at the last lane", out[2] == (0.05, 0.0) and out[3] == (0.06, 0.0), str(out[:4]))
+    check("a jump the next frame confirms is taken", out[4] == (0.06, 0.0) and out[5] == (0.72, 0.0) and out[6] == (0.74, 0.0), str(out[4:]))
+    d.jump_last, d.jump_pending, d.jump_held = (0.0, 0.0), None, False
+    noisy = [d.confirm_jump(x, "center") for x in [(0.9, 0), (-0.9, 0), (0.9, 0), (-0.9, 0)]]
+    check(f"never more than {lf.JUMP_HOLD_MAX} frames held in a row", noisy[lf.JUMP_HOLD_MAX] != (0.0, 0.0), str(noisy))
+    d.jump_last, d.jump_pending, d.jump_held = (0.0, 0.0), None, False
+    d.assist_turn = True
+    check("during a turn every reading is taken at once", d.confirm_jump((0.9, 0.0), "center") == (0.9, 0.0))
+    d.assist_turn = False
+    check("one line only (side=): taken at once", d.confirm_jump((-0.9, 0.0), "left") == (-0.9, 0.0))
+
+
+def test_calibrate_end():
+    print("[calibrate --end: the stop-distance correction from a tape-measured line end]")
+    import calibrate
+    old = lf.LANEEND_OFFSET_CM
+    try:
+        lf.LANEEND_OFFSET_CM = -14.5
+        frame = junction_frame("L-right", 270)
+        read = lf.floor_cm(270 - 6)
+        r = calibrate.measure_lane_end([frame] * 6, 10.0)
+        check("steady readings: the correction is tape minus read, and it may be saved",
+              r["ok"] and abs(r["read"] - read) < 1.5 and abs(r["offset"] - (10.0 - r["read"])) < 0.06, str(r))
+        check("it reports what go(cm=) shows now, to compare", r["now_cm"] is not None and abs(r["now_cm"] - (r["read"] - 14.5)) < 1e-6)
+        r = calibrate.measure_lane_end([lane_frame()] * 6, 10.0)
+        check("no line end in view: nothing to save", not r["ok"] and r["offset"] is None and "found" in r["why"], r["why"])
+        lf.LANEEND_OFFSET_CM = -40.0
+        r = calibrate.measure_lane_end([frame] * 6, 10.0)
+        check("a correction far from the current one is not saved (wrong placement)", not r["ok"] and "change" in r["why"], r["why"])
+        lf.LANEEND_OFFSET_CM = -14.5
+        far = junction_frame("L-right", 230)
+        r = calibrate.measure_lane_end([frame, far] * 3, 10.0)
+        check("readings that do not agree (car moving): not saved", not r["ok"] and "spread" in r["why"], r["why"])
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "vision.json"
+            path.write_text(json.dumps({"laneend_offset_cm": -12.0}))
+            lf.load_vision(path)
+            check("a saved correction is used for every cm=", lf.LANEEND_OFFSET_CM == -12.0, lf.LANEEND_OFFSET_CM)
+    finally:
+        lf.LANEEND_OFFSET_CM = old
+
+
+def pair_frame(xv, c, left=True, right=True, stray=False):
+    """A straight lane in perspective: center x = xv + c * s (s rows below the horizon), the calibrated width, 10 px lines."""
+    img = np.clip(np.random.default_rng(1).normal(30, 4, (H, W, 3)), 0, 255).astype(np.uint8)
+    D = lf.LANE_WIDTH_PX / (342 - lf.HORIZON_Y)
+    for y in range(int(H * lf.ROI_TOP) - 10, H):
+        sy = y - lf.HORIZON_Y
+        for on, b in ((left, c - D / 2), (right, c + D / 2)):
+            if on:
+                x = xv + b * sy
+                cv2.line(img, (int(x) - 5, y), (int(x) + 5, y), (235,) * 3, 1)
+    if stray:       # A short bright piece between the lines (a reflection the mask kept, a piece of a stripe).
+        y0 = int(H * 0.75)
+        x = int(xv + c * (y0 - lf.HORIZON_Y)) + 40
+        cv2.rectangle(img, (x, y0), (x + 10, y0 + 30), (235,) * 3, -1)
+    return img
+
+
+def test_lane_pairs():
+    print("[pairs: both lines fitted as one perspective pair]")
+    old = lf.LANE_POINTS
+    top = int(H * lf.ROI_TOP)
+    h = (H - top) // lf.SLICES
+    near_y, far_y = H - h // 2, top + h // 2
+    half = W / 2 * lf.LANE_WIDTH_PX / lf.REF_LANE_PX
+    cx0 = int(W * lf.CAMERA_X)
+
+    def truth(xv, c):
+        xn, xf = xv + c * (near_y - lf.HORIZON_Y), xv + c * (far_y - lf.HORIZON_Y)
+        return (xn - cx0) / half, (xf - xn) / half
+
+    def read(img, mode, n=4):
+        lf.LANE_POINTS = mode
+        d = lf.LaneDetector()
+        for _ in range(n):
+            det, _, _ = d(img, draw=False)
+        return det, d
+
+    try:
+        cases = [("straight ahead", 320, 0.0), ("off center, at an angle", 360, -0.25), ("the other way", 280, 0.3)]
+        for name, xv, c in cases:
+            want = truth(xv, c)
+            det, d = read(pair_frame(xv, c), "pairs")
+            check(f"both lines, {name}: position and heading as drawn", d.pairs.used and abs(det[0] - want[0]) < 0.02
+                  and abs(det[1] - want[1]) < 0.02, f"{det} want {want}")
+        want = truth(360, -0.25)
+        det, d = read(pair_frame(360, -0.25, right=False), "pairs")
+        check("one line only, at an angle: the other side from the width in perspective", d.pairs.used and abs(det[0] - want[0]) < 0.05
+              and abs(det[1] - want[1]) < 0.05, f"{det} want {want}")
+        det, d = read(pair_frame(320, 0.0, stray=True), "pairs")
+        check("a stray piece between the lines does not move the lane", abs(det[0] - truth(320, 0.0)[0]) < 0.03, str(det))
+        det, d = read(pair_frame(320, 0.0), "pairs")
+        sides = d.pairs.pieces[2]
+        check("every piece of a clean lane goes to a line", (sides != 0).mean() > 0.95, f"{(sides != 0).mean():.2f}")
+        det, d = read(np.full((H, W, 3), 30, np.uint8), "pairs")
+        check("nothing in view: lost, as the bands say", det is None and not d.pairs.used, str(det))
+        det, d = read(pair_frame(320, 0.0), "bands")
+        check('"bands": the pair fit is not made at all (the method so far, unchanged)', d.pairs is None)
+        rows = __import__("lane_pairs").LanePairs.sample_rows(lf, top)
+        check("sample rows lie inside the band area, nearest first", len(rows) == 8 and rows[0] < H and rows[-1] >= top
+              and all(np.diff(rows) < 0), str(rows))
+    finally:
+        lf.LANE_POINTS = old
+
+
 def test_course_end_stops():
     print("[the last step ending stops the car]")
     import course as cs
@@ -4012,7 +4140,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

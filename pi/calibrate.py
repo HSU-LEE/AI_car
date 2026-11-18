@@ -3,6 +3,9 @@
   python calibrate.py           measure, then save to vision.json (the previous file is kept as vision.json.bak)
   python calibrate.py --dry     measure only, do not save
   python calibrate.py --focus-only   only measure where focus would be sharpest. Saves nothing: focus stays at lf.LENS_POSITION
+  python calibrate.py --end 10       stop-distance check: the car stands in its lane with the lane's line ending 10 cm ahead of the
+                                     car front (tape measure). Reads the line end with the camera, compares it with the distance that
+                                     go(cm=) would show now, and saves the correction (laneend_offset_cm) if the readings agree. --dry: compare only
 
 Steps
   1. Track color     a bright floor is a white floor with a black line; a dark floor is a black floor with a white line
@@ -295,11 +298,75 @@ def annotate(dbg, lines):
     return dbg
 
 
+END_FRAMES = 30         # --end: frames read.
+END_MIN_SEEN = 0.6      # --end: share of them that must find the line end.
+END_MAX_SPREAD = 1.5    # --end: the readings may spread this much (cm, middle 80%), or the car or the light is not steady.
+END_MAX_CHANGE = 10.0   # --end: a correction this far from the current one is a wrong placement or a wrong line, not saved.
+
+
+def measure_lane_end(frames, real_cm):
+    """--end: the line end read in each frame, and the correction that makes it real_cm. Returns a dict (see keys) for the report.
+
+    The camera reads the line end by its height on screen (floor_cm); the correction (real minus read) also holds the camera's
+    distance behind the car front, so one placement measured with a tape sets every cm= on this car."""
+    det = lf.LaneDetector()
+    reads = []
+    for f in frames:
+        det(f, draw=False)
+        y = det.lane_end()
+        if y is not None:
+            reads.append(lf.floor_cm(y))
+    out = {"frames": len(frames), "seen": len(reads), "read": None, "spread": None, "offset": None, "now_cm": None, "ok": False, "why": None}
+    if len(reads) < END_MIN_SEEN * max(len(frames), 1):
+        out["why"] = f"the line end was found in {len(reads)} of {len(frames)} frames (place the car so its lane line ends ahead, in view)"
+        return out
+    lo, hi = np.percentile(reads, [10, 90])
+    read = float(np.median(reads))
+    out.update(read=read, spread=float(hi - lo), offset=round(real_cm - read, 1), now_cm=read + lf.LANEEND_OFFSET_CM)
+    if hi - lo > END_MAX_SPREAD:
+        out["why"] = f"readings spread {hi - lo:.1f} cm (over {END_MAX_SPREAD:g}): keep the car still and the light steady, then again"
+    elif abs(out["offset"] - lf.LANEEND_OFFSET_CM) > END_MAX_CHANGE:
+        out["why"] = (f"the correction would change by {out['offset'] - lf.LANEEND_OFFSET_CM:+.1f} cm (over {END_MAX_CHANGE:g}): "
+                      "check the tape distance and that the line end is the lane's own line")
+    else:
+        out["ok"] = True
+    return out
+
+
+def calibrate_end(real_cm, dry):
+    cam = lf.open_camera()      # The saved locked exposure, as when driving.
+    try:
+        frames = capture(cam, END_FRAMES, settle=1.0)
+    finally:
+        cam.stop()
+        cam.close()
+    r = measure_lane_end(frames, real_cm)
+    print(f"Line end: tape {real_cm:g} cm, found in {r['seen']}/{r['frames']} frames")
+    if r["read"] is not None:
+        print(f"  camera reads {r['read']:.1f} cm (spread {r['spread']:.1f} cm). With the current correction {lf.LANEEND_OFFSET_CM:+.1f} cm"
+              f" go(cm=) shows {r['now_cm']:.1f} cm: {r['now_cm'] - real_cm:+.1f} cm off")
+        print(f"  measured correction {r['offset']:+.1f} cm")
+    if not r["ok"]:
+        print(f"Not saved: {r['why']}")
+        return
+    if dry:
+        print("Not saved (--dry)")
+        return
+    lf.save_vision(laneend_offset_cm=r["offset"])
+    print(f"Saved: laneend_offset_cm {r['offset']:+.1f} (was {lf.LANEEND_OFFSET_CM:+.1f}). Every cm= stop distance uses it from the next drive")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true", help="measure only, save nothing")
     ap.add_argument("--focus-only", action="store_true", help="only measure the sharpest focus, save nothing (car on the track)")
+    ap.add_argument("--end", type=float, metavar="CM", help="stop-distance check with the lane's line end CM ahead of the car front")
     args = ap.parse_args()
+    if args.end is not None:
+        if not 3 <= args.end <= 28:
+            ap.error("--end: 3 to 28 cm (the line end must be in view)")
+        calibrate_end(args.end, args.dry)
+        return
     from libcamera import controls
 
     if args.focus_only:

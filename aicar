@@ -150,7 +150,7 @@ cmd_config() {
     run "cd ~/$REMOTE && echo '[calib.json] servo calibration (motor_min is not read; the lowest speed is MOTOR_MIN in lane_follow.py)'; cat calib.json 2>/dev/null || echo '  (none)'; echo
          echo '[vision.json] lines/camera'; cat vision.json 2>/dev/null || echo '  (none - automatic)'; echo"
     bold "[course.py switches] (edit pi/course.py on the Mac, then aicar push)"
-    grep -E '^(JUNCTION_TRACK_ASSIST|STEER_MAX|SPEED|SLOWDOWN_ON|REFLECT_MOTION_ON|STOP_POINTS_ON|RED_BACK_ON) ' \
+    grep -E '^(JUNCTION_TRACK_ASSIST|LANE_POINTS|STEER_MAX|SPEED|SLOWDOWN_ON|REFLECT_MOTION_ON|STOP_POINTS_ON|RED_BACK_ON) ' \
         "$CODE/course.py" | sed 's/^/  /'
     bold "[lane_follow.py main settings] (edit pi/lane_follow.py on the Mac, then aicar push)"
     grep -E '^(BASE_SPEED|MIN_SPEED|KP|KH|KD|SMOOTH|AUTO_STEER_MAX|STEER_RATE|ROI_TOP|LINE_MODE|LENS_POSITION|JUNCTION_Y|EDGE_STOP_Y|AUTO_TRIM) ' \
@@ -463,12 +463,15 @@ AICAR commands  (in a Mac terminal: aicar <command>)
                --set KP=1.8 KH=1.0  change settings for this run only
   log                    show the running drive output again (after a disconnect, Ctrl+C stops)
   course                 edit the course (course.py) on the Mac, then aicar push
-                         lane reading is fixed to the band method. JUNCTION_TRACK_ASSIST only drops false junctions and false lane ends
+                         LANE_POINTS: "pairs" fits both lane lines as one pair (steadier), "bands" the band points as before.
+                         JUNCTION_TRACK_ASSIST only drops false junctions and false lane ends
 
 [settings]
   config                 show the current settings (calibration, lines, main driving values)
   calibrate [--dry]      automatic calibration on the arena (car in the middle of a straight lane): track color, focus, light,
                          lane width / vanishing point, camera center, then saved. --dry only measures
+  calibrate --end 10     stop distance: the car in its lane with the lane line ending 10 cm (tape) ahead of the car front.
+                         Compares what cm= reads with the tape and saves the correction. --dry only compares
   gap-probe [sec]        lane gap check (no motor): push the car by hand toward a gap; logs where it was found per frame and why not
   focus                  only measure the sharpest focus (car on the track). Not saved; driving stays at about 15 cm
   track [white|black]    track color: white = white lines on a black floor, black = black lines on a white floor (asks if not given)

@@ -64,6 +64,10 @@ ROI_TOP = 0.4           # Use only from this fraction of the frame height downwa
 LANE_MODEL = "bands"    # Driving always reads the lane this way: a point per line in each band, a straight line through them.
                         # course.py cannot switch it. "track" (lane_track.py: one lane model fitted to every line pixel up to
                         # near the horizon, tracked frame to frame) is experimental: tests and the simulator set it directly.
+LANE_POINTS = getattr(_course, "LANE_POINTS", "bands")   # course.py. How the band method's lane position and heading are worked out (junctions and the rest are always the bands).
+                        # "bands": a center point per band, a straight line through them. "pairs": both lines fitted at once as a
+                        # perspective pair over thin sample rows (lane_pairs.py).
+BAND_VIEW = lambda: LANE_MODEL != "track" and LANE_POINTS != "pairs"   # The band points and path drawn in the view.
 JUNCTION_TRACK_ASSIST = getattr(_course, "JUNCTION_TRACK_ASSIST", False)   # course.py. The tracker only removes false junctions and
                         # false lane ends. It never steers and never adds one. Off: detection is exactly as before.
 STEER_MODE = "pursuit"  # With LANE_MODEL = "track": "pursuit" steers onto an arc through the lane center LOOK_LW ahead (uses the bend of
@@ -149,7 +153,12 @@ MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of 
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
 LOST_LIMIT = 15         # Old setting, unused. Lost-lane timing uses LOST_HOLD (seconds) instead of a frame count.
-LOST_HOLD = 1.0         # After the lane is lost, hold the last steering and creep for this many seconds, then back up (LOST_BACK_SEC), then stop.
+JUMP_CONFIRM = 0.3      # A lane position that jumps by more than this from the last frame counts only when the next frame agrees
+                        # (one stray point over broken lines flipped the lane for a frame). 0 = off.
+JUMP_HOLD_MAX = 2       # At most this many frames in a row are held back.
+LOST_HOLD = 1.0         # After the lane is lost, drive on for this many seconds, then back up (LOST_BACK_SEC), then stop.
+LOST_CENTER_RATE = 25.0 # While following with the lane lost, the wheels return to straight at this many degrees per second
+                        # instead of staying at the last angle (which kept the car turning off the mat). 0 = hold the last angle.
 LOST_BACK_SEC = 1.5     # Then reverse for up to this long, replaying the recent steering backwards so the car retraces its path, until the lane comes back. 0 = just stop.
 LOST_BACK_SPEED = 0.5   # Motor command while backing up. Reverse needs a higher command than forward to move at all.
 LOST_BACK_TRIES = 2     # Back-ups allowed per action. Each needs a fresh loss of the lane, so the car cannot rock back and forth forever.
@@ -198,6 +207,7 @@ JUNCTION_REF = "laneend" # to_junction(cm=): what it measures to. "laneend": whe
                         # so it stays in view down to the frame bottom from either direction. "line": the line across the lane (before 2026-11-09).
 LANEEND_OFFSET_CM = -14.5   # Added to every line-end distance read from the camera: real minus read, in cm. -14.5 makes it the distance from
                         # the car front (2026-11-09: read 19.5 cm, tape 5 cm), since the camera sits about 15 cm behind it.
+                        # calibrate.py --end CM measures it on the car and saves it in vision.json (laneend_offset_cm), which wins.
 # The settings below are all distances from the car front, as shown on screen (LANE END) and written as cm=.
 LANEEND_BASE_CM = 10.0  # to_junction() with no cm=: ends with the line end this far ahead. to_junction(cm=20) ends at 20 cm.
 LANEEND_MIN_CM = 4.5    # The nearest it can still be read: the frame bottom is about 2.6 cm, plus room for the 2 frames a reading is old.
@@ -293,7 +303,7 @@ def load_vision(path=None):
     lane width and vanishing point, and exposure / white balance. Focus stays at LENS_POSITION.
     """
     global LINE_COLOR, WHITE_THR, CAMERA_X, LIGHT_S_MIN, LIGHT_V_MIN, LIGHT_AREA_MIN
-    global LANE_WIDTH_PX, HORIZON_Y, CAMERA_LOCK, REFLECT_SHARP
+    global LANE_WIDTH_PX, HORIZON_Y, CAMERA_LOCK, REFLECT_SHARP, LANEEND_OFFSET_CM
     try:
         data = read_json(path or VISION_FILE)
     except (OSError, ValueError):
@@ -316,6 +326,7 @@ def load_vision(path=None):
     HORIZON_Y = pick("horizon_y", HORIZON_Y, (int, float))
     CAMERA_LOCK = pick("camera_lock", CAMERA_LOCK, dict)
     REFLECT_SHARP = pick("reflect_sharp", REFLECT_SHARP, (int, float))
+    LANEEND_OFFSET_CM = pick("laneend_offset_cm", LANEEND_OFFSET_CM, (int, float))     # calibrate.py --end: measured on this car.
 
 
 def calibration_note(path=None, today=None):
@@ -562,6 +573,10 @@ class LaneDetector:
         self.tracker = None         # LANE_MODEL = "track": the lane tracker (lane_track.py), made on first use.
         self.assist_turn = False
         self.det_bands = None       # The band method's own answer this frame, whichever LANE_MODEL drives.
+        self.pairs = None           # LANE_POINTS = "pairs": the pair fit (lane_pairs.py), made on first use.
+        self.jump_last = self.jump_pending = None   # confirm_jump: the lane last given out, and a jump waiting for a second frame.
+        self.jump_held = False      # This frame's jump was held back.
+        self.jump_count = 0         # Frames held back in a row.
         self.band_line = None       # Its center line this frame, (x at near_y, x at far_y) before clipping, or None.
         self.moving_since = None
         self.history = collections.deque(maxlen=40)     # (time, gray ROI) of recent frames for the motion test.
@@ -854,27 +869,11 @@ class LaneDetector:
         g = self._roi_gray(roi)[y0:y1, x0:x1].astype(np.float32)    # The ROI's gray, made once per frame (the same pixels as converting the crop).
         if LINE_COLOR == "black":
             g = 255 - g
-        mag = self._roi_mag(roi)[y0:y1, x0:x1]     # One Sobel for the whole frame: the edge sits inside the crop, so it matches a Sobel of the crop.
+        # The Sobel of the crop alone: every edge pixel is at least 3 px inside it (5 px margin, 2 px dilation), or on the ROI's own
+        # border, so it is the same as a Sobel of the whole ROI, on a few blobs' area instead of all of it.
+        mag = np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
         contrast = pct(g[blob > 0], 90) - pct(g[ring], 50)
         return float(pct(mag[edge], 90) / max(contrast, 1.0))
-
-    def _roi_mag(self, roi):
-        """Edge magnitude of the ROI gray (Sobel / 8), made once per frame and shared by every blob."""
-        gray = self._roi_gray(roi)
-
-        def make():
-            g = gray.astype(np.float32)
-            if LINE_COLOR == "black":
-                g = 255 - g
-            return np.hypot(cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3), cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)) / 8.0
-
-        cache = getattr(self, "_sharp_cache", None)
-        if cache is None:
-            return make()
-        key = ("mag", gray.__array_interface__["data"][0])
-        if key not in cache:
-            cache[key] = make()
-        return cache[key]
 
     def _roi_gray(self, roi):
         """Gray of this picture (uint8). Inside a detection it is made once per frame and shared (line mask, reflections);
@@ -1299,8 +1298,9 @@ class LaneDetector:
         top = int(FRAME_H * ROI_TOP)
         rows_n, cols_n = mask.shape
         # Row prefix sums: "any line pixel between columns a and b on this row" becomes one subtraction.
-        cs = np.zeros((rows_n, cols_n + 1), np.int32)
-        np.cumsum(mask, axis=1, out=cs[:, 1:])
+        # cv2.integral sums down the rows as well; the difference of two rows of it is that row alone (the same integers
+        # as a cumsum along the row, about 10x faster).
+        cs = np.diff(cv2.integral(mask.view(np.uint8)), axis=0)
         hit = lambda r, a, b: cs[r, min(max(b, 0), cols_n)] > cs[r, min(max(a, 0), cols_n)]
         self._row_sums = cs
         self._row_xsums = None      # Made by walk_line only if it is needed this frame.
@@ -1482,7 +1482,69 @@ class LaneDetector:
                     if not getattr(self, "_assist_warned", False):
                         self._assist_warned = True
                         print(f"\n[warning] junction check skipped a frame: {type(e).__name__}: {e}")
+        if LANE_MODEL != "track" and LANE_POINTS == "pairs":
+            det = self.pair_reading(det, side, dbg)
+        if LANE_MODEL != "track":
+            det = self.confirm_jump(det, side)
         return det, junction, dbg
+
+    def pair_reading(self, det, side, dbg):
+        """LANE_POINTS = "pairs": the lane position and heading from both lines fitted as one pair (lane_pairs.py).
+        Lost stays lost (the bands decide that), and a turn or one line only (side=) keeps the band answer."""
+        if self.pairs is None:
+            from lane_pairs import LanePairs
+            self.pairs = LanePairs()
+        pairs = self.pairs
+        top = int(FRAME_H * ROI_TOP)
+        h = (FRAME_H - top) // SLICES
+        if det is None or side != "center" or self.assist_turn:
+            pairs.reset()
+            pairs.used = False
+        else:
+            sure = sum(l is not None and r is not None for l, r in zip(self.left, self.right)) >= 3
+            det = pairs(sys.modules[__name__], det, self.mask, top, FRAME_H - h // 2, top + h // 2, int(FRAME_W * CAMERA_X),
+                        self.band_line, sure)
+        if dbg is not None:
+            self.draw_pairs(dbg, top, h)
+        return det
+
+    def draw_pairs(self, dbg, top, h):
+        """The pair fit: its pieces (left out: grey), both lines and the center. The band path when the fit was not used."""
+        pairs = self.pairs
+        if pairs.used:
+            ys, xs, sides = pairs.pieces
+            for y, x, sd in zip(ys[::2], xs[::2], sides[::2]):     # Every other piece: the strips are thin, the view stays light.
+                dbg.circle((int(x), int(y)), 2, C_LEFT if sd < 0 else C_RIGHT if sd > 0 else C_DIM, -1)
+            for which, col, thick in ((-1, C_LEFT, 2), (1, C_RIGHT, 2), (0, C_PATH, 3)):
+                pts = pairs.line_points(sys.modules[__name__], which, top)
+                dbg.polyline(pts, (20, 20, 20), thick + 3, cv2.LINE_AA)
+                dbg.polyline(pts, col, thick, cv2.LINE_AA)
+        elif self.band_line is not None:
+            near_y, far_y = FRAME_H - h // 2, top + h // 2
+            x_near, x_far = self.band_line
+            dbg.line((int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
+            dbg.line((int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
+
+    def confirm_jump(self, det, side):
+        """A lane position that jumps by more than JUMP_CONFIRM counts only once the next frame agrees; until then the last one stands.
+
+        Over broken lines (a gap, a junction, a crosswalk) one stray point (a stripe, a piece of the next lane's line) can turn
+        the whole lane over for a single frame, and the car steered after it. Off during a turn and on one line (side=):
+        there the lane really does move fast."""
+        last, pending = self.jump_last, self.jump_pending
+        if JUMP_CONFIRM <= 0 or det is None or last is None or self.assist_turn or side != "center" \
+                or abs(det[0] - last[0]) <= JUMP_CONFIRM:
+            self.jump_last, self.jump_pending, self.jump_held = det, None, False
+            return det
+        if pending is not None and abs(det[0] - pending[0]) <= JUMP_CONFIRM:
+            self.jump_last, self.jump_pending, self.jump_held = det, None, False     # Two frames agree: it is real.
+            return det
+        self.jump_count = self.jump_count + 1 if self.jump_held else 1
+        if self.jump_count > JUMP_HOLD_MAX:      # Still far off and not settling: give it out rather than hold an old lane.
+            self.jump_last, self.jump_pending, self.jump_held = det, None, False
+            return det
+        self.jump_pending, self.jump_held = det, True
+        return last
 
     def draw_track(self, dbg):
         """The tracked lane: both lines and the center, over the whole height it was fitted on."""
@@ -1647,13 +1709,13 @@ class LaneDetector:
             else:
                 c = None
             self.center[i] = c
-            if draw and LANE_MODEL != "track":     # The band points: with the tracker its lines are drawn instead.
+            if draw and BAND_VIEW():     # The band points: with the tracker or the pair fit their own lines are drawn instead.
                 for x, color in ((l, C_LEFT), (r, C_RIGHT)):
                     if x is not None:
                         dbg.circle((int(x), cy), 5, (20, 20, 20), -1, cv2.LINE_AA)
                         dbg.circle((int(x), cy), 4, color, -1, cv2.LINE_AA)
             if c is not None:
-                if draw and LANE_MODEL != "track":
+                if draw and BAND_VIEW():
                     dbg.circle((int(c), cy), 3, C_PATH, -1, cv2.LINE_AA)
                 pts.append((cy, c))
 
@@ -1681,7 +1743,7 @@ class LaneDetector:
                     if len(inl) > len(best):
                         best = inl
             if len(best) >= 2:
-                if draw and LANE_MODEL != "track":
+                if draw and BAND_VIEW():
                     for y, x in pts:
                         if (y, x) not in best:
                             dbg.circle((int(x), y), 4, C_DIM, -1, cv2.LINE_AA)    # Point dropped as a misdetect.
@@ -1694,7 +1756,7 @@ class LaneDetector:
         else:
             x_near = x_far = pts[0][1]
         self.band_line = (x_near, x_far)    # Before the clip below: where the tracker (LANE_MODEL "track") starts from.
-        if draw and LANE_MODEL != "track":      # With the tracker, its own lane is drawn instead (draw_track).
+        if draw and BAND_VIEW():      # With the tracker or the pair fit, their own lane is drawn instead.
             dbg.line((int(x_near), near_y), (int(x_far), far_y), (20, 20, 20), 6, cv2.LINE_AA)
             dbg.line((int(x_near), near_y), (int(x_far), far_y), C_PATH, 3, cv2.LINE_AA)
 
@@ -3891,6 +3953,11 @@ class Driver:
             self.lost_since = self.lost_since if self.lost_since is not None else now
         else:
             self.lost_since = None
+        if target is None and self.lost_since is not None and course.following() and LOST_CENTER_RATE > 0:
+            # Lane lost while following: ease the wheels back to straight rather than keep the last turn.
+            dt = min(now - steering.out_t, 0.1) if steering.out_t is not None and now > steering.out_t else 1 / 30
+            back = LOST_CENTER_RATE * dt
+            target, smooth = steering.angle - float(np.clip(steering.angle, -back, back)), 0.0
         # One output() per frame. Calling it again in the same instant used to spend a phantom 1/30s of
         # steering rate, so the red-light reverse turned the wheels at fps/30 times STEER_RATE.
         if red_angle is not None:

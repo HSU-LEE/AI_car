@@ -50,10 +50,11 @@ def main():
         print("[warning] This recording has no course.py: the current course is used")
     if module is not None:
         for name in dir(module):        # The figure's settings are read from the course file too.
-            if name.startswith("PERSON_") or name in ("RED_BACK_ON", "JUNCTION_TRACK_ASSIST"):
+            if name.startswith("PERSON_") or name in ("RED_BACK_ON", "JUNCTION_TRACK_ASSIST", "LANE_POINTS"):
                 setattr(lf, name, getattr(module, name))
         # A course from before the junction check had it off: replay it that way, not with today's setting.
         lf.JUNCTION_TRACK_ASSIST = getattr(module, "JUNCTION_TRACK_ASSIST", False)
+        lf.LANE_POINTS = getattr(module, "LANE_POINTS", "bands")     # Likewise: the band points before "pairs" existed.
     saved = json.loads((run / "run.json").read_text()) if (run / "run.json").exists() else {}
     if saved.get("lane_follow_md5") not in (None, hashlib.md5(Path(lf.__file__).read_bytes()).hexdigest()):
         print("[warning] lane_follow.py differs from the one recorded with, so decisions may differ")

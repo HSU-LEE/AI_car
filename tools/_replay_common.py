@@ -53,9 +53,10 @@ def setup(run, code, lane_model, sets=None):
                 module = None
         if module is not None:
             for name in dir(module):
-                if name.startswith("PERSON_") or name in ("RED_BACK_ON", "JUNCTION_TRACK_ASSIST"):
+                if name.startswith("PERSON_") or name in ("RED_BACK_ON", "JUNCTION_TRACK_ASSIST", "LANE_POINTS"):
                     setattr(lf, name, getattr(module, name))
             lf.JUNCTION_TRACK_ASSIST = getattr(module, "JUNCTION_TRACK_ASSIST", False)    # As replay.py: off before it existed.
+            lf.LANE_POINTS = getattr(module, "LANE_POINTS", "bands")     # Likewise: the band points before "pairs" existed.
             apply_sets(sets)        # ... but an override given for an experiment still wins.
         saved = json.loads((run / "run.json").read_text()) if (run / "run.json").exists() else {}
         for kv in saved.get("set", []):
