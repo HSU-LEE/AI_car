@@ -230,6 +230,18 @@ END_MAX_SEC = 5.0       # cm=: the last distance takes at most this long. It is 
 EDGE_STOP_Y = 0.63      # Stop when the mat in front of the car ends at this frame height (the mat edge). [narrow FOV 0.7]
 
 JUNCTION_BY_BRANCH = False  # True also treats three or more visible lines as a junction (a fork).
+JUNCTION_BEND_DEG = 55      # A lane line that turns off its straight path by at least this many degrees on the floor, within a short
+                            # stretch, is a junction too (an L corner, a T, a side road), even with no line across seen. A curve turns
+                            # gradually: the tightest the car can drive reads about 15. 0 = off (only the line across, as before).
+BEND_ON_LW = 0.08           # sharp_bend: a piece this far behind the line's end still counts as beside it, not behind.
+BEND_OFF_LW = 0.2           # A piece of the tape this far sideways of the line's direction at its end has turned away.
+BEND_REACH_LW = 0.7         # Only the turned-away part this near the line's end counts (a far, other line does not).
+BEND_THICK_LW = 0.06        # ...and they must lie along a line: their spread across it at most this (lane widths; tape is about 0.07 wide).
+BEND_RUN_LW = 0.15          # ...and run on sideways by at least this (lane widths), past BEND_OFF_LW, or out of the side of the view.
+BRIDGE_LW = 0.15            # sharp_bend: a break in a line this short (lane widths ahead, on the floor; about 3 cm) is a tape joint,
+BRIDGE_SIDE_LW = 0.12       # with the line going on within this sideways of where it was heading. A junction gap is far longer.
+BRIDGE_MAX = 3              # Joints bridged along one line.
+BEND_MIN_PIX = 25           # Turned-away pixels needed (every other row and column): a speck does not make a corner.
 STOP_WHOLE_FRAMES = 2   # go_to(): frames a road-area stop point must match in a row (strict match; a mark box needs JUNCTION_FRAMES).
 JUNCTION_FRAMES = 3     # Consecutive frames required before a detection counts. This rejects false hits. gap and green use the same count.
 JUNCTION_LATCH_FRAMES = 2   # A junction line seen this many frames in a row, low in the frame, is remembered.
@@ -1395,6 +1407,141 @@ class LaneDetector:
 
         return along(2, 16, 0.35, lane_track.TRACK_END_NEAR, 6) or along(6, 36, 0.2, lane_track.TRACK_END_CONTINUE, 8)
 
+    def sharp_bend(self, top):
+        """Where a lane line turns sharply: (frame y, side, degrees, frame x) of the nearest such turn, or None.
+
+        Each lane line is followed up the view as it runs (walk_line, which bends with a curve). A curve is followed to the
+        top of the view or out of its side, so it never turns sharply here. Where the following stops inside the view, the
+        rest of the line's own piece of tape near that point is compared with the line's direction just before it, on the
+        floor (perspective makes far angles look flatter), in lane widths. An L corner, a T or a side road gives about 90.
+        Where the line only breaks (two pieces of tape joined slightly apart) and runs on just ahead, the following carries
+        on past the break (_bridge), so the corner beyond it is found and the joint is not taken for the line's end.
+        """
+        labels, stats = self.blobs
+        mask = self.mask > 0
+        if labels.shape[0] < 2 or labels.shape != mask.shape:
+            return None
+        # walk_line's row sums of this frame's mask (lane_end makes them again later in the frame, the same).
+        self._row_sums, self._row_xsums = np.diff(cv2.integral(mask.view(np.uint8)), axis=0), None
+        H, cx = HORIZON_Y, FRAME_W * CAMERA_X
+        k0 = max(342 - H, 1.0) / LANE_WIDTH_PX      # Floor lane widths per px across, one row below the horizon.
+        floor = lambda x, row: ((np.asarray(x, float) - cx) * k0 / np.maximum(np.asarray(row, float) + top - H, 1.0),
+                                CAMERA_F * k0 / np.maximum(np.asarray(row, float) + top - H, 1.0))
+        best = None
+        for side, xs in (("left", self.left), ("right", self.right)):
+            path, _ = self.walk_line(side, mask, top)
+            if not path or len(path) < 4:
+                continue
+            rows = np.array(sorted(path), dtype=float)          # Far (small row) to near.
+            px = np.array([path[r] for r in rows])
+            for _ in range(BRIDGE_MAX + 1):
+                if rows[0] <= 4 or px[0] < 2 or px[0] > mask.shape[1] - 3:
+                    break       # Followed to the top of the view, or out of its side (a curve going out of sight): it runs on.
+                deg = self._turn_at(rows, px, mask, labels, stats, floor)
+                if deg is not None:
+                    y = int(rows[0] + top)
+                    if best is None or y > best[0]:
+                        best = (y, side, deg, float(px[0]))
+                    break
+                more = self._bridge(rows, px, mask, top, floor)
+                if more is None:
+                    break       # Ends here and does not turn: a lane end or a gap, not a corner.
+                rows, px = more
+        return best
+
+    def junction_point(self):
+        """go(cm=)'s junction point this frame (frame y), or None: where a lane line turns sharply (sharp_bend), else where
+        a lane line ends (lane_end). The turn wins: a joint in the tape can stop a line short of the junction, and the corner
+        is where the junction really is."""
+        end = self.lane_end()
+        if self.bend is not None:
+            self.end_y, self.end_side = self.bend[0], self.bend[1]      # What the view and the ruler show as the lane end.
+            return self.bend[0]
+        return end
+
+    def _turn_at(self, rows, px, mask, labels, stats, floor):
+        """sharp_bend: how sharply the line's tape turns away at the end of the followed path (rows far to near), or None."""
+        fx, fz = floor(px, rows)
+        # The line's direction just before its end: the stretch within 0.3 lane widths (on the floor) of it.
+        near_end = np.hypot(fx - fx[0], fz - fz[0]) <= 0.3
+        if near_end.sum() < 3:
+            return None
+        dz, dx = fz[0] - fz[near_end][-1], fx[0] - fx[near_end][-1]
+        if np.hypot(dx, dz) < 0.05:
+            return None
+        dirx, dirz = dx / np.hypot(dx, dz), dz / np.hypot(dx, dz)
+        # The line's piece of tape at its end.
+        r_e, x_e = int(rows[0]), int(np.clip(px[0], 0, mask.shape[1] - 1))
+        near = labels[max(r_e - 3, 0):r_e + 4, max(x_e - 4, 0):x_e + 5]
+        ids = near[near > 0]
+        if not len(ids):
+            return None
+        lab = int(np.bincount(ids).argmax())
+        bx, by_, bw, bh, _ = stats[lab]
+        yy, xx = np.nonzero(labels[by_:by_ + bh:2, bx:bx + bw:2] == lab)
+        yy, xx = yy * 2 + by_, xx * 2 + bx
+        if len(yy) < BEND_MIN_PIX:
+            return None
+        gx, gz = floor(xx, yy)
+        rx, rz = gx - fx[0], gz - fz[0]
+        t = rx * dirx + rz * dirz                       # Ahead along the line's own direction at its end.
+        u = rx * dirz - rz * dirx                       # Sideways from it.
+        off = (np.abs(u) > BEND_OFF_LW) & (np.hypot(t, u) < BEND_REACH_LW) & (t > -BEND_ON_LW)
+        if off.sum() < BEND_MIN_PIX:
+            return None
+        # The turned-away part must be a line: thin across its own direction. A crosswalk block or a blob joined to the
+        # line is thick (the smaller spread of its pixels is far wider than a line).
+        thick = float(np.sqrt(max(np.linalg.eigvalsh(np.cov(np.stack([t[off], u[off]])))[0], 0.0)))
+        if thick > BEND_THICK_LW:
+            return None
+        if np.ptp(np.abs(u[off])) < BEND_RUN_LW and not ((xx[off] <= 3) | (xx[off] >= mask.shape[1] - 4)).any():
+            return None     # It must run on sideways (or out of the view), not be a corner of something else poking past the line.
+        deg = float(np.degrees(np.arctan2(np.abs(u[off]).mean(), np.maximum(t[off], 0.0).mean())))
+        return deg if deg >= JUNCTION_BEND_DEG else None
+
+    def _bridge(self, rows, px, mask, top, floor):
+        """sharp_bend: past a short break in the line (a tape joint), where it runs on just ahead along its own direction.
+
+        Returns the path with the piece beyond added (far to near), or None when nothing lies within BRIDGE_LW ahead and
+        BRIDGE_SIDE_LW sideways of where the line was heading (a real end, or a gap at a junction, which is far longer)."""
+        H = HORIZON_Y
+        lane_px = lambda r: LANE_WIDTH_PX * (r + top - H) / max(342 - H, 1.0)
+        end_r, end_x = rows[0], px[0]
+        sel = rows <= end_r + 24
+        slope = float(np.polyfit(rows[sel], px[sel], 1)[0]) if sel.sum() >= 3 else 0.0     # px across per row, near the end.
+        z_end = floor(end_x, end_r)[1]
+        found = None
+        for r in range(int(end_r) - 1, -1, -1):
+            if floor(end_x, r)[1] - z_end > BRIDGE_LW:
+                break
+            x_pred = end_x + slope * (r - end_r)
+            tol = max(4.0, BRIDGE_SIDE_LW * lane_px(r))
+            lo, hi = max(int(x_pred - tol), 0), min(int(x_pred + tol) + 1, mask.shape[1])
+            hit = np.flatnonzero(mask[r, lo:hi]) if hi > lo else []
+            if len(hit):
+                found = (r, lo + float(hit.mean()))
+                break
+        if found is None:
+            return None
+        # Follow the piece beyond up the view, the way walk_line does (a window that drifts with the line).
+        r, x = found
+        new, miss = [], 0
+        while r >= 0 and miss <= LANEEND_GAP:
+            tol = max(4.0, LANEEND_TOL * lane_px(r))
+            lo, hi = max(int(x - tol), 0), min(int(x + tol) + 1, mask.shape[1])
+            hit = np.flatnonzero(mask[r, lo:hi]) if hi > lo else []
+            if len(hit):
+                x = lo + float(hit.mean())
+                new.append((r, x))
+                miss = 0
+            else:
+                miss += 1
+            r -= 1
+        if len(new) < 4:
+            return None
+        new.reverse()       # Far to near, like rows.
+        return np.concatenate([[q[0] for q in new], rows]), np.concatenate([[q[1] for q in new], px])
+
     def lane_bends(self, side, last, mask, top, walks):
         """Whether the whole lane curves where this side's line left its straight path (row last): the other line bends the same way.
 
@@ -1640,6 +1787,7 @@ class LaneDetector:
         junction = False
         self.crosswalk = self.crosswalk_any = False
         self.junction_y = self.crosswalk_y = None   # Lowest (nearest) band y of a horizontal line or crosswalk. Used by course at=.
+        self.bend = None                            # sharp_bend: the nearest sharp turn of a lane line this frame, or None.
         if self.stripes:
             self.crosswalk_any = True
             self.crosswalk_y = max(y + sh // 2 for _, y, _, sh in self.stripes)    # Near edge of the nearest stripe.
@@ -1728,6 +1876,17 @@ class LaneDetector:
                 elif xb >= cx0 and rs[i] is None:
                     rs[i] = x
         self.left, self.right = list(ls), list(rs)
+
+        # A lane line that turns sharply (an L corner, a T, a side road) is a junction even when no line across was seen.
+        self.bend = self.sharp_bend(top) if JUNCTION_BEND_DEG and LINE_MODE != "line" else None
+        if self.bend is not None:
+            by = self.bend[0]
+            if by >= jy:
+                junction = True
+                self.junction_y = max(self.junction_y or 0, by)
+            if draw:
+                marks.setdefault("JUNCTION", (C_JUNC, by))
+                chip(dbg, f"BEND {self.bend[2]:.0f} deg", int(self.bend[3]) - 40, by - 22, C_JUNC, 0.38)
 
         self.gap_y = self.find_gap(bands, ls, rs)
         self.follow_gap(bands)
@@ -4127,7 +4286,7 @@ class Driver:
                        "_stop": self.stop_y, "_stop_target": self.stop_target,
                        "near": detect.near_line,
                        **({"hline_y": detect.hline_edge(), "tip_y": detect.tip_y,
-                           "end_y": detect.lane_end() if CourseRunner.uses_laneend(step) else None} if step is not None and step.get("cm") is not None else {})},
+                           "end_y": detect.junction_point() if CourseRunner.uses_laneend(step) else None} if step is not None and step.get("cm") is not None else {})},
                       light if need_light else None, self.traffic.lamps, self.obs.near if self.obs else None)
         self.det, self.junction, self.light = det, junction, light
         if dbg is not None and detect.end_y is not None:

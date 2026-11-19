@@ -10,13 +10,14 @@ import importlib
 import importlib.util
 import io
 import json
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNS = ROOT / "runs"
+RUNS = Path(os.environ.get("AICAR_RUNS", ROOT / "runs"))     # AICAR_RUNS=/some/folder: recordings kept elsewhere.
 
 
 def all_runs():

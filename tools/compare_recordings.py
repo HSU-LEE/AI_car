@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _replay_common import ROOT, all_runs, far_bend, frames, setup  # noqa: E402
+from _replay_common import ROOT, RUNS, all_runs, far_bend, frames, setup  # noqa: E402
 
 DIFF = 0.3
 BEND = 0.5      # far bend: share of frames whose drawn center line bends more than this many lane widths away from straight
@@ -129,7 +129,7 @@ def main():
     args = ap.parse_args()
     if args.same:
         sys.exit(0 if same(*args.same) else 1)
-    runs = [ROOT / "runs" / r for r in args.runs] if args.runs else all_runs()
+    runs = [RUNS / r for r in args.runs] if args.runs else all_runs()
     jobs = [(str(r), args.code, m, args.dump, args.set) for r in runs for m in args.models]
     jobs.sort(key=lambda j: -len(list(Path(j[0]).glob("*.jpg"))))      # Longest first: the pool finishes sooner.
     with mp.get_context("spawn").Pool(args.jobs, maxtasksperchild=1) as pool:

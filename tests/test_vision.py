@@ -3406,6 +3406,94 @@ def test_go_end_and_gap_hold():
           and lf.lost_hold(0.05) == lf.LOST_HOLD * lf.LOST_HOLD_SCALE_MAX)
 
 
+def side_road_frame(turn_y=250, sweep=False):
+    """The right lane line turns off to the right at turn_y (a side road) and the left one runs on. No line across the lane.
+    sweep=True: instead, the right line bends away gradually (a curve), with no sharp turn."""
+    img = np.clip(np.random.default_rng(2).normal(30, 4, (H, W, 3)), 0, 255).astype(np.uint8)
+    for y in range(int(H * lf.ROI_TOP) - 10, H):
+        xl, xr = lane_x(y)
+        cv2.line(img, (int(xl) - 5, y), (int(xl) + 5, y), (235,) * 3, 1)
+        if sweep:
+            k = max(turn_y - y, 0)
+            xr = xr + 0.012 * k * k
+        if y >= turn_y or sweep:
+            cv2.line(img, (int(xr) - 5, y), (int(xr) + 5, y), (235,) * 3, 1)
+    if not sweep:
+        xr = int(lane_x(turn_y)[1])
+        cv2.rectangle(img, (xr - 5, turn_y - 8), (W - 1, turn_y + 2), (235,) * 3, -1)     # The line turning off, out of view.
+    return img
+
+
+def test_sharp_bend():
+    print("[junction: a lane line that turns sharply, with or without a line across]")
+    for kind, yj in (("L-right", 270), ("L-left", 270), ("+", 290), ("T-side-left", 280)):
+        d, _ = run_detector(junction_frame(kind, yj))
+        check(f"{kind}: the line turns sharply (about 90 deg on the floor)", d.bend is not None and 70 <= d.bend[2] <= 100, d.bend)
+    d, _ = run_detector(side_road_frame())
+    check("side road, no line across: the turn is read", d.bend is not None and d.bend[1] == "right" and 70 <= d.bend[2] <= 100, d.bend)
+    check("...and it is a junction there", d.junction_y is not None and abs(d.junction_y - 250) <= 12, d.junction_y)
+    old = lf.JUNCTION_BEND_DEG
+    try:
+        lf.JUNCTION_BEND_DEG = 0
+        d, _ = run_detector(side_road_frame())
+        check("JUNCTION_BEND_DEG = 0: off, the side road is not a junction (as before)", d.bend is None and d.junction_y is None, (d.bend, d.junction_y))
+    finally:
+        lf.JUNCTION_BEND_DEG = old
+    for name, img in (("curve", junction_frame("curve-right", 0)), ("a line bending away gradually", side_road_frame(sweep=True)),
+                      ("straight lane", lane_frame()), ("lane off center", lane_frame(shift=60)), ("crosswalk", lane_frame(crosswalk=True)),
+                      ("lane gap", lane_frame(y_end=250))):
+        d, _ = run_detector(img)
+        check(f"{name}: no sharp turn", d.bend is None, d.bend)
+
+
+def seam_frame(seam_y=300, turn_y=235, shift=5, gap=4, corner=True):
+    """Both lane lines break at seam_y (two pieces of tape, the upper one shift px aside) and, if corner, turn outward at
+    turn_y (a junction ahead), as on the black-line arena (photo 2026-11-19)."""
+    img = np.clip(np.random.default_rng(3).normal(30, 4, (H, W, 3)), 0, 255).astype(np.uint8)
+    for y in range(turn_y if corner else int(H * lf.ROI_TOP) - 10, H):
+        if seam_y - gap <= y < seam_y:
+            continue
+        xl, xr = lane_x(y)
+        d = shift if y < seam_y else 0
+        for x in (xl - d, xr + d):
+            cv2.line(img, (int(x) - 5, y), (int(x) + 5, y), (235,) * 3, 1)
+    if corner:
+        xl, xr = lane_x(turn_y)
+        cv2.rectangle(img, (0, turn_y - 8), (int(xl - shift) + 5, turn_y + 2), (235,) * 3, -1)
+        cv2.rectangle(img, (int(xr + shift) - 5, turn_y - 8), (W - 1, turn_y + 2), (235,) * 3, -1)
+    return img
+
+
+def test_junction_point():
+    print("[go(cm=): the corner is the junction point, a tape joint is not]")
+    d, _ = run_detector(seam_frame())
+    end_only = d.lane_end()
+    point = d.junction_point()
+    check("joint near the car, corner ahead: the corner is found past the joint", d.bend is not None and abs(d.bend[0] - 235) <= 12, d.bend)
+    check("go(cm=) measures to the corner", point is not None and abs(point - 235) <= 12 and point < 290, (point, end_only))
+    d, _ = run_detector(seam_frame(corner=False))
+    check("a joint alone is not a corner", d.bend is None, d.bend)
+    d, _ = run_detector(side_road_frame())
+    check("side road: the turn is the junction point", d.junction_point() == d.bend[0], (d.junction_point(), d.bend))
+    old = lf.JUNCTION_BEND_DEG
+    try:
+        lf.JUNCTION_BEND_DEG = 0
+        d, _ = run_detector(junction_frame("L-right", 270))
+        check("bend check off: the line's end as before", d.junction_point() == d.lane_end() and d.bend is None, d.junction_point())
+    finally:
+        lf.JUNCTION_BEND_DEG = old
+    import course as cs
+    with quiet():
+        c = lf.CourseRunner([cs.go(cm=15, blind_sec=0), finish()])
+        t = feed(c, 5, 0.0)
+        z = 45.0
+        while z > 5 and c.idx == 0:
+            c.update(False, t, (0.0, 0.0), False, {"near": True, "end_y": y_at(z - lf.LANEEND_OFFSET_CM)})
+            z -= 0.25
+            t += 1 / 40
+    check("go(cm=15) stops with the junction point 15 cm ahead of the car front", c.idx == 1 and 13.5 <= z <= 16.5, f"{z:.1f} cm")
+
+
 def test_course_end_stops():
     print("[the last step ending stops the car]")
     import course as cs
@@ -4201,7 +4289,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_go_end_and_gap_hold, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_go_end_and_gap_hold, test_sharp_bend, test_junction_point, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
