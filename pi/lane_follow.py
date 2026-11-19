@@ -159,6 +159,8 @@ JUMP_HOLD_MAX = 2       # At most this many frames in a row are held back.
 LOST_HOLD = 1.0         # After the lane is lost, drive on for this many seconds, then back up (LOST_BACK_SEC), then stop.
 LOST_CENTER_RATE = 25.0 # While following with the lane lost, the wheels return to straight at this many degrees per second
                         # instead of staying at the last angle (which kept the car turning off the mat). 0 = hold the last angle.
+LOST_HOLD_SPEED = 0.95  # LOST_HOLD is for this speed. Slower, the car needs longer for the same distance (a gap in the lines), so it
+LOST_HOLD_SCALE_MAX = 3.0   # waits up to this many times as long before backing up. Faster or equal: LOST_HOLD as it is.
 LOST_BACK_SEC = 1.5     # Then reverse for up to this long, replaying the recent steering backwards so the car retraces its path, until the lane comes back. 0 = just stop.
 LOST_BACK_SPEED = 0.5   # Motor command while backing up. Reverse needs a higher command than forward to move at all.
 LOST_BACK_TRIES = 2     # Back-ups allowed per action. Each needs a fresh loss of the lane, so the car cannot rock back and forth forever.
@@ -363,6 +365,15 @@ def course_problem(course, start=1, no_stream=False):
     if no_stream and any(s.get("until") == "enter" for s in course):
         return "a course with next() needs the web page (leave out --no-stream)"
     return None
+
+
+def lost_hold(speed):
+    """How long the lane may stay lost before backing up, at this motor speed: the same distance driven, not the same time.
+
+    A gap in the lines (a crossing, a side road) is a distance. At 0.5 the car took twice as long over it as at 0.95, and
+    backed up in the middle of the gap. Below LOST_HOLD_SPEED the time grows as the speed falls, up to LOST_HOLD_SCALE_MAX."""
+    scale = LOST_HOLD_SPEED / max(float(speed), 0.05)
+    return LOST_HOLD * min(max(scale, 1.0), LOST_HOLD_SCALE_MAX)
 
 
 def motor_floor(angle):
@@ -2355,7 +2366,9 @@ class CourseRunner:
         obstacle is whether the front infrared sensor sees an object. None if there is no sensor, which always means clear.
         """
         ys = dict(ys or {})
-        ends = [y for y in (ys.get("junction") if junction and det is not None else None, ys.get("gap")) if y is not None]
+        dead_end = bool((self.step() or {}).get("dead_end"))     # go_end(): only a line across the lane ends it, never a gap.
+        ends = [y for y in (ys.get("junction") if junction and det is not None else None, None if dead_end else ys.get("gap"))
+                if y is not None]
         ys["end"] = max(ends) if ends else None     # end: the nearer of a junction line (seen with the lane) and a lane gap.
         self.red_hits = self.red_hits + 1 if light == "red" else 0
         if self.red_hits >= JUNCTION_FRAMES:
@@ -2519,7 +2532,7 @@ class CourseRunner:
             self.ruler.feed(self.ruler.kind, {"line": hline, "tip": tip}.get(self.ruler.kind), now, locked=True, moving=self.moving)
         elif hline is not None:
             self.ruler.feed("line", hline, now)
-        elif step["until"] == "end" and ys.get("gap") is not None and tip is not None:
+        elif step["until"] == "end" and not step.get("dead_end") and ys.get("gap") is not None and tip is not None:
             self.ruler.feed("tip", tip, now)
 
     @staticmethod
@@ -2548,7 +2561,7 @@ class CourseRunner:
         ruler = self.ruler
         if self.uses_laneend(step) and ruler.kind == "laneend":
             return      # Already on the line end: track_end fed it this frame.
-        kind = "line" if step["until"] == "junction" or ys.get("junction") is not None else "tip"
+        kind = "line" if step["until"] == "junction" or step.get("dead_end") or ys.get("junction") is not None else "tip"
         y = ys.get("hline_y") if kind == "line" else ys.get("tip_y")
         if kind != ruler.kind or ruler.jump or ruler.read_t is None or now - ruler.read_t > END_FRESH_SEC:
             ruler.reset(kind)
@@ -2566,6 +2579,8 @@ class CourseRunner:
         speed = self.ruler.speed if self.moving and self.ruler.speed else 0.0
         if self.ruler.kind == "laneend":
             return self.ruler.z + LANEEND_OFFSET_CM - speed * END_LEAD_SEC <= self.laneend_target(step)
+        if step.get("dead_end"):        # go_end(): the line closing the lane, cm ahead of the car front.
+            return self.ruler.z + LANEEND_OFFSET_CM - speed * END_LEAD_SEC <= step["cm"]
         if self.uses_laneend(step):     # No line end was found: where it would be, before the line across by the gap.
             return self.ruler.z + LANEEND_OFFSET_CM - self.lane_gap() - speed * END_LEAD_SEC <= self.laneend_target(step)
         return self.ruler.z - speed * END_LEAD_SEC <= END_BASE_CM - step["cm"]
@@ -2668,6 +2683,8 @@ class CourseRunner:
         if z is None:
             return f"{self.EVENT_NAMES[step['until']]} (line not measured, ended without +{step['cm']:g}cm)"
         how = "guessed from speed" if self.ruler.guess else "measured on the line"
+        if step.get("dead_end"):
+            return f"dead end: end line {z + LANEEND_OFFSET_CM:.1f}cm ahead of the car front ({how}, target {step['cm']:g}cm)"
         if self.ruler.kind == "laneend":
             return f"{self.EVENT_NAMES[step['until']]} lane end at {z + LANEEND_OFFSET_CM:.1f}cm ({how}, target {self.laneend_target(step):g}cm)"
         if self.uses_laneend(step):
@@ -3826,7 +3843,7 @@ class Driver:
         if step["sec"]:
             cond = f"for {step['sec']:g}s"
         elif step["until"]:
-            cond = "until " + self.EVENT_EN[step["until"]] + (f" @{step['at']:g}" if step.get("at") else "")
+            cond = "until " + ("DEAD END" if step.get("dead_end") else self.EVENT_EN[step["until"]]) + (f" @{step['at']:g}" if step.get("at") else "")
             if step.get("cm") is not None:
                 cond += f" +{step['cm']:g}cm"
         else:
@@ -4179,9 +4196,11 @@ class Driver:
             lane = None
         target = course.target(lane, now, steering.angle)
         # Mat-edge stop is skipped while the lane is visible or during a turn, so a false hit does not stop the car.
-        self.edge = detect.edge and det is None and not course.turning(now)
+        # go_end(): the mat ends just past a dead end. While its measured end line is still ahead, that edge is expected.
+        dead_end = bool((course.step() or {}).get("dead_end")) and course.run_out and course.ruler.z is not None
+        self.edge = detect.edge and det is None and not course.turning(now) and not dead_end
         red_angle = self.search_red(now, hold)
-        # Lane lost during follow: hold the previous steering, up to LOST_HOLD seconds. Standing still does not count: a lane
+        # Lane lost during follow: drive on for up to lost_hold() seconds (LOST_HOLD, longer when slower). Standing still does not count: a lane
         # unseen through stop(6.5) on a crosswalk read as long lost the moment the car set off, and it backed up.
         if target is None and not course.stopped(now):
             self.lost_since = self.lost_since if self.lost_since is not None else now
@@ -4204,7 +4223,7 @@ class Driver:
             steer = steering.output(float(np.clip(target, -limit, limit)), now, smooth)
         lost_for = now - self.lost_since if self.lost_since is not None else 0.0
         # cm=: over the end line the lane lines may run out. That is expected, so the car holds its steering and does not back up.
-        lost_long = self.lost_since is not None and lost_for > LOST_HOLD and not course.run_out
+        lost_long = self.lost_since is not None and lost_for > lost_hold(base) and not course.run_out     # The set speed, not the one now (0 once stopped).
         steer = self.back_up(now, lost_long, steer)
         backing = self.back is not None
         if red_angle is not None:

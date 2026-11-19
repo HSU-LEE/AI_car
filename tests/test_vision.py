@@ -3379,6 +3379,33 @@ def test_web_dashboard():
     check("recordings and replays keep the drawn panel", old.w == W + d.PANEL_W and old.extra is None, old.w)
 
 
+def test_go_end_and_gap_hold():
+    print("[go_end: a dead end's line across the lane, never a gap; the lost-lane wait grows when slower]")
+    import course as cs
+    st = cs.go_end(10)
+    check("go_end(): ends on the end line, cm from the car front, marked as a dead end",
+          st["until"] == "end" and st["cm"] == 10 and st.get("dead_end") and "dead end" in cs.describe(st), cs.describe(st))
+    for bad in (-1, 41, True):
+        try:
+            cs.go_end(bad)
+            ok = False
+        except ValueError:
+            ok = True
+        check(f"go_end(cm={bad!r}) is refused", ok)
+    c = lf.CourseRunner([cs.go_end(10), finish()])
+    c.ruler.z, c.ruler.kind = 10 - lf.LANEEND_OFFSET_CM + 0.5, "line"
+    check("not yet: the end line 10.5 cm ahead of the front", not c.end_reached(c.step()))
+    c.ruler.z = 10 - lf.LANEEND_OFFSET_CM - 0.5
+    check("reached: 9.5 cm ahead of the front", c.end_reached(c.step()))
+    with quiet():
+        c2 = lf.CourseRunner([cs.go_end(10), finish()])
+        c2.watch(False, False, (0.0, 0.0), {"gap": 300, "junction": None}, now=0.0)
+    check("a lane gap is not this end (to_end would end on it)", c2.hits["end"] == 0, c2.hits["end"])
+    check("lost-lane wait: LOST_HOLD at the reference speed and faster", lf.lost_hold(0.95) == lf.LOST_HOLD and lf.lost_hold(1.0) == lf.LOST_HOLD)
+    check("lost-lane wait: twice as long at about half the speed, capped", abs(lf.lost_hold(0.475) - 2 * lf.LOST_HOLD) < 1e-9
+          and lf.lost_hold(0.05) == lf.LOST_HOLD * lf.LOST_HOLD_SCALE_MAX)
+
+
 def test_course_end_stops():
     print("[the last step ending stops the car]")
     import course as cs
@@ -4174,7 +4201,7 @@ def test_no_slowdown():
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_go_end_and_gap_hold, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

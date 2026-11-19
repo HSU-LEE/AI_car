@@ -1,0 +1,8 @@
+{
+  // course.py에서 lane_follow 등 pi/ 안의 모듈을 Pylance가 찾도록
+  "python.analysis.extraPaths": ["pi"],
+  // 자동완성 목록에서 AICAR 스니펫이 위쪽에 나오게
+  "[python]": {
+    "editor.snippetSuggestions": "top"
+  }
+}

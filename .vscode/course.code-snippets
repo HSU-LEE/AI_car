@@ -1,0 +1,430 @@
+{
+  "AICAR follow": {
+    "scope": "python",
+    "prefix": "follow",
+    "body": [
+      "follow(${1:3}),"
+    ],
+    "description": "차선을 따라가다 sec초가 지나거나 until 조건이 되면 끝 (sec만 주면 시간으로 끝, 둘 다 없으면 until=\"junction\")"
+  },
+  "AICAR follow until": {
+    "scope": "python",
+    "prefix": [
+      "follow_until",
+      "follow"
+    ],
+    "body": [
+      "follow(until=\"${1|junction,crosswalk,lane,gap,end,crossed,green,obstacle,clear,lost,aligned,_crosswalk,_crossed,_stop|}\"),"
+    ],
+    "description": "follow(until=...): 조건이 될 때까지 차선 따라가기"
+  },
+  "AICAR straight": {
+    "scope": "python",
+    "prefix": "straight",
+    "body": [
+      "straight(${1:1.5}, angle=${2:0}),"
+    ],
+    "description": "조향을 유지(angle=\"hold\")하거나 지정 각도로 직진, angle=0이면 정면"
+  },
+  "AICAR push": {
+    "scope": "python",
+    "prefix": "push",
+    "body": [
+      "push(${1:1.0}),"
+    ],
+    "description": "straight와 같지만 속도가 speed= > set_speed() > SPEED를 따르고 주행 내내 그 속도 유지"
+  },
+  "AICAR right": {
+    "scope": "python",
+    "prefix": "right",
+    "body": [
+      "right($1),"
+    ],
+    "description": "새 차선이 잡힐 때까지 우회전 (0.5~3초)"
+  },
+  "AICAR left": {
+    "scope": "python",
+    "prefix": "left",
+    "body": [
+      "left($1),"
+    ],
+    "description": "새 차선이 잡힐 때까지 좌회전 (0.5~3초)"
+  },
+  "AICAR turn": {
+    "scope": "python",
+    "prefix": "turn",
+    "body": [
+      "turn(\"${1|left,right|}\"),"
+    ],
+    "description": "\"left\"/\"right\"를 변수로 받아 left()/right() 호출"
+  },
+  "AICAR curve": {
+    "scope": "python",
+    "prefix": "curve",
+    "body": [
+      "curve(${1:12}, ${2:2}),"
+    ],
+    "description": "지정 각도로 돌면서 차선 추종을 섞음"
+  },
+  "AICAR stop": {
+    "scope": "python",
+    "prefix": "stop",
+    "body": [
+      "stop(${1:1}),"
+    ],
+    "description": "그 자리에서 sec초 정지"
+  },
+  "AICAR wait": {
+    "scope": "python",
+    "prefix": "wait",
+    "body": [
+      "wait(until=\"clear\"${1:, hold_sec=1}),"
+    ],
+    "description": "선 채로 앞 장애물이 없어질 때까지 대기. sec=를 같이 주면 그 시간 또는 조건 중 먼저 온 쪽"
+  },
+  "AICAR wait_green": {
+    "scope": "python",
+    "prefix": "wait_green",
+    "body": [
+      "wait_green(max_sec=${1:20}),"
+    ],
+    "description": "선 채로 초록불이 될 때까지 대기 (빨간불을 봤으면 무제한, 못 찾으면 max_sec초 뒤 출발)"
+  },
+  "AICAR start_gate": {
+    "scope": "python",
+    "prefix": "start_gate",
+    "body": [
+      "start_gate(${1:2}),"
+    ],
+    "description": "출발선 앞 차단바가 치워지고 hold_sec초 지나면 출발 (거리센서가 없으면 주행을 시작하지 않음)"
+  },
+  "AICAR finish": {
+    "scope": "python",
+    "prefix": "finish",
+    "body": [
+      "finish(),"
+    ],
+    "description": "코스 끝, 정지. finish()가 없어도 마지막 동작이 끝나면 차는 멈춤"
+  },
+  "AICAR set_speed": {
+    "scope": "python",
+    "prefix": "set_speed",
+    "body": [
+      "set_speed(${1:0.5}),"
+    ],
+    "description": "이 뒤 주행 속도를 v로 (턴, straight, 직접 준 speed= 제외). set_speed()는 기본값으로"
+  },
+  "AICAR set_style": {
+    "scope": "python",
+    "prefix": "set_style",
+    "body": [
+      "set_style(\"${1|soft,normal,sharp|}\"),"
+    ],
+    "description": "이 뒤 차선 주행 조향 성향. set_style()은 기본으로"
+  },
+  "AICAR set_steer": {
+    "scope": "python",
+    "prefix": "set_steer",
+    "body": [
+      "set_steer(${1:12}),"
+    ],
+    "description": "이 뒤 차선 주행 최대 조향각을 deg도로. set_steer()는 STEER_MAX로"
+  },
+  "AICAR back": {
+    "scope": "python",
+    "prefix": "back",
+    "body": [
+      "back(${1:1.5}${2:, angle=0}),"
+    ],
+    "description": "sec초 동안 후진 (차선은 안 봄). angle=10: 바퀴를 오른쪽으로 10도, speed=0.5: 후진 속도"
+  },
+  "AICAR go": {
+    "scope": "python",
+    "prefix": "go",
+    "body": [
+      "go(cm=${1:10}),"
+    ],
+    "description": "교차로 앞 차선 끝까지 가서 끝 (cm 없으면 10cm, 차 앞 기준). lanes=1.2, sec=3, nth=2도 됨"
+  },
+  "AICAR go lanes": {
+    "scope": "python",
+    "prefix": [
+      "go_lanes",
+      "go"
+    ],
+    "body": [
+      "go(lanes=${1:1.2}),"
+    ],
+    "description": "go(lanes=): 차선 끝이 차선 폭 몇 개만큼 앞에 오면 끝 (cm=와 같이 못 씀)"
+  },
+  "AICAR to_junction": {
+    "scope": "python",
+    "prefix": "to_junction",
+    "body": [
+      "to_junction(cm=${1:10}),"
+    ],
+    "description": "교차로 앞 차선 끝까지 가서 끝 (go()와 같음)"
+  },
+  "AICAR go_end": {
+    "scope": "python",
+    "prefix": "go_end",
+    "body": [
+      "go_end(${1:10}),"
+    ],
+    "description": "막다른 길: 끝선이 차 앞 cm에 오면 정지 (0~40cm). 차선 끊김은 지나감"
+  },
+  "AICAR go_dis": {
+    "scope": "python",
+    "prefix": "go_dis",
+    "body": [
+      "go_dis(),"
+    ],
+    "description": "차선을 따라가다 앞 거리센서에 차단바가 잡히면 끝. sec=5: 못 만나도 5초 뒤 끝"
+  },
+  "AICAR go_dis + start_gate": {
+    "scope": "python",
+    "prefix": [
+      "go_dis_+_start_gate",
+      "go_dis"
+    ],
+    "body": [
+      "go_dis(),",
+      "start_gate(${1:1}),"
+    ],
+    "description": "차단바 앞에서 서서 올라갈 때까지 기다렸다 출발"
+  },
+  "AICAR to_crosswalk": {
+    "scope": "python",
+    "prefix": "to_crosswalk",
+    "body": [
+      "to_crosswalk(${1:0.85}),"
+    ],
+    "description": "횡단보도 앞까지 가서 끝 (at=: 화면 높이, 클수록 가까이)"
+  },
+  "AICAR to_gap": {
+    "scope": "python",
+    "prefix": "to_gap",
+    "body": [
+      "to_gap(${1:0.85}),"
+    ],
+    "description": "차선이 끊기는 곳 앞까지 가서 끝"
+  },
+  "AICAR to_end": {
+    "scope": "python",
+    "prefix": "to_end",
+    "body": [
+      "to_end(${1:0.5}),"
+    ],
+    "description": "바로 앞 끝에서 끝: 교차로선이든 차선 끊김이든 먼저 오는 쪽 (cm=는 카메라 앞 38cm 기준)"
+  },
+  "AICAR pass_crosswalk": {
+    "scope": "python",
+    "prefix": "pass_crosswalk",
+    "body": [
+      "pass_crosswalk(),"
+    ],
+    "description": "횡단보도를 지나갈 때까지 차선 따라 주행 (최대 5초)"
+  },
+  "AICAR _to_crosswalk": {
+    "scope": "python",
+    "prefix": "_to_crosswalk",
+    "body": [
+      "_to_crosswalk(${1:0.85}),"
+    ],
+    "description": "등록한 횡단보도(aicar crosswalk)로 판단해 그 앞까지 가서 끝"
+  },
+  "AICAR _pass_crosswalk": {
+    "scope": "python",
+    "prefix": "_pass_crosswalk",
+    "body": [
+      "_pass_crosswalk(),"
+    ],
+    "description": "등록한 횡단보도를 지나갈 때까지 차선 따라 주행"
+  },
+  "AICAR go_to": {
+    "scope": "python",
+    "prefix": "go_to",
+    "body": [
+      "go_to(\"${1:A}\"${2:, offset=0}),"
+    ],
+    "description": "등록한 정지 지점까지 가서 정지. go_to(\"A|B\"): 먼저 오는 곳. STOP_POINTS_ON = False면 go()처럼"
+  },
+  "AICAR cross_gap": {
+    "scope": "python",
+    "prefix": "cross_gap",
+    "body": [
+      "cross_gap(${1:0.85}),"
+    ],
+    "description": "끊긴 곳까지 간 뒤 새 차선이 잡힐 때까지 직진 (보통 끊김은 follow()/go()로도 넘어감)"
+  },
+  "AICAR traffic": {
+    "scope": "python",
+    "prefix": "traffic",
+    "body": [
+      "traffic(${1:0.73}, max_sec=${2:10}),"
+    ],
+    "description": "횡단보도 앞에 서서 초록불에 출발 (to_crosswalk + wait_green)"
+  },
+  "AICAR cross": {
+    "scope": "python",
+    "prefix": "cross",
+    "body": [
+      "cross(line=\"${1|junction,crosswalk|}\"),"
+    ],
+    "description": "교차로선까지 가서 정면으로 건넘 / line=\"crosswalk\": 차선 따라 횡단보도 건넘"
+  },
+  "AICAR corner": {
+    "scope": "python",
+    "prefix": "corner",
+    "body": [
+      "corner(\"${1|right,left|}\"),"
+    ],
+    "description": "교차로 선까지 가서 go_sec초 더 간 뒤 꺾고 정렬·주행"
+  },
+  "AICAR uturn": {
+    "scope": "python",
+    "prefix": "uturn",
+    "body": [
+      "uturn(\"${1|left,right|}\"),"
+    ],
+    "description": "교차로 선 앞에서 최대 조향으로 돌아 정렬·주행"
+  },
+  "AICAR tr": {
+    "scope": "python",
+    "prefix": "tr",
+    "body": [
+      "tr($1),"
+    ],
+    "description": "우회전 → 차로에 맞춰 정렬 → sec초 주행 (deg: 이만큼 돌면 끝, align=False: 정렬 건너뜀)"
+  },
+  "AICAR tl": {
+    "scope": "python",
+    "prefix": "tl",
+    "body": [
+      "tl($1),"
+    ],
+    "description": "좌회전 → 차로에 맞춰 정렬 → sec초 주행 (deg: 이만큼 돌면 끝, align=False: 정렬 건너뜀)"
+  },
+  "AICAR junction then right": {
+    "scope": "python",
+    "prefix": [
+      "junction_then_right",
+      "junction"
+    ],
+    "body": [
+      "go(steer=${1:8}, cm=${2:25}),",
+      "follow(${3:2.5}),",
+      "tr(),"
+    ],
+    "description": "교차로 앞까지 가서 조금 더 간 뒤 우회전 (자주 쓰는 묶음)"
+  },
+  "AICAR junction then left": {
+    "scope": "python",
+    "prefix": [
+      "junction_then_left",
+      "junction"
+    ],
+    "body": [
+      "go(steer=${1:8}, cm=${2:25}),",
+      "follow(${3:2.5}),",
+      "tl(),"
+    ],
+    "description": "교차로 앞까지 가서 조금 더 간 뒤 좌회전 (자주 쓰는 묶음)"
+  },
+  "AICAR option at=": {
+    "scope": "python",
+    "prefix": "at=",
+    "body": "at=${1:0.85}",
+    "description": "[공통 옵션] 감지 위치 (0.4~1.0, 클수록 가까이)"
+  },
+  "AICAR option slow=": {
+    "scope": "python",
+    "prefix": "slow=",
+    "body": "slow=${1:0.3}",
+    "description": "[공통 옵션] 선에 가까워질수록 이 속도까지 감속 (SLOWDOWN_ON = True일 때만)"
+  },
+  "AICAR option speed=": {
+    "scope": "python",
+    "prefix": "speed=",
+    "body": "speed=${1:0.5}",
+    "description": "[공통 옵션] 주행 속도"
+  },
+  "AICAR option blind_sec=": {
+    "scope": "python",
+    "prefix": "blind_sec=",
+    "body": "blind_sec=${1:0.5}",
+    "description": "[공통 옵션] 시작 후 이 시간 동안 감지 안 함"
+  },
+  "AICAR option min_sec=": {
+    "scope": "python",
+    "prefix": "min_sec=",
+    "body": "min_sec=${1:0.5}",
+    "description": "[공통 옵션] 최소 진행 시간"
+  },
+  "AICAR option max_sec=": {
+    "scope": "python",
+    "prefix": "max_sec=",
+    "body": "max_sec=${1:5}",
+    "description": "[공통 옵션] 최대 진행 시간"
+  },
+  "AICAR option side=": {
+    "scope": "python",
+    "prefix": "side=",
+    "body": "side=\"${1|left,right,center|}\"",
+    "description": "[공통 옵션] 기준 선"
+  },
+  "AICAR option shift=": {
+    "scope": "python",
+    "prefix": "shift=",
+    "body": "shift=${1:3}",
+    "description": "[공통 옵션] 차로 안에서 치우침 (cm, +오른쪽, ±8)"
+  },
+  "AICAR option style=": {
+    "scope": "python",
+    "prefix": "style=",
+    "body": "style=\"${1|soft,normal,sharp|}\"",
+    "description": "[공통 옵션] 조향 성향"
+  },
+  "AICAR option steer=": {
+    "scope": "python",
+    "prefix": "steer=",
+    "body": "steer=${1:12}",
+    "description": "[공통 옵션] 최대 조향각"
+  },
+  "AICAR option nth=": {
+    "scope": "python",
+    "prefix": "nth=",
+    "body": "nth=${1:2}",
+    "description": "[공통 옵션] n번째에서 끝 (앞의 것은 지나침)"
+  },
+  "AICAR option gap=": {
+    "scope": "python",
+    "prefix": "gap=",
+    "body": "gap=${1:1.5}",
+    "description": "[공통 옵션] 지나친 뒤 다음 인식까지 쉬는 초 (숫자 또는 틈마다 리스트, 개수 = nth-1)"
+  },
+  "AICAR option min_speed=": {
+    "scope": "python",
+    "prefix": "min_speed=",
+    "body": "min_speed=${1:0.425}",
+    "description": "[공통 옵션] slow=나 차선 놓침으로 감속해도 이 속도 밑으로 안 내려감"
+  },
+  "AICAR option hold_sec=": {
+    "scope": "python",
+    "prefix": "hold_sec=",
+    "body": "hold_sec=${1:0.3}",
+    "description": "[공통 옵션] 조건이 이 시간 동안 유지돼야 끝"
+  },
+  "AICAR option until=": {
+    "scope": "python",
+    "prefix": "until=",
+    "body": "until=\"${1|junction,crosswalk,lane,gap,end,crossed,green,obstacle,clear,lost,aligned,_crosswalk,_crossed,_stop|}\"",
+    "description": "[공통 옵션] 끝나는 조건"
+  },
+  "AICAR option cm=": {
+    "scope": "python",
+    "prefix": "cm=",
+    "body": "cm=${1:10}",
+    "description": "[공통 옵션] 끝선/차선 끝까지 거리 (cm, 차 앞 기준)"
+  }
+}
