@@ -379,7 +379,8 @@ def to_junction(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, s
 def go(at=None, slow=None, blind_sec=0.5, speed=None, nth=1, cm=None, steer=None, sec=None, min_speed=None, shift=None, gap=None, lanes=None):
     """교차로 앞 차선 끝까지 가서 끝 (cm 없으면 10cm). 아래까지 보였다가 사라져도 끝.
 
-    cm=25: 화면의 LANE END가 25cm가 되면 끝 (차 앞 기준, 4.5 미만은 4.5).
+    cm=25: 화면의 LANE END가 25cm가 되면 끝 (차 앞 기준, 4.5 미만은 4.5). LANE END는 차선 선이 꺾이는 곳
+    (안 보이면 선이 끝나는 곳). 테이프 이음새는 끝으로 보지 않음.
     lanes=1.2: 차선 폭 1.2개 앞 (cm=와 같이 못 씀). sec=3: 교차로 또는 3초 중 먼저.
     nth=2, gap=1: 하나 지나치고 두 번째에서. 화면 값과 줄자 값이 다르면 aicar calibrate --end 10"""
     cm = _lanes_cm(lanes, cm, "go")
@@ -761,33 +762,8 @@ COURSE = _flat([
     # pass_crosswalk(),
     # follow(0.75),
     # stop(1),
-    # go(steer=8,cm=25),
-    # follow(2.5),
-    # tl(),
-    
-    # go(steer=8,cm=25),
-    # follow(2.5),
-    # tr(align=False),
 
-    # stop(1),
-    # back(1.5),
-    # stop(1),
-    
-    # go(steer=8,cm=25),
-    # follow(2.5),
-    # tr(),
-    
-    # go(steer=8,cm=25),
-    # follow(2.5),
-    # tr(),
-    
-    # go(steer=8,cm=25),
-    # follow(11), 
-    # stop(1),
-    # finish(),
- 
-
-
+    finish(),
 ])
 
 if __name__ == "__main__":

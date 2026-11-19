@@ -152,7 +152,6 @@ STEER_SLOWDOWN = False  # True slows the car as steering grows while following t
 MIN_SPEED = 0.3         # Lowest forward speed: at full steering, at the end of slow=, and while the lane is lost.
 HARD_STEER = 18         # Above this steering angle (degrees), wheel drag slows the car, so the motor command is raised. Below tr() 21 so right turns get it too.
 HARD_STEER_BOOST = 0.15 # Motor command added then. 0 disables it.
-LOST_LIMIT = 15         # Old setting, unused. Lost-lane timing uses LOST_HOLD (seconds) instead of a frame count.
 JUMP_CONFIRM = 0.3      # A lane position that jumps by more than this from the last frame counts only when the next frame agrees
                         # (one stray point over broken lines flipped the lane for a frame). 0 = off.
 JUMP_HOLD_MAX = 2       # At most this many frames in a row are held back.
@@ -603,6 +602,7 @@ class LaneDetector:
         self.assist_turn = False
         self.det_bands = None       # The band method's own answer this frame, whichever LANE_MODEL drives.
         self.pairs = None           # LANE_POINTS = "pairs": the pair fit (lane_pairs.py), made on first use.
+        self.bend = None            # sharp_bend: the nearest sharp turn of a lane line in the last frame, or None.
         self.jump_last = self.jump_pending = None   # confirm_jump: the lane last given out, and a jump waiting for a second frame.
         self.jump_held = False      # This frame's jump was held back.
         self.jump_count = 0         # Frames held back in a row.
