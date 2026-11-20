@@ -1,0 +1,14 @@
+{
+  "name": "aicar-course",
+  "displayName": "AICAR course.py",
+  "description": "course.py 도움말, 옵션 자동완성, 코스 검사",
+  "publisher": "aicar",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:python"],
+  "contributes": {
+    "commands": [{ "command": "aicar.showSteps", "title": "AICAR: 코스 단계 보기" }]
+  }
+}
