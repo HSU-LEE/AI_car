@@ -84,7 +84,7 @@ def _step(do, angle, sec, until, **opt):
     if cm is not None and until not in ("junction", "end"):
         raise ValueError(f'{do}(): cm= is only for until="junction" / "end"')
     if cm is not None and _bad_num(cm, 0, 60):
-        raise ValueError(f"{do}(): cm must be 0 to 60 (to_junction: the LANE END distance on screen, to_end: distance past the base)")
+        raise ValueError(f"{do}(): cm must be 0 to 60 (go: from the car front to the junction point, to_end: distance past the base)")
     shift = opt.get("shift")
     if shift is not None and _bad_num(shift, -8, 8):
         raise ValueError(f"{do}(): shift must be -8 to 8 (cm, + is right)")
@@ -546,6 +546,13 @@ def _same(st, main):
     return st.get("_id") == main.get("_id")
 
 
+def _own_name(name, msg):
+    head, sep, rest = msg.partition("(): ")
+    if sep and head.isidentifier():
+        return msg if head == name else f"{name}(): {rest}"
+    return f"{name}(): {msg}"
+
+
 def _with_common(fn):
     import functools
     import inspect
@@ -556,6 +563,12 @@ def _with_common(fn):
 
     @functools.wraps(fn)
     def run(*args, **kw):
+        try:
+            return call(*args, **kw)
+        except ValueError as e:
+            raise ValueError(_own_name(fn.__name__, str(e))) from None
+
+    def call(*args, **kw):
         extra = {k: kw.pop(k) for k in list(kw) if k not in own}
         out = fn(*args, **kw)
         if not extra:

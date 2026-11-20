@@ -309,14 +309,20 @@ function activate(context) {
 
   function check(doc) {
     if (!isCourse(doc)) return;
+    const version = doc.version;
+    const showStatus = () => {
+      const ed = vscode.window.activeTextEditor;
+      if (ed && ed.document === doc) status.show();
+    };
     const child = cp.execFile(pythonFor(doc), ["-I", checker, doc.fileName],
       { cwd: path.dirname(doc.fileName), timeout: 8000, maxBuffer: 4 << 20 },
       (err, stdout) => {
+        if (doc.isClosed || doc.version !== version) return;
         let res;
         try { res = JSON.parse(stdout); } catch (e) {
           status.text = "$(warning) course.py 검사 실패";
           status.tooltip = String(err || e);
-          status.show();
+          showStatus();
           return;
         }
         const list = res.problems.map((p) => {
@@ -334,8 +340,9 @@ function activate(context) {
         lastSteps = res.steps;
         status.text = res.ok ? `$(check) 코스 ${res.steps.length}단계` : "$(error) 코스 오류";
         status.tooltip = res.ok ? "눌러서 단계 목록 보기" : res.problems.filter((p) => p.level === "error").map((p) => p.msg).join("\n");
-        status.show();
+        showStatus();
       });
+    child.stdin.on("error", () => {});
     child.stdin.end(doc.getText());
   }
 

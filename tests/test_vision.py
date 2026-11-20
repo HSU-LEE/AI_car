@@ -1972,6 +1972,15 @@ def _test_end_cm():
         except ValueError:
             ok = True
         check(f"cm=: error when {name}", ok)
+    named = []
+    for call, want in ((lambda: cs.go(cm=99), "go(): "), (lambda: cs.tr(speed=2), "tr(): "), (lambda: cs.uturn("up"), "uturn(): "),
+                       (lambda: cs.start_gate(-1), "start_gate(): "), (lambda: cs.pass_crosswalk(speed=5), "pass_crosswalk(): ")):
+        try:
+            call()
+            named.append(None)
+        except ValueError as e:
+            named.append(str(e).startswith(want) or str(e))
+    check("an error names the action written in the course, not the one it calls", all(n is True for n in named), named)
     lf.JUNCTION_REF, ref = "laneend", lf.JUNCTION_REF
     try:
         with quiet():

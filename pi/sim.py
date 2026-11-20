@@ -199,9 +199,16 @@ def _keeps_settings(fn):
     return wrapped
 
 
+def _check_model(model, known):
+    """An unknown name would quietly drive as "bands" and its numbers be read as another model's."""
+    if model not in known:
+        raise ValueError(f"unknown model {model!r}: use {', '.join(known)} (LANE_POINTS is a setting: --set lane_follow.LANE_POINTS=bands)")
+
+
 @_keeps_settings
 def run(track_name, model, speed=0.5, steer=26, seconds=None, video=None, seed=0, quiet=True, mismatch=True):
     """One drive. Returns the metrics."""
+    _check_model(model, ("bands", "track", "oracle"))
     for k, v in PI_VISION.items():
         setattr(lf, {"lane_width_px": "LANE_WIDTH_PX", "horizon_y": "HORIZON_Y", "camera_x": "CAMERA_X"}[k], v)
     lf.LINE_COLOR, lf.WHITE_THR, lf.LINE_MODEL, lf.XWALK_MODEL, lf.STOP_MODEL, lf.LIGHT_MODEL = "white", None, None, None, None, None
@@ -312,6 +319,7 @@ def truth(cam, track, x, y, th, rows):
 @_keeps_settings
 def accuracy(track_name, model, seed=0, step_cm=1.0, wobble_cm=4.0, wobble_deg=8.0):
     """Open loop: the car moves along the track with a known wobble; how close each frame's (offset, heading) is to the truth."""
+    _check_model(model, ("bands", "track"))
     for k, v in PI_VISION.items():
         setattr(lf, {"lane_width_px": "LANE_WIDTH_PX", "horizon_y": "HORIZON_Y", "camera_x": "CAMERA_X"}[k], v)
     lf.LINE_COLOR, lf.WHITE_THR, lf.LINE_MODEL, lf.XWALK_MODEL, lf.STOP_MODEL, lf.LIGHT_MODEL = "white", None, None, None, None, None
