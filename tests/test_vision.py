@@ -4425,6 +4425,30 @@ def test_start_button():
     check("course done: waits, then a tap runs it again", len(made) == 3 and made[2].ticks and made[2].ticks[0][0] == 150, len(made))
     check("motor command 0 whenever not driving", all(v == 0 for v in fake_car.cmds[:15]), fake_car.cmds[:15])
 
+    # Ctrl+C (or aicar stop) while the camera opens: a clean stop that releases the motor, not a traceback.
+    closed = []
+    fake_car.close = lambda: closed.append("car")
+    def cam_interrupted(locked=True):
+        raise KeyboardInterrupt
+    saved = (car_mod.Car, lf.open_camera, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE)
+    lf.COURSE = [follow(until="junction"), finish()]
+    car_mod.Car = lambda: fake_car
+    lf.open_camera = cam_interrupted
+    lf.load_person = lambda path=None: None
+    sb.ButtonReader = FakeReader
+    sys.argv = ["lane_follow.py", "--drive", "--no-stream", "--no-log", "--button", "on"]
+    outcome = None
+    try:
+        with quiet():
+            lf.main()
+    except SystemExit as e:
+        outcome = str(e)
+    except KeyboardInterrupt:
+        outcome = "KeyboardInterrupt escaped"
+    finally:
+        car_mod.Car, lf.open_camera, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE = saved
+    check("stop while starting up: clean exit, motor released", outcome == "Stopped before driving" and closed == ["car"], (outcome, closed))
+
 
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,

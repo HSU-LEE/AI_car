@@ -4636,6 +4636,8 @@ def main():
         refuse(str(e))
     except (ValueError, OSError, RuntimeError) as e:    # A bad course value, the camera or the motor not there: say why, release the rest.
         refuse(f"cannot start: {type(e).__name__}: {e}")
+    except KeyboardInterrupt:       # Ctrl+C or aicar stop while the camera and models load: release them and keep the log.
+        refuse("Stopped before driving")
     print(calibration_note())
     print("Traffic light:", f"registered ({', '.join(sorted(LIGHT_MODEL.colors()))})" if LIGHT_MODEL else "not registered (color thresholds)",
           "| crosswalk:", f"registered ({len(XWALK_MODEL.views)} views)" if XWALK_MODEL else "not registered",
