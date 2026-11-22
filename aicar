@@ -188,7 +188,7 @@ cmd_button() {
                   return ;;
         *)        die "Usage: aicar button [show|on|off|hold restart|keep|hold-sec N|test [seconds]]" ;;
     esac
-    cmd_push >/dev/null || exit 1
+    run "test -f ~/$REMOTE/start_button.py" || cmd_push >/dev/null || exit 1     # Upload only if the Pi does not have it yet.
     run "$(in_dir "$PY start_button.py ${*:-show}")"
 }
 
@@ -374,7 +374,11 @@ autonomous() {
     if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9.]+$ ]]; then args+=(--speed "$1"); shift; fi
     args+=("$@")
     # go follows the start button setting on the Pi (aicar button) unless --button is given.
-    [ "$drive" = --drive ] && [[ " ${args[*]:-} " != *" --button "* ]] && args+=(--button auto)
+    if [ "$drive" = --drive ]; then
+        local a given=0
+        for a in ${args[@]+"${args[@]}"}; do [[ "$a" == --button || "$a" == --button=* ]] && given=1; done
+        [ $given = 1 ] || args+=(--button auto)
+    fi
     drive_log_on || args+=(--no-log)
     run "$DRIVING" && die "A drive is already running. View: aicar log   Stop: aicar stop"
     cmd_push || exit 1

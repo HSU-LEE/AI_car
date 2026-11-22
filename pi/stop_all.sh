@@ -28,9 +28,13 @@ else
 fi
 
 # If the process was killed, grab the motor pins again and stop them.
-if venv/bin/python car.py center >/dev/null 2>&1; then
-    echo "Motor stopped, steering centered"
-else
-    echo "Could not confirm the motor stopped. Switch the car off by hand."
-    exit 1
-fi
+# Retried: another stop (Ctrl+C on the Mac and aicar stop at once) can hold the pins for a moment.
+for _ in 1 2 3 4 5; do
+    if venv/bin/python car.py center >/dev/null 2>&1; then
+        echo "Motor stopped, steering centered"
+        exit 0
+    fi
+    sleep 0.5
+done
+echo "Could not confirm the motor stopped. Switch the car off by hand."
+exit 1

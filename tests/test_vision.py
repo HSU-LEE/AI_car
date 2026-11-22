@@ -1366,7 +1366,7 @@ def test_person_look():
             again = PersonDetector.load(lf.HORIZON_Y, path)
         check("look data kept after saving and loading", again is not None and again.embeds is not None and np.allclose(again.embeds, det.embeds, atol=1e-3))
         Fake.calls = 0
-        wide = det.likeness(np.zeros((360, 640, 3), np.uint8) + 50, 100, 100, 80, 40)
+        det.likeness(np.zeros((360, 640, 3), np.uint8) + 50, 100, 100, 80, 40)
         check("a wide candidate is also compared lying down", Fake.calls == 2, Fake.calls)
     finally:
         P._embedder, P._embedder_tried = old
@@ -1696,7 +1696,6 @@ def test_set_speed():
     bundles = cs._flat([cs.set_speed(0.33), cs.cross_gap(), cs.cross(), cs.traffic(), cs.corner("left"), cs.uturn("right"),
                         cs.cross(line="crosswalk"), cs.pass_crosswalk()])
     follows = [s["speed"] for s in bundles if s["do"] == "follow" and s["until"] not in ("aligned", None)]
-    straights = [s["speed"] for s in bundles if s["do"] == "straight" and s["until"] == "lane"]
     check("grouped action: the lane following inside changes", set(follows) == {0.33}, follows)
     gap_cross = [s["speed"] for s in cs._flat([cs.set_speed(0.33), cs.cross_gap()]) if s["do"] == "straight"]
     cross_line = [s["speed"] for s in cs._flat([cs.set_speed(0.33), cs.cross()]) if s["do"] == "straight"]
@@ -2292,7 +2291,6 @@ class FakeStream:
 def run_tool(tool, keys):
     """Run a tuning tool with no camera or browser, on a terminal of its own. Returns what it saved."""
     import pty
-    import types
     master, slave = pty.openpty()
     saved, old = {}, (lf.open_camera, lf.Stream, lf.save_vision, sys.stdin, sys.argv, lf.WHITE_THR)
     lf.open_camera, lf.Stream = FakeCamera, FakeStream
@@ -2770,6 +2768,7 @@ def test_go_dis():
         go_cmds = [d.tick(lane_frame(), (32 + i) / 30)[1] for i in range(15)]
     check("driver: motor on until the barrier, off while it is down, done once it is up",
           min(cmds) > 0 and stop_cmds[-1] == 0 and stop_cmds[lf.JUNCTION_FRAMES] == 0 and d.done, f"{cmds[-1]} {stop_cmds[-1]} done {d.done}")
+    check("driver: once the barrier is up the course ends with the motor off (finish)", max(go_cmds) == 0, go_cmds)
 
 
 def test_drive_log():
@@ -2787,8 +2786,6 @@ def test_drive_log():
         try:
             with quiet():
                 d = lf.Driver(cs._flat([cs.go_dis(speed=0.5, sec=0.3), stop(0.1), finish()]))
-            with contextlib.redirect_stdout(io.StringIO()) as shown:
-                pass
             print("\n[1/3] hello from the drive")
             for i in range(25):
                 steer, cmd, _ = d.tick(lane_frame(), i / 30)
@@ -2945,7 +2942,6 @@ def test_lane_track():
     import types
     import course as cs
     import lane_track as lt
-    import overlay
     old = (lf.LANE_MODEL, lf.STEER_MODE)
     try:
         lf.LANE_MODEL = "track"
@@ -3986,8 +3982,6 @@ def test_reflections():
 
 def test_glare_motion():
     print("[reflections by motion, red floor signs]")
-    top = int(H * lf.ROI_TOP)
-
     def y_of(cm):       # Frame row of a floor point this far ahead (inverse of floor_cm).
         scale = lf.CAMERA_F * lf.LANE_CM / lf.LANE_WIDTH_PX * max(342 - lf.HORIZON_Y, 1.0)
         return lf.HORIZON_Y + scale / cm
@@ -4026,7 +4020,7 @@ def test_glare_motion():
         for k in range(20):
             d2.now, d2.moving = k / 30, True
             d2(lane_frame(), draw=False)
-            d2b = d2(lane_frame(), draw=False)
+            d2(lane_frame(), draw=False)
     check("a plain lane: nothing is dropped by the motion test", not d2.reflections, d2.reflections)
 
     tl = lf.TrafficLight()
