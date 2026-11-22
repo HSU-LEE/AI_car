@@ -114,7 +114,7 @@ menu_button() {
         '-' \
         '7|출발 전 조향 확인 켜기 (처음 출발할 때 앞바퀴 왼쪽→오른쪽→중앙)|$A button sweep on' \
         '8|출발 전 조향 확인 끄기|$A button sweep off' \
-        '9|조향 확인 속도 (slow 2.5초 / normal 1.5초 / fast 1초)|v=$(ask "slow, normal, fast 중 하나 (엔터 = normal): "); $A button sweep-speed "${v:-normal}"' \
+        '9|조향 확인 속도 (slow 3초 / normal 1.8초 / fast 1.2초)|v=$(ask "slow, normal, fast 중 하나 (엔터 = normal): "); $A button sweep-speed "${v:-normal}"' \
         't|조향 확인 지금 해 보기 (앞바퀴만 움직임, 모터 꺼짐)|$A button sweep-test'
 }
 

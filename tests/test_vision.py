@@ -4351,12 +4351,15 @@ def test_start_button():
     w = sb.Sweep(10.0, "normal")
     ang = [w.angle(10.0 + k * 0.01) for k in range(400)]
     moving = [a for a in ang if a is not None]
-    q = round(w.move / 4 * 100)     # 10 ms steps to a quarter of the motion.
-    check("steering check: left first, then right, back to center", ang[q] < -19.9 and ang[3 * q] > 19.9 and abs(ang[4 * q]) < 1e-9, (ang[q], ang[3 * q], ang[4 * q]))
+    at = lambda sec: ang[round(sec * 100)]      # 10 ms steps.
+    check("steering check: left first, then right, back to center", at(w.left_at) < -19.9 and at(w.right_at) > 19.9 and abs(at(w.center_at)) < 1e-9,
+          (at(w.left_at), at(w.right_at), at(w.center_at)))
+    check("steering check: right back to center takes twice as long as center to left",
+          abs((w.center_at - w.right_at) - 2 * w.left_at) < 1e-9 and 0 < at(w.right_at + 0.1) < 20, (w.left_at, w.center_at - w.right_at))
     check("steering check: never past SWEEP_DEG, small steps", max(map(abs, moving)) <= sb.SWEEP_DEG + 1e-9
           and max(abs(a - b) for a, b in zip(moving, moving[1:])) < 1.5)
-    check("steering check: over after 1.5 s (normal), 2.5 s slow, 1 s fast",
-          ang[149] is not None and ang[150] is None and sb.Sweep(0, "slow").total == 2.5 and sb.Sweep(0, "fast").total == 1.0)
+    check("steering check: over after 1.8 s (normal), 3 s slow, 1.2 s fast",
+          ang[179] is not None and ang[180] is None and sb.Sweep(0, "slow").total == 3.0 and sb.Sweep(0, "fast").total == 1.2)
     c = sb.StartControl("keep")
     c.handle("tap"); c.cancel()
     check("cancel: waiting, next start is fresh", c.state == sb.WAIT and c.handle("tap") == "start")

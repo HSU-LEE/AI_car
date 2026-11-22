@@ -9,7 +9,7 @@ Settings live in button.json next to this file on the Pi, so they hold without t
   python start_button.py hold-sec 3            seconds for a long hold (1 to 10)
   python start_button.py test [seconds]        print presses and the state they lead to, without the motor
   python start_button.py sweep on | off        before a fresh start, turn the front wheels slowly left, right, and back to center
-  python start_button.py sweep-speed slow | normal | fast    how long that takes (2.5, 1.5, 1 s)
+  python start_button.py sweep-speed slow | normal | fast    how long that takes (3, 1.8, 1.2 s)
   python start_button.py sweep-test            run the steering check once now (servo only, the motor stays off)
 """
 import math
@@ -29,7 +29,8 @@ HOLD_MIN, HOLD_MAX = 1.0, 10.0
 
 SWEEP_DEG = 20.0            # How far the steering check turns each way. Under the steering limit, so the servo never hits its end.
 SWEEP_SETTLE = 0.3          # Seconds at center at the end, for the servo to settle before driving.
-SWEEP_SEC = {"slow": 2.5, "normal": 1.5, "fast": 1.0}      # Whole check, settle included.
+SWEEP_RETURN = 2.0          # The last part, right back to center, takes this many times as long as center to left.
+SWEEP_SEC = {"slow": 3.0, "normal": 1.8, "fast": 1.2}      # Whole check, settle included.
 
 WAIT, RUN, PAUSE = "WAIT", "RUN", "PAUSE"
 NAMES = {WAIT: "waiting for the start button", RUN: "driving", PAUSE: "paused"}
@@ -77,22 +78,29 @@ def describe(s):
 
 
 class Sweep:
-    """The steering check: center -> left -> right -> center, smooth (a sine), then a short rest at center.
+    """The steering check: center -> left -> right (a sine), then slower from right back to center (eased to a stop),
+    then a short rest at center.
 
     angle(now) gives the steering angle (negative = left), or None once the check is over. Time is passed in."""
 
     def __init__(self, start, speed="normal", deg=SWEEP_DEG):
         self.start, self.deg = start, deg
         self.total = SWEEP_SEC.get(speed, SWEEP_SEC["normal"])
-        self.move = self.total - SWEEP_SETTLE
+        quarter = (self.total - SWEEP_SETTLE) / (3 + SWEEP_RETURN)     # Center to left.
+        self.period = 4 * quarter
+        self.left_at, self.right_at = quarter, 3 * quarter
+        self.center_at = self.right_at + SWEEP_RETURN * quarter
 
     def angle(self, now):
-        t = now - self.start
+        t = max(0.0, now - self.start)
         if t >= self.total:
             return None
-        if t >= self.move:
+        if t >= self.center_at:
             return 0.0
-        return -self.deg * math.sin(2 * math.pi * max(0.0, t) / self.move)
+        if t >= self.right_at:      # Right to center: a half cosine, so it slows down into center.
+            u = (t - self.right_at) / (self.center_at - self.right_at)
+            return self.deg * (1 + math.cos(math.pi * u)) / 2
+        return -self.deg * math.sin(2 * math.pi * t / self.period)
 
 
 class Presses:
