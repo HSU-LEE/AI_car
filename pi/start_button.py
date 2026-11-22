@@ -145,13 +145,27 @@ class ButtonReader:
         self.presses = Presses(hold_sec)
         self.events = []
         self.lock = threading.Lock()
+        self.error = None
         self._stop = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
     def _run(self):
+        fails = 0
         while not self._stop.is_set():
-            ev = self.presses.feed(self.button.is_pressed, time.monotonic())
+            try:
+                pressed = self.button.is_pressed
+                fails = 0
+            except Exception as e:      # Kept failing (20 reads, 0.1 s): stop reading and say so once.
+                fails += 1
+                if fails >= 20:
+                    self.error = e
+                    print(f"\n[error] start button stopped working: {type(e).__name__}: {e}. "
+                          f"Ctrl+C or aicar stop still stops the car.", flush=True)
+                    return
+                time.sleep(POLL_SEC)
+                continue
+            ev = self.presses.feed(pressed, time.monotonic())
             if ev:
                 with self.lock:
                     self.events.extend(ev)
