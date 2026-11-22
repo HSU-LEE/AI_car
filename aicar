@@ -182,7 +182,8 @@ cmd_button() {
         show|on|off) ;;
         hold)     [[ "${2:-}" =~ ^(restart|keep)$ ]] || die "Usage: aicar button hold restart|keep" ;;
         hold-sec) [[ "${2:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Usage: aicar button hold-sec <seconds, 1 to 10>" ;;
-        test)     run "$DRIVING" && die "A drive is running and reads the button. aicar stop first"
+        test)     [[ "${2:-30}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Usage: aicar button test [seconds]"
+                  run "$DRIVING" && die "A drive is running and reads the button. aicar stop first"
                   cmd_push >/dev/null || exit 1
                   run_tty "$(in_dir "$PY -u start_button.py test ${2:-30}")"
                   return ;;

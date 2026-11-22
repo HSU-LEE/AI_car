@@ -4689,6 +4689,7 @@ def main():
                     print(f"\n[button] {ev} -> {act}: {NAMES[ctl.state]}", flush=True)
                 if ctl.state != RUN:
                     watchdog.drive(0)
+                    prev_now = now      # Auto trim counts driving time only: a long pause must not shift the center at once.
                     if ctl.state == WAIT and ctl.fresh:
                         car.steer(0)
                     dnow = paused_at - paused_total
@@ -4726,7 +4727,7 @@ def main():
                     ctl.finished()
                     paused_at = now
                     driver.hold_banner = hold_banners[WAIT]
-                    print("Waiting for the start button (the next press runs the course from the first step)")
+                    print(f"Waiting for the start button (the next press runs the course again from step {args.start})")
                     continue
                 break
             if steer is not None:

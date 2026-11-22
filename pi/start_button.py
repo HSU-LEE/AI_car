@@ -214,7 +214,13 @@ def main(argv):
         s["hold_sec"] = sec
         s = save_settings(s)
     elif cmd == "test":
-        test(float(argv[1]) if len(argv) > 1 else 30)
+        try:
+            sec = float(argv[1]) if len(argv) > 1 else 30.0
+        except ValueError:
+            sec = -1.0
+        if not 0 < sec <= 3600:
+            raise SystemExit("test seconds must be a number from 1 to 3600")
+        test(sec)
         return
     else:
         raise SystemExit("usage: start_button.py [show | on | off | hold restart|keep | hold-sec N | test [seconds]]")
