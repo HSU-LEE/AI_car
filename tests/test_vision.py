@@ -4354,9 +4354,9 @@ def test_start_button():
     q = round(w.move / 4 * 100)     # 10 ms steps to a quarter of the motion.
     check("steering check: left first, then right, back to center", ang[q] < -19.9 and ang[3 * q] > 19.9 and abs(ang[4 * q]) < 1e-9, (ang[q], ang[3 * q], ang[4 * q]))
     check("steering check: never past SWEEP_DEG, small steps", max(map(abs, moving)) <= sb.SWEEP_DEG + 1e-9
-          and max(abs(a - b) for a, b in zip(moving, moving[1:])) < 1.0)
-    check("steering check: over after 2.5 s (normal), 4 s slow, 1.8 s fast",
-          ang[249] is not None and ang[250] is None and sb.Sweep(0, "slow").total == 4.0 and sb.Sweep(0, "fast").total == 1.8)
+          and max(abs(a - b) for a, b in zip(moving, moving[1:])) < 1.5)
+    check("steering check: over after 1.5 s (normal), 2.5 s slow, 1 s fast",
+          ang[149] is not None and ang[150] is None and sb.Sweep(0, "slow").total == 2.5 and sb.Sweep(0, "fast").total == 1.0)
     c = sb.StartControl("keep")
     c.handle("tap"); c.cancel()
     check("cancel: waiting, next start is fresh", c.state == sb.WAIT and c.handle("tap") == "start")
