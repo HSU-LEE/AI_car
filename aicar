@@ -176,6 +176,22 @@ cmd_logs() {
         echo "  no drive logs yet (every drive makes one from now on)"
 }
 
+cmd_button() {
+    # Start button settings, kept on the Pi (button.json) so they hold without the Mac. With nothing: show them.
+    case "${1:-show}" in
+        show|on|off) ;;
+        hold)     [[ "${2:-}" =~ ^(restart|keep)$ ]] || die "Usage: aicar button hold restart|keep" ;;
+        hold-sec) [[ "${2:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Usage: aicar button hold-sec <seconds, 1 to 10>" ;;
+        test)     run "$DRIVING" && die "A drive is running and reads the button. aicar stop first"
+                  cmd_push >/dev/null || exit 1
+                  run_tty "$(in_dir "$PY -u start_button.py test ${2:-30}")"
+                  return ;;
+        *)        die "Usage: aicar button [show|on|off|hold restart|keep|hold-sec N|test [seconds]]" ;;
+    esac
+    cmd_push >/dev/null || exit 1
+    run "$(in_dir "$PY start_button.py ${*:-show}")"
+}
+
 drive_log_on() { [ "$(cat "$STATE/drive_log" 2>/dev/null)" != off ]; }
 
 cmd_drive_log() {
@@ -357,6 +373,8 @@ autonomous() {
     local args=()
     if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9.]+$ ]]; then args+=(--speed "$1"); shift; fi
     args+=("$@")
+    # go follows the start button setting on the Pi (aicar button) unless --button is given.
+    [ "$drive" = --drive ] && [[ " ${args[*]:-} " != *" --button "* ]] && args+=(--button auto)
     drive_log_on || args+=(--no-log)
     run "$DRIVING" && die "A drive is already running. View: aicar log   Stop: aicar stop"
     cmd_push || exit 1
@@ -461,7 +479,12 @@ AICAR commands  (in a Mac terminal: aicar <command>)
       options: --start N            start from step N of course.py
                --record             record to runs/
                --set KP=1.8 KH=1.0  change settings for this run only
+               --button on|off      this run only: wait for the start button or start at once (default: aicar button)
   log                    show the running drive output again (after a disconnect, Ctrl+C stops)
+  button [on|off]        start button on GPIO21 for go: tap = start / pause / resume, hold = wait for start. With nothing: show
+         hold restart|keep   after a hold: run the course again from step 1, or carry on from where it stopped
+         hold-sec N          seconds for a hold (1 to 10, 3 by default)
+         test [seconds]      print presses and the state they lead to (motor does not move)
   course                 edit the course (course.py) on the Mac, then aicar push
                          LANE_POINTS: "pairs" fits both lane lines as one pair (steadier), "bands" the band points as before.
                          JUNCTION_TRACK_ASSIST only drops false junctions and false lane ends
@@ -564,6 +587,7 @@ case "$cmd" in
     logs)        cmd_logs ;;
     fetch-log)   cmd_fetch_log "$@" ;;
     drive-log)   cmd_drive_log "$@" ;;
+    button)      cmd_button "$@" ;;
     replay)      cmd_replay "$@" ;;
     clean-runs)  cmd_clean_runs "$@" ;;
 

@@ -12,6 +12,8 @@ import json
 import os
 import sys
 import tempfile
+import time
+import types
 from pathlib import Path
 
 import cv2
@@ -4295,10 +4297,145 @@ def test_no_slowdown():
         cs.SLOWDOWN_ON = True
 
 
+def test_start_button():
+    print("\n[start button: presses, states, settings, and the drive loop]")
+    import start_button as sb
+    # Presses: taps, a hold that fires while held, bounce, and a button already held at start.
+    p = sb.Presses(hold_sec=3.0)
+    ev = []
+    for t_, lvl in [(0, False), (1.0, True), (1.04, True), (1.2, False), (1.24, False)]:
+        ev += p.feed(lvl, t_)
+    check("short press = one tap", ev == ["tap"], ev)
+    p = sb.Presses(hold_sec=3.0)
+    ev = []
+    for t_, lvl in [(0, False), (1.0, True), (1.01, False), (1.015, True), (1.05, True), (1.3, False), (1.4, False)]:
+        ev += p.feed(lvl, t_)
+    check("contact bounce inside a press is not a second tap", ev == ["tap"], ev)
+    p = sb.Presses(hold_sec=3.0)
+    ev = []
+    for t_ in [0, 1.0] + [1.0 + 0.1 * k for k in range(1, 35)]:
+        ev += p.feed(t_ >= 1.0, t_)
+    at_hold = list(ev)
+    for t_, lvl in [(4.6, False), (4.7, False)]:
+        ev += p.feed(lvl, t_)
+    check("hold fires at 3 s while still held", at_hold == ["hold"], at_hold)
+    check("releasing after a hold is not a tap", ev == ["hold"], ev)
+    p = sb.Presses(hold_sec=3.0)
+    ev = []
+    for t_, lvl in [(0, True), (5.0, True), (5.1, False), (5.2, False), (6.0, True), (6.1, True), (6.3, False), (6.4, False)]:
+        ev += p.feed(lvl, t_)
+    check("a button held at start counts only after one release", ev == ["tap"], ev)
+
+    # StartControl.
+    c = sb.StartControl("restart")
+    acts = [c.handle(e) for e in ["hold", "tap", "tap", "tap", "hold", "tap"]]
+    check("wait: hold ignored, tap starts, tap pauses, tap resumes, hold waits, tap starts fresh",
+          acts == [None, "start", "pause", "resume", "wait", "start"], acts)
+    c = sb.StartControl("keep")
+    acts = [c.handle(e) for e in ["tap", "hold", "tap"]]
+    check("hold keep: the next tap resumes where it stopped", acts == ["start", "wait", "resume"], acts)
+    c.finished()
+    check("after the course ends a tap starts fresh", c.handle("tap") == "start")
+
+    # Settings.
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "button.json"
+        check("no file: defaults", sb.load_settings(f) == sb.DEFAULTS)
+        f.write_text('{"enabled": false, "hold": "bad", "hold_sec": 99}')
+        s = sb.load_settings(f)
+        check("bad values fall back, good ones kept", s == {"enabled": False, "hold": "restart", "hold_sec": 3.0}, s)
+        f.write_text("not json")
+        check("broken file: defaults", sb.load_settings(f) == sb.DEFAULTS)
+        sb.save_settings({"enabled": True, "hold": "keep", "hold_sec": 2.5}, f)
+        check("saved settings read back", sb.load_settings(f) == {"enabled": True, "hold": "keep", "hold_sec": 2.5})
+
+    # The drive loop in main() with a fake camera, motor, button and driver.
+    import car as car_mod
+    script = {}     # frame number -> button event
+
+    class FakeCar:
+        bias = 0.0
+        def __init__(self): self.cmds, self.steers = [], []
+        def drive(self, v): self.cmds.append(v)
+        def steer(self, a): self.steers.append(a)
+        def load_bias(self): pass
+        def save_bias(self): pass
+        def close(self): pass
+        def stop(self): pass
+
+    class FakeCam:
+        def __init__(self): self.n = 0
+        def capture_array(self):
+            self.n += 1
+            if self.n > 160:
+                raise KeyboardInterrupt
+            time.sleep(0.005)
+            return np.zeros((lf.FRAME_H, lf.FRAME_W, 3), np.uint8)
+        def stop(self): pass
+
+    class FakeReader:
+        def __init__(self, hold_sec): pass
+        def take(self):
+            e = script.get(cam.n)
+            return [e] if e else []
+        def close(self): pass
+
+    made = []
+
+    class FakeDriver:
+        def __init__(self, *a, **k):
+            self.ticks, self.done, self.hold_banner = [], False, None
+            self.course = types.SimpleNamespace(lane_side=lambda now: None, course=[], label=lambda: "1", status=lambda now: "", following=lambda: False)
+            class Detect:
+                left = right = [None] * lf.SLICES
+                gap_y = None
+                def __call__(self, frame, side, draw=False):
+                    return None, False, None
+            self.detect = Detect()
+            self.steering = types.SimpleNamespace(angle=0.0)
+            self.det = self.junction = self.light = None
+            self.speed, self.edge = 0.5, False
+            made.append(self)
+        def tick(self, frame, now, show=False):
+            self.ticks.append((cam.n, now))
+            if cam.n == 140:
+                self.done = True
+            return 0.0, 0.5, None
+
+    cam = FakeCam()
+    fake_car = FakeCar()
+    saved = (car_mod.Car, lf.open_camera, lf.Driver, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE)
+    lf.COURSE = [follow(until="junction"), finish()]      # No distance sensor on a Mac: a course that needs none.
+    car_mod.Car = lambda: fake_car
+    lf.open_camera = lambda locked=True: cam
+    lf.Driver = FakeDriver
+    lf.load_person = lambda path=None: None
+    sb.ButtonReader = FakeReader
+    sys.argv = ["lane_follow.py", "--drive", "--no-stream", "--no-log", "--button", "on"]
+    script.update({20: "tap", 50: "tap", 80: "tap", 100: "hold", 115: "tap", 150: "tap"})
+    try:
+        with quiet():
+            lf.main()
+    except SystemExit:
+        pass
+    finally:
+        car_mod.Car, lf.open_camera, lf.Driver, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE = saved
+    d1 = made[0]
+    ran = [n for n, _ in d1.ticks]
+    check("no driving before the first tap", min(ran) == 20, min(ran))
+    check("pause between taps 2 and 3: no course frames", not any(50 <= n < 80 for n in ran), [n for n in ran if 45 <= n <= 85][:6])
+    before = [now for n, now in d1.ticks if n < 50][-1]
+    after = [now for n, now in d1.ticks if n >= 80][0]
+    check("the course clock stands still while paused", after - before < 0.05, f"{after - before:.3f}")
+    check("hold restart: a new course on the next tap", len(made) >= 2 and made[1].ticks and made[1].ticks[0][0] == 115, len(made))
+    check("course done: waits, then a tap runs it again", len(made) == 3 and made[2].ticks and made[2].ticks[0][0] == 150, len(made))
+    check("motor command 0 whenever not driving", all(v == 0 for v in fake_car.cmds[:15]), fake_car.cmds[:15])
+
+
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_go_end_and_gap_hold, test_sharp_bend, test_junction_point, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_go_end_and_gap_hold, test_sharp_bend, test_junction_point, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes, test_start_button):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")

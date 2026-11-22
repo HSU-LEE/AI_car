@@ -18,11 +18,14 @@ pi_status() {
     fi
     state=$(ssh -n -o BatchMode=yes -o ConnectTimeout=2 -o ControlMaster=auto \
                 -o "ControlPath=$STATE/cm-%r@%h" -o ControlPersist=120 "pi@$h" \
-                'p=$(cat ~/aicar/drive.pid 2>/dev/null) && ps -p "$p" -o args= | grep -q lane_follow && echo drive' 2>/dev/null)
-    if [ "$state" = drive ]; then
-        echo "  ${G}●${N} 파이 연결됨 ${D}$h${N}   ${Y}▶ 자율주행 중${N} ${D}(s: 정지)${N}"
+                'p=$(cat ~/aicar/drive.pid 2>/dev/null) && ps -p "$p" -o args= | grep -q lane_follow && echo drive
+                 grep -q "\"enabled\": *false" ~/aicar/button.json 2>/dev/null && echo button-off' 2>/dev/null)
+    local btn="${D}버튼 출발 켜짐${N}"
+    [[ "$state" == *button-off* ]] && btn="${D}버튼 출발 꺼짐 (바로 출발)${N}"
+    if [[ "$state" == *drive* ]]; then
+        echo "  ${G}●${N} 파이 연결됨 ${D}$h${N}   ${Y}▶ 자율주행 중${N} ${D}(s: 정지)${N}   $btn"
     else
-        echo "  ${G}●${N} 파이 연결됨 ${D}$h${N}   ${D}○ 대기 중${N}"
+        echo "  ${G}●${N} 파이 연결됨 ${D}$h${N}   ${D}○ 대기 중${N}   $btn"
     fi
 }
 
@@ -92,7 +95,22 @@ menu_auto() {
         '5|인식만 보기 (모터 꺼짐, 손으로 밀며 확인)|$A view' \
         '6|주행 화면 다시 보기 (연결 끊긴 뒤)|$A log' \
         '-' \
-        '7|코스 편집 (course.py)|$A course'
+        '7|코스 편집 (course.py)|$A course' \
+        '8|버튼 출발 설정 (GPIO21 버튼: 눌러서 출발 · 일시정지 · 꾹 눌러 대기)|menu_button'
+}
+
+menu_button() {
+    submenu "버튼 출발 설정" \
+        '0|현재 설정 보기|$A button' \
+        '-' \
+        '1|버튼 출발 켜기 (자율주행 시작 후 버튼을 눌러야 출발)|$A button on' \
+        '2|버튼 출발 끄기 (지금처럼 바로 출발)|$A button off' \
+        '-' \
+        '3|꾹 누르면: 대기 후 처음(1단계)부터 다시|$A button hold restart' \
+        '4|꾹 누르면: 대기 후 멈춘 곳부터 이어서|$A button hold keep' \
+        '5|꾹 누르는 시간 바꾸기 (1~10초, 기본 3초)|s=$(ask "몇 초: "); $A button hold-sec "$s"' \
+        '-' \
+        '6|버튼 테스트 (모터 안 움직임, 30초, Ctrl+C로 끝)|$A button test'
 }
 
 menu_camera() {

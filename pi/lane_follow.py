@@ -3758,6 +3758,7 @@ class Driver:
         self.done = False
         self.det, self.junction, self.light = None, False, None
         self.light_tick = 0         # Frames since start, for LIGHT_VIEW_EVERY.
+        self.hold_banner = None     # Start button: (text, color) shown instead of the usual banner while waiting or paused.
         self.red = None             # wait_green looking for red: action index, back-ups used, when this look began, back-up in progress.
         self.hline_t = None         # While aligning: last time heading said the horizontal line in view is a real one.
         self.aim = None             # STEER_MODE "pursuit": the target point on screen this frame (for the view).
@@ -4067,6 +4068,8 @@ class Driver:
             banner = ("STOPPED (LANE LOST)" if lost else "STOPPED", (40, 40, 220))
         elif lost and self.lost_since is not None:
             banner = (f"LANE LOST {now - self.lost_since:.1f}s", (0, 140, 255))
+        if self.hold_banner:
+            banner = self.hold_banner
         if web:
             dbg.extra = {"state": self.web_state(now, fps, banner), "minis": self.close_ups(dbg.base_image())}
             return dbg
@@ -4544,6 +4547,8 @@ def main():
     ap.add_argument("--no-stream", action="store_true")
     ap.add_argument("--no-log", action="store_true", help="do not keep a drive log in logs/ (aicar drive-log off)")
     ap.add_argument("--set", nargs="*", default=[], help="override settings for this run with KEY=VALUE (for example KP=1.8)")
+    ap.add_argument("--button", choices=("off", "on", "auto"), default="off",
+                    help="start button on GPIO21: on waits for a press, auto follows button.json (aicar button)")
     args = ap.parse_args()
 
     for kv in args.set:
@@ -4577,11 +4582,12 @@ def main():
         raise SystemExit(problem)
 
     car = cam = obs = None
+    button = ctl = bset = None
 
     def refuse(message):
         """Stop before driving: release everything opened so far, and keep the reason in the drive log."""
         for name, fn in (("car", lambda: car and car.close()), ("camera", lambda: cam and cam.stop()),
-                         ("obstacle", lambda: obs and obs.close())):
+                         ("obstacle", lambda: obs and obs.close()), ("button", lambda: button and button.close())):
             try:
                 fn()
             except Exception as e:
@@ -4609,8 +4615,19 @@ def main():
                        f"which is not working ({e}). Not driving.")
         if AUTO_TRIM:
             car.load_bias()     # Continue with the center trim learned on a previous run.
+        if args.button != "off":
+            from start_button import ButtonReader, StartControl, load_settings
+            bset = load_settings()
+            if args.button == "on" or bset["enabled"]:
+                try:
+                    button = ButtonReader(bset["hold_sec"])
+                except Exception as e:      # Driving without the button would start at once: not what was asked for.
+                    refuse(f"the start button (GPIO21) is not working: {type(e).__name__}: {e}. Not driving. "
+                           f"Check the wiring, or turn the button off: aicar button off")
+                ctl = StartControl(bset["hold"])
         cam = open_camera()
-        driver = Driver(COURSE, args.start, args.speed, obs, load_person())
+        person_det = load_person()
+        driver = Driver(COURSE, args.start, args.speed, obs, person_det)
         pauses = any(s["until"] == "enter" for s in driver.course.course)
         # Only a course with next() sends keys to the program, so other drives keep the page's own keys.
         stream = None if args.no_stream else Stream(args.port, "AICAR drive", "Enter next step (next)" if pauses else None)
@@ -4634,6 +4651,15 @@ def main():
     prev_now = t_start
     watchdog = None
     errors = view_errors = 0
+    # Start button: the course clock (dnow) stands still while waiting or paused, so a timed step does not run out meanwhile.
+    paused_total, paused_at = 0.0, (t_start if ctl else None)
+    driver_used = False
+    if ctl:
+        from start_button import NAMES, RUN, WAIT, describe
+        hold_banners = {WAIT: ("PRESS BUTTON TO START", (160, 120, 40)), "PAUSE": ("PAUSED - PRESS BUTTON", (160, 120, 40))}
+        driver.hold_banner = hold_banners[WAIT]
+        print(describe(bset))
+        print("Waiting for the start button (GPIO21)")
     try:
         watchdog = MotorWatchdog(car, WATCHDOG_SEC)
         while True:
@@ -4642,8 +4668,49 @@ def main():
             # Send this frame to the browser only if someone is watching. The view is only drawing commands (the browser paints
             # them), so every frame can go. If nobody is watching, it costs nothing.
             show = stream is not None and stream.watching
+            if ctl:
+                for ev in button.take():
+                    act = ctl.handle(ev)
+                    if act is None:
+                        continue
+                    if act == "start" and driver_used:      # A fresh run of the course from the first step.
+                        driver = Driver(COURSE, args.start, args.speed, obs, person_det)
+                    if act in ("start", "resume"):
+                        driver_used = True
+                        if paused_at is not None:
+                            paused_total += now - paused_at
+                        paused_at = None
+                        driver.hold_banner = None
+                    else:
+                        watchdog.drive(0)
+                        if paused_at is None:
+                            paused_at = now
+                        driver.hold_banner = hold_banners[ctl.state]
+                    print(f"\n[button] {ev} -> {act}: {NAMES[ctl.state]}", flush=True)
+                if ctl.state != RUN:
+                    watchdog.drive(0)
+                    if ctl.state == WAIT and ctl.fresh:
+                        car.steer(0)
+                    dnow = paused_at - paused_total
+                    if show:
+                        try:
+                            _, _, dbg = driver.detect(frame, driver.course.lane_side(dnow), draw=True)
+                            stream.update(driver.view(dbg, dnow, fps, web=True))
+                        except Exception as e:
+                            view_errors += 1
+                            if view_errors == 1 or view_errors % 100 == 0:
+                                print(f"\n[view error {view_errors}] {type(e).__name__}: {e} (driving goes on)")
+                    if stream:
+                        stream.keys.take()      # Keys pressed while standing still do not count later.
+                    frames += 1
+                    if time.monotonic() - t0 >= 1:
+                        fps = frames / (time.monotonic() - t0)
+                        print(f"\r{fps:4.1f} fps  {NAMES[ctl.state]}    ", end="", flush=True)
+                        frames, t0 = 0, time.monotonic()
+                    continue
+            dnow = now - paused_total
             try:
-                steer, cmd, dbg = driver.tick(frame, now, show)
+                steer, cmd, dbg = driver.tick(frame, dnow, show)
                 errors = 0
             except Exception as e:      # One bad frame does not end the drive: stand still this frame and carry on.
                 errors += 1
@@ -4655,6 +4722,12 @@ def main():
             if driver.done:
                 watchdog.drive(0)     # The last step ended: stop now, not only when the pins are released below.
                 print("\nCourse done")
+                if ctl:     # With the start button the program stays up: the next press runs the course again.
+                    ctl.finished()
+                    paused_at = now
+                    driver.hold_banner = hold_banners[WAIT]
+                    print("Waiting for the start button (the next press runs the course from the first step)")
+                    continue
                 break
             if steer is not None:
                 car.steer(steer)
@@ -4672,13 +4745,13 @@ def main():
             prev_now = now
 
             if rec:
-                rec.write(frame, now - t_start, det, junction, steering.angle, speed, course, now, cmd)
+                rec.write(frame, now - t_start, det, junction, steering.angle, speed, course, dnow, cmd)
             if box:
-                box.write(now - t_start, driver, cmd, now)
+                box.write(now - t_start, driver, cmd, dnow)
             frames += 1
             if show:
                 try:
-                    stream.update(driver.view(dbg, now, fps, web=True))
+                    stream.update(driver.view(dbg, dnow, fps, web=True))
                 except Exception as e:      # The view is for the page only: a fault in it must never stop the drive.
                     view_errors += 1
                     if view_errors == 1 or view_errors % 100 == 0:
@@ -4690,7 +4763,7 @@ def main():
                 fps = frames / (time.monotonic() - t0)
                 print(f"\r{fps:4.1f} fps  "
                       f"steer {steering.angle:+5.1f}  speed {speed:.2f}  "
-                      f"step {course.label()} {course.status(now):9s} "
+                      f"step {course.label()} {course.status(dnow):9s} "
                       + (f"center {car.bias:+.1f} " if AUTO_TRIM else "")
                       + (f"light {light} " if light else "")
                       + ("GAP " if detect.gap_y is not None else "")
@@ -4714,6 +4787,7 @@ def main():
             for name, fn in (("save_bias", lambda: (car.save_bias(), print(f"\nAuto trim saved: {car.bias:+.1f} deg")) if AUTO_TRIM and args.drive else None),
                              ("camera", cam.stop),
                              ("obstacle", lambda: obs.close() if obs else None),
+                             ("button", lambda: button.close() if button else None),
                              ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
                                                              print(f"Recording saved: {rec.dir} ({rec.n} frames)"))),
                              ("drive log", lambda: box and (print(f"Drive log: {box.dir} ({box.n} frames)"), box.close(driver)))):
