@@ -9,11 +9,12 @@ Settings live in button.json next to this file on the Pi, so they hold without t
   python start_button.py hold-sec 3            seconds for a long hold (1 to 10)
   python start_button.py test [seconds]        print presses and the state they lead to, without the motor
 """
-import json
 import sys
 import threading
 import time
 from pathlib import Path
+
+from safe_io import read_json, write_json
 
 PIN = 21
 BOUNCE_SEC = 0.03           # A change shorter than this is contact bounce, not a press.
@@ -43,16 +44,14 @@ def clean_settings(raw):
 
 def load_settings(path=SETTINGS_FILE):
     try:
-        return clean_settings(json.loads(Path(path).read_text()))
+        return clean_settings(read_json(path))
     except (OSError, ValueError):
         return dict(DEFAULTS)
 
 
 def save_settings(settings, path=SETTINGS_FILE):
     s = clean_settings(settings)
-    tmp = Path(path).with_suffix(".tmp")
-    tmp.write_text(json.dumps(s, indent=1) + "\n")
-    tmp.replace(path)
+    write_json(path, s)     # Whole or not at all, even if the battery is pulled while saving.
     return s
 
 
