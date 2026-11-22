@@ -182,14 +182,20 @@ cmd_button() {
         show|on|off) ;;
         hold)     [[ "${2:-}" =~ ^(restart|keep)$ ]] || die "Usage: aicar button hold restart|keep" ;;
         hold-sec) [[ "${2:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Usage: aicar button hold-sec <seconds, 1 to 10>" ;;
+        sweep)    [[ "${2:-}" =~ ^(on|off)$ ]] || die "Usage: aicar button sweep on|off" ;;
+        sweep-speed) [[ "${2:-}" =~ ^(slow|normal|fast)$ ]] || die "Usage: aicar button sweep-speed slow|normal|fast" ;;
+        sweep-test) run "$DRIVING" && die "A drive is running and holds the steering. aicar stop first"
+                  cmd_push >/dev/null || exit 1
+                  run_tty "$(in_dir "$PY -u start_button.py sweep-test")"
+                  return ;;
         test)     [[ "${2:-30}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Usage: aicar button test [seconds]"
                   run "$DRIVING" && die "A drive is running and reads the button. aicar stop first"
                   cmd_push >/dev/null || exit 1
                   run_tty "$(in_dir "$PY -u start_button.py test ${2:-30}")"
                   return ;;
-        *)        die "Usage: aicar button [show|on|off|hold restart|keep|hold-sec N|test [seconds]]" ;;
+        *)        die "Usage: aicar button [show|on|off|hold restart|keep|hold-sec N|test [seconds]|sweep on|off|sweep-speed slow|normal|fast|sweep-test]" ;;
     esac
-    run "test -f ~/$REMOTE/start_button.py" || cmd_push >/dev/null || exit 1     # Upload only if the Pi does not have it yet.
+    cmd_push >/dev/null || exit 1       # The Pi's start_button.py must know every setting asked for here.
     run "$(in_dir "$PY start_button.py ${*:-show}")"
 }
 
@@ -489,6 +495,9 @@ AICAR commands  (in a Mac terminal: aicar <command>)
   button [on|off]        start button on GPIO21 for go: tap = start / pause / resume, hold = wait for start. With nothing: show
          hold restart|keep   after a hold: run the course again from step 1, or carry on from where it stopped
          hold-sec N          seconds for a hold (1 to 10, 3 by default)
+         sweep on|off        before a fresh start, turn the front wheels slowly left, right, and back to center
+         sweep-speed slow|normal|fast   how long that check takes (5, 3.5, 2 s)
+         sweep-test          run the check once now (motor off)
          test [seconds]      print presses and the state they lead to (motor does not move)
   course                 edit the course (course.py) on the Mac, then aicar push
                          LANE_POINTS: "pairs" fits both lane lines as one pair (steadier), "bands" the band points as before.

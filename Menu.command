@@ -110,7 +110,12 @@ menu_button() {
         '4|꾹 누르면: 대기 후 멈춘 곳부터 이어서|$A button hold keep' \
         '5|꾹 누르는 시간 바꾸기 (1~10초, 기본 3초)|s=$(ask "몇 초: "); $A button hold-sec "$s"' \
         '-' \
-        '6|버튼 테스트 (모터 안 움직임, 30초, Ctrl+C로 끝)|$A button test'
+        '6|버튼 테스트 (모터 안 움직임, 30초, Ctrl+C로 끝)|$A button test' \
+        '-' \
+        '7|출발 전 조향 확인 켜기 (처음 출발할 때 앞바퀴 왼쪽→오른쪽→중앙)|$A button sweep on' \
+        '8|출발 전 조향 확인 끄기|$A button sweep off' \
+        '9|조향 확인 속도 (slow 5초 / normal 3.5초 / fast 2초)|v=$(ask "slow, normal, fast 중 하나 (엔터 = normal): "); $A button sweep-speed "${v:-normal}"' \
+        't|조향 확인 지금 해 보기 (앞바퀴만 움직임, 모터 꺼짐)|$A button sweep-test'
 }
 
 menu_camera() {

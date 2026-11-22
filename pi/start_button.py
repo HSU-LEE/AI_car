@@ -8,7 +8,11 @@ Settings live in button.json next to this file on the Pi, so they hold without t
   python start_button.py hold restart | keep   after a long hold: start again from step 1, or carry on from where it stopped
   python start_button.py hold-sec 3            seconds for a long hold (1 to 10)
   python start_button.py test [seconds]        print presses and the state they lead to, without the motor
+  python start_button.py sweep on | off        before a fresh start, turn the front wheels slowly left, right, and back to center
+  python start_button.py sweep-speed slow | normal | fast    how long that takes (5, 3.5, 2 s)
+  python start_button.py sweep-test            run the steering check once now (servo only, the motor stays off)
 """
+import math
 import sys
 import threading
 import time
@@ -20,8 +24,12 @@ PIN = 21
 BOUNCE_SEC = 0.03           # A change shorter than this is contact bounce, not a press.
 POLL_SEC = 0.005
 SETTINGS_FILE = Path(__file__).with_name("button.json")
-DEFAULTS = {"enabled": True, "hold": "restart", "hold_sec": 3.0}
+DEFAULTS = {"enabled": True, "hold": "restart", "hold_sec": 3.0, "sweep": True, "sweep_speed": "normal"}
 HOLD_MIN, HOLD_MAX = 1.0, 10.0
+
+SWEEP_DEG = 20.0            # How far the steering check turns each way. Under the steering limit, so the servo never hits its end.
+SWEEP_SETTLE = 0.3          # Seconds at center at the end, for the servo to settle before driving.
+SWEEP_SEC = {"slow": 5.0, "normal": 3.5, "fast": 2.0}      # Whole check, settle included.
 
 WAIT, RUN, PAUSE = "WAIT", "RUN", "PAUSE"
 NAMES = {WAIT: "waiting for the start button", RUN: "driving", PAUSE: "paused"}
@@ -39,6 +47,10 @@ def clean_settings(raw):
     sec = raw.get("hold_sec")
     if isinstance(sec, (int, float)) and not isinstance(sec, bool) and HOLD_MIN <= sec <= HOLD_MAX:
         s["hold_sec"] = float(sec)
+    if isinstance(raw.get("sweep"), bool):
+        s["sweep"] = raw["sweep"]
+    if raw.get("sweep_speed") in SWEEP_SEC:
+        s["sweep_speed"] = raw["sweep_speed"]
     return s
 
 
@@ -59,7 +71,28 @@ def describe(s):
     if not s["enabled"]:
         return "button OFF (aicar go starts driving at once)"
     after = "start again from step 1" if s["hold"] == "restart" else "carry on from where it stopped"
-    return f"button ON: tap = start / pause / resume, hold {s['hold_sec']:g} s = wait for start ({after})"
+    sweep = (f"steering check before a fresh start: ON ({s['sweep_speed']}, {SWEEP_SEC[s['sweep_speed']]:g} s)"
+             if s["sweep"] else "steering check before a fresh start: OFF")
+    return f"button ON: tap = start / pause / resume, hold {s['hold_sec']:g} s = wait for start ({after})\n{sweep}"
+
+
+class Sweep:
+    """The steering check: center -> left -> right -> center, smooth (a sine), then a short rest at center.
+
+    angle(now) gives the steering angle (negative = left), or None once the check is over. Time is passed in."""
+
+    def __init__(self, start, speed="normal", deg=SWEEP_DEG):
+        self.start, self.deg = start, deg
+        self.total = SWEEP_SEC.get(speed, SWEEP_SEC["normal"])
+        self.move = self.total - SWEEP_SETTLE
+
+    def angle(self, now):
+        t = now - self.start
+        if t >= self.total:
+            return None
+        if t >= self.move:
+            return 0.0
+        return -self.deg * math.sin(2 * math.pi * max(0.0, t) / self.move)
 
 
 class Presses:
@@ -130,6 +163,10 @@ class StartControl:
             self.fresh = self.hold == "restart"
             return "wait"
         return None
+
+    def cancel(self):
+        """A press during the steering check: back to waiting, and the next start is still a fresh one."""
+        self.state, self.fresh = WAIT, True
 
     def finished(self):
         """The course ran to its end: wait for a start, which runs it again from the first step."""
@@ -206,6 +243,27 @@ def test(seconds=30):
     print("test done")
 
 
+def sweep_test(s):
+    """The steering check once, servo only. The motor gets no command but stop."""
+    from car import Car
+    car = Car()
+    sw = Sweep(time.monotonic(), s["sweep_speed"])
+    print(f"Steering check: left, right, center ({sw.total:g} s). The motor stays off.", flush=True)
+    try:
+        car.stop()
+        while True:
+            a = sw.angle(time.monotonic())
+            if a is None:
+                break
+            car.steer(a)
+            time.sleep(0.02)
+        print("done: wheels at center")
+    except KeyboardInterrupt:
+        print("stopped")
+    finally:
+        car.close()     # Motor stopped, wheels centered.
+
+
 def main(argv):
     s = load_settings()
     cmd = argv[0] if argv else "show"
@@ -235,8 +293,18 @@ def main(argv):
             raise SystemExit("test seconds must be a number from 1 to 3600")
         test(sec)
         return
+    elif cmd == "sweep" and len(argv) == 2 and argv[1] in ("on", "off"):
+        s["sweep"] = argv[1] == "on"
+        s = save_settings(s)
+    elif cmd == "sweep-speed" and len(argv) == 2 and argv[1] in SWEEP_SEC:
+        s["sweep_speed"] = argv[1]
+        s = save_settings(s)
+    elif cmd == "sweep-test":
+        sweep_test(s)
+        return
     else:
-        raise SystemExit("usage: start_button.py [show | on | off | hold restart|keep | hold-sec N | test [seconds]]")
+        raise SystemExit("usage: start_button.py [show | on | off | hold restart|keep | hold-sec N | test [seconds] | "
+                         "sweep on|off | sweep-speed slow|normal|fast | sweep-test]")
     print(describe(s))
 
 

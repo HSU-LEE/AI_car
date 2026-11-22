@@ -4656,9 +4656,11 @@ def main():
     # Start button: the course clock (dnow) stands still while waiting or paused, so a timed step does not run out meanwhile.
     paused_total, paused_at = 0.0, (t_start if ctl else None)
     driver_used = False
+    sweep = None        # Steering check before a fresh start (start_button.Sweep), while it runs.
     if ctl:
-        from start_button import NAMES, RUN, WAIT, describe
-        hold_banners = {WAIT: ("PRESS BUTTON TO START", (160, 120, 40)), "PAUSE": ("PAUSED - PRESS BUTTON", (160, 120, 40))}
+        from start_button import NAMES, RUN, WAIT, Sweep, describe
+        hold_banners = {WAIT: ("PRESS BUTTON TO START", (160, 120, 40)), "PAUSE": ("PAUSED - PRESS BUTTON", (160, 120, 40)),
+                        "SWEEP": ("STEER CHECK - PRESS TO CANCEL", (40, 140, 160))}
         driver.hold_banner = hold_banners[WAIT]
         print(describe(bset))
         print("Waiting for the start button (GPIO21)")
@@ -4672,11 +4674,25 @@ def main():
             show = stream is not None and stream.watching
             if ctl:
                 for ev in button.take():
+                    if sweep:       # Any press during the steering check cancels it: wheels to center, wait for a start.
+                        sweep = None
+                        ctl.cancel()
+                        car.steer(0)
+                        driver.hold_banner = hold_banners[WAIT]
+                        print(f"\n[button] {ev} -> steering check cancelled: {NAMES[ctl.state]}", flush=True)
+                        continue
                     act = ctl.handle(ev)
                     if act is None:
                         continue
                     if act == "start" and driver_used:      # A fresh run of the course from the first step.
                         driver = Driver(COURSE, args.start, args.speed, obs, person_det)
+                    if act == "start" and bset["sweep"]:
+                        # The course clock stays stopped (paused_at kept) until the check is over.
+                        driver_used = True
+                        sweep = Sweep(now, bset["sweep_speed"])
+                        driver.hold_banner = hold_banners["SWEEP"]
+                        print(f"\n[button] {ev} -> steering check ({sweep.total:g} s), then driving", flush=True)
+                        continue
                     if act in ("start", "resume"):
                         driver_used = True
                         if paused_at is not None:
@@ -4689,10 +4705,21 @@ def main():
                             paused_at = now
                         driver.hold_banner = hold_banners[ctl.state]
                     print(f"\n[button] {ev} -> {act}: {NAMES[ctl.state]}", flush=True)
-                if ctl.state != RUN:
+                if sweep:
+                    angle = sweep.angle(now)
+                    if angle is None:       # Check over, wheels at center: the course clock runs from here.
+                        sweep = None
+                        car.steer(0)
+                        paused_total += now - paused_at
+                        paused_at = None
+                        driver.hold_banner = None
+                        print("\n[button] steering check done: driving", flush=True)
+                if ctl.state != RUN or sweep:
                     watchdog.drive(0)
                     prev_now = now      # Auto trim counts driving time only: a long pause must not shift the center at once.
-                    if ctl.state == WAIT and ctl.fresh:
+                    if sweep:
+                        car.steer(angle)
+                    elif ctl.state == WAIT and ctl.fresh:
                         car.steer(0)
                     dnow = paused_at - paused_total
                     if show:
@@ -4708,7 +4735,7 @@ def main():
                     frames += 1
                     if time.monotonic() - t0 >= 1:
                         fps = frames / (time.monotonic() - t0)
-                        print(f"\r{fps:4.1f} fps  {NAMES[ctl.state]}    ", end="", flush=True)
+                        print(f"\r{fps:4.1f} fps  {'steering check' if sweep else NAMES[ctl.state]}    ", end="", flush=True)
                         frames, t0 = 0, time.monotonic()
                     continue
             dnow = now - paused_total

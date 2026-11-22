@@ -4337,11 +4337,28 @@ def test_start_button():
         check("no file: defaults", sb.load_settings(f) == sb.DEFAULTS)
         f.write_text('{"enabled": false, "hold": "bad", "hold_sec": 99}')
         s = sb.load_settings(f)
-        check("bad values fall back, good ones kept", s == {"enabled": False, "hold": "restart", "hold_sec": 3.0}, s)
+        check("bad values fall back, good ones kept", s == dict(sb.DEFAULTS, enabled=False), s)
         f.write_text("not json")
         check("broken file: defaults", sb.load_settings(f) == sb.DEFAULTS)
-        sb.save_settings({"enabled": True, "hold": "keep", "hold_sec": 2.5}, f)
-        check("saved settings read back", sb.load_settings(f) == {"enabled": True, "hold": "keep", "hold_sec": 2.5})
+        new = {"enabled": True, "hold": "keep", "hold_sec": 2.5, "sweep": False, "sweep_speed": "fast"}
+        sb.save_settings(new, f)
+        check("saved settings read back", sb.load_settings(f) == new)
+        f.write_text('{"sweep": "yes", "sweep_speed": "turbo"}')
+        s = sb.load_settings(f)
+        check("bad steering-check values fall back", s["sweep"] is True and s["sweep_speed"] == "normal", s)
+
+    # Steering check: center -> left -> right -> center, smooth, within SWEEP_DEG, then a rest at center.
+    w = sb.Sweep(10.0, "normal")
+    ang = [w.angle(10.0 + k * 0.01) for k in range(400)]
+    moving = [a for a in ang if a is not None]
+    check("steering check: left first, then right, back to center", ang[80] < -19.9 and ang[240] > 19.9 and abs(ang[320]) < 1e-9, (ang[80], ang[240], ang[320]))
+    check("steering check: never past SWEEP_DEG, small steps", max(map(abs, moving)) <= sb.SWEEP_DEG + 1e-9
+          and max(abs(a - b) for a, b in zip(moving, moving[1:])) < 0.5)
+    check("steering check: over after 3.5 s (normal), 5 s slow, 2 s fast",
+          ang[349] is not None and ang[350] is None and sb.Sweep(0, "slow").total == 5.0 and sb.Sweep(0, "fast").total == 2.0)
+    c = sb.StartControl("keep")
+    c.handle("tap"); c.cancel()
+    check("cancel: waiting, next start is fresh", c.state == sb.WAIT and c.handle("tap") == "start")
 
     # The drive loop in main() with a fake camera, motor, button and driver.
     import car as car_mod
@@ -4405,6 +4422,8 @@ def test_start_button():
     lf.Driver = FakeDriver
     lf.load_person = lambda path=None: None
     sb.ButtonReader = FakeReader
+    saved_load = sb.load_settings
+    sb.load_settings = lambda path=None: dict(sb.DEFAULTS, sweep=False)
     sys.argv = ["lane_follow.py", "--drive", "--no-stream", "--no-log", "--button", "on"]
     script.update({20: "tap", 50: "tap", 80: "tap", 100: "hold", 115: "tap", 150: "tap"})
     try:
@@ -4414,6 +4433,7 @@ def test_start_button():
         pass
     finally:
         car_mod.Car, lf.open_camera, lf.Driver, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE = saved
+        sb.load_settings = saved_load
     d1 = made[0]
     ran = [n for n, _ in d1.ticks]
     check("no driving before the first tap", min(ran) == 20, min(ran))
@@ -4424,6 +4444,49 @@ def test_start_button():
     check("hold restart: a new course on the next tap", len(made) >= 2 and made[1].ticks and made[1].ticks[0][0] == 115, len(made))
     check("course done: waits, then a tap runs it again", len(made) == 3 and made[2].ticks and made[2].ticks[0][0] == 150, len(made))
     check("motor command 0 whenever not driving", all(v == 0 for v in fake_car.cmds[:15]), fake_car.cmds[:15])
+
+    # The loop with the steering check on (shortened to 0.3 s): tap starts the check, a tap during it cancels,
+    # the next tap checks again and then drives. Motor 0 and course clock stopped throughout the check.
+    made.clear()
+    script.clear()
+    script.update({20: "tap", 25: "tap", 60: "tap"})
+    cam.n = 0
+    sweep_car = FakeCar()
+    saved = (car_mod.Car, lf.open_camera, lf.Driver, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE,
+             sb.load_settings, sb.SWEEP_SEC, sb.SWEEP_SETTLE)
+    lf.COURSE = [follow(until="junction"), finish()]
+    car_mod.Car = lambda: sweep_car
+    lf.open_camera = lambda locked=True: cam
+    lf.Driver = FakeDriver
+    lf.load_person = lambda path=None: None
+    sb.ButtonReader = FakeReader
+    sb.load_settings = lambda path=None: dict(sb.DEFAULTS, sweep=True, sweep_speed="normal")
+    sb.SWEEP_SEC, sb.SWEEP_SETTLE = {"normal": 0.3}, 0.05
+    sys.argv = ["lane_follow.py", "--drive", "--no-stream", "--no-log", "--button", "on"]
+    sweep_car.steers_at = []
+    sweep_car.steer = lambda a: sweep_car.steers_at.append((cam.n, a))
+    sweep_car.drive = lambda v: sweep_car.cmds.append((cam.n, v))
+    t_before = time.monotonic()
+    try:
+        with quiet():
+            lf.main()
+    except SystemExit:
+        pass
+    finally:
+        (car_mod.Car, lf.open_camera, lf.Driver, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE,
+         sb.load_settings, sb.SWEEP_SEC, sb.SWEEP_SETTLE) = saved
+    ticks = [t for d in made for t in d.ticks]
+    first = ticks[0][0] if ticks else None
+    sweep_steers = [a for n, a in sweep_car.steers_at if 60 < n < (first or 0)]
+    check("steering check: no course frames before it ends, then driving", first is not None and first > 61, first)
+    check("steering check: a tap during it cancels, nothing drives meanwhile", not any(20 <= n < 60 for n, _ in ticks))
+    check("steering check: wheels went left and right, ended at center",
+          sweep_steers and min(sweep_steers) < -15 and max(sweep_steers) > 15 and sweep_steers[-1] == 0,
+          (min(sweep_steers, default=None), max(sweep_steers, default=None), sweep_steers[-1:] ))
+    check("steering check: motor 0 until driving", all(v == 0 for n, v in sweep_car.cmds if n < (first or 0)))
+    t_after = time.monotonic()
+    check("steering check: course clock starts at its end (waiting and checking not counted)",
+          ticks and -0.01 <= ticks[0][1] - t_before < 0.1 and t_after - t_before > 0.5, ticks and f"{ticks[0][1] - t_before:.3f}")
 
     # Ctrl+C (or aicar stop) while the camera opens: a clean stop that releases the motor, not a traceback.
     closed = []
