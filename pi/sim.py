@@ -206,7 +206,7 @@ def _check_model(model, known):
 
 
 @_keeps_settings
-def run(track_name, model, speed=0.5, steer=26, seconds=None, video=None, seed=0, quiet=True, mismatch=True):
+def run(track_name, model, speed=0.5, steer=26, seconds=None, video=None, seed=0, mismatch=True):
     """One drive. Returns the metrics."""
     _check_model(model, ("bands", "track", "oracle"))
     for k, v in PI_VISION.items():

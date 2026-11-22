@@ -3,7 +3,7 @@
 The lower part of the frame (the ROI) is split into horizontal bands. Each band finds the white lines, and the left and right lines are tracked from frame to frame to get the lane center. A line fitted through those centers gives
   - position error (how far the car is from the lane center)
   - heading error (how much the lane is curving)
-Those two are combined into a continuous steering angle. Larger steering slows the car. A line across the road (a junction) runs the next action listed in COURSE in course.py.
+Those two are combined into a continuous steering angle. The set speed is kept (slowing is off: STEER_SLOWDOWN, course.py SLOWDOWN_ON). A line across the road (a junction) runs the next action listed in COURSE in course.py.
 
 Usage (on the Pi)
   python lane_follow.py             steering only (motors off); push the car by hand to check detection
@@ -12,6 +12,7 @@ Usage (on the Pi)
   python lane_follow.py --drive --start 3     start at COURSE action 3
   python lane_follow.py --record    save video under runs/ (analyze on a Mac with replay.py)
   python lane_follow.py --drive --set KP=1.8 KH=1.0   override settings for this run only
+  python lane_follow.py --drive --button on   wait for the start button on GPIO21 (auto: follow button.json)
 
   The white-line threshold is calibrated automatically. Set it by hand with tune_white.py (saved in vision.json).
 
@@ -4528,6 +4529,7 @@ class MotorWatchdog:
 
 
 WATCHDOG_SEC = 0.5      # Motor stops if the drive loop sends nothing for this long.
+VIEW_EVERY = 2          # While driving with the page open, the view is drawn once every this many frames (steering runs on all).
 FRAME_ERRORS_MAX = 10   # Consecutive frames that raise an error before the drive ends.
 
 
@@ -4672,6 +4674,7 @@ def main():
             # Send this frame to the browser only if someone is watching. The view is only drawing commands (the browser paints
             # them), so every frame can go. If nobody is watching, it costs nothing.
             show = stream is not None and stream.watching
+            view_frame = show and frames % VIEW_EVERY == 0     # Driving: the view on every other frame keeps the loop fast.
             if ctl:
                 for ev in button.take():
                     if sweep:       # Any press during the steering check cancels it: wheels to center, wait for a start.
@@ -4740,7 +4743,7 @@ def main():
                     continue
             dnow = now - paused_total
             try:
-                steer, cmd, dbg = driver.tick(frame, dnow, show)
+                steer, cmd, dbg = driver.tick(frame, dnow, view_frame)
                 errors = 0
             except Exception as e:      # One bad frame does not end the drive: stand still this frame and carry on.
                 errors += 1
@@ -4779,7 +4782,7 @@ def main():
             if box:
                 box.write(now - t_start, driver, cmd, dnow)
             frames += 1
-            if show:
+            if view_frame:
                 try:
                     stream.update(driver.view(dbg, dnow, fps, web=True))
                 except Exception as e:      # The view is for the page only: a fault in it must never stop the drive.
