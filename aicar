@@ -496,7 +496,7 @@ AICAR commands  (in a Mac terminal: aicar <command>)
          hold restart|keep   after a hold: run the course again from step 1, or carry on from where it stopped
          hold-sec N          seconds for a hold (1 to 10, 3 by default)
          sweep on|off        before a fresh start, turn the front wheels slowly left, right, and back to center
-         sweep-speed slow|normal|fast   how long that check takes (5, 3.5, 2 s)
+         sweep-speed slow|normal|fast   how long that check takes (4, 2.5, 1.8 s)
          sweep-test          run the check once now (motor off)
          test [seconds]      print presses and the state they lead to (motor does not move)
   course                 edit the course (course.py) on the Mac, then aicar push

@@ -9,7 +9,7 @@ Settings live in button.json next to this file on the Pi, so they hold without t
   python start_button.py hold-sec 3            seconds for a long hold (1 to 10)
   python start_button.py test [seconds]        print presses and the state they lead to, without the motor
   python start_button.py sweep on | off        before a fresh start, turn the front wheels slowly left, right, and back to center
-  python start_button.py sweep-speed slow | normal | fast    how long that takes (5, 3.5, 2 s)
+  python start_button.py sweep-speed slow | normal | fast    how long that takes (4, 2.5, 1.8 s)
   python start_button.py sweep-test            run the steering check once now (servo only, the motor stays off)
 """
 import math
@@ -29,7 +29,7 @@ HOLD_MIN, HOLD_MAX = 1.0, 10.0
 
 SWEEP_DEG = 20.0            # How far the steering check turns each way. Under the steering limit, so the servo never hits its end.
 SWEEP_SETTLE = 0.3          # Seconds at center at the end, for the servo to settle before driving.
-SWEEP_SEC = {"slow": 5.0, "normal": 3.5, "fast": 2.0}      # Whole check, settle included.
+SWEEP_SEC = {"slow": 4.0, "normal": 2.5, "fast": 1.8}      # Whole check, settle included.
 
 WAIT, RUN, PAUSE = "WAIT", "RUN", "PAUSE"
 NAMES = {WAIT: "waiting for the start button", RUN: "driving", PAUSE: "paused"}
