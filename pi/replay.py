@@ -71,7 +71,8 @@ def main():
         print(f"{key}: {old} -> {new}")
 
     if (run / "log.csv").exists():
-        rows = list(csv.DictReader(open(run / "log.csv")))
+        with open(run / "log.csv", newline="") as f:
+            rows = list(csv.DictReader(f))
     else:   # Frames only: assume 20 fps.
         print("No log.csv -> replaying frames only (20 fps assumed)")
         rows = [{"frame": p.stem, "t": int(p.stem) / 20, "steer": "nan"}
