@@ -184,6 +184,11 @@ cmd_button() {
         hold-sec) [[ "${2:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Usage: aicar button hold-sec <seconds, 1 to 10>" ;;
         sweep)    [[ "${2:-}" =~ ^(on|off)$ ]] || die "Usage: aicar button sweep on|off" ;;
         sweep-speed) [[ "${2:-}" =~ ^(slow|normal|fast)$ ]] || die "Usage: aicar button sweep-speed slow|normal|fast" ;;
+        led|press-stop) [[ "${2:-}" =~ ^(on|off)$ ]] || die "Usage: aicar button $1 on|off" ;;
+        led-test) run "$DRIVING" && die "A drive is running and uses the LED. aicar stop first"
+                  cmd_push >/dev/null || exit 1
+                  run_tty "$(in_dir "$PY -u start_button.py led-test")"
+                  return ;;
         sweep-test) run "$DRIVING" && die "A drive is running and holds the steering. aicar stop first"
                   cmd_push >/dev/null || exit 1
                   run_tty "$(in_dir "$PY -u start_button.py sweep-test")"
@@ -193,7 +198,7 @@ cmd_button() {
                   cmd_push >/dev/null || exit 1
                   run_tty "$(in_dir "$PY -u start_button.py test ${2:-30}")"
                   return ;;
-        *)        die "Usage: aicar button [show|on|off|hold restart|keep|hold-sec N|test [seconds]|sweep on|off|sweep-speed slow|normal|fast|sweep-test]" ;;
+        *)        die "Usage: aicar button [show|on|off|hold restart|keep|hold-sec N|test [seconds]|sweep on|off|sweep-speed slow|normal|fast|sweep-test|led on|off|press-stop on|off|led-test]" ;;
     esac
     cmd_push >/dev/null || exit 1       # The Pi's start_button.py must know every setting asked for here.
     run "$(in_dir "$PY start_button.py ${*:-show}")"
@@ -224,6 +229,40 @@ cmd_fetch_log() {
     rsync -a -e "ssh ${SSH_OPTS[*]}" "pi@$HOST:$REMOTE/logs/$name" "$LOGS/" || die "Download failed: $name"
     green "Fetched: $LOGS/$name"
     tr '\r' '\n' < "$LOGS/$name/out.log" | grep -a -E '^\[|done\]|warning|error|Error|Traceback|Stopped|Course done|Motor' | grep -a -v '^$' | tail -n 60
+}
+
+LED_RULE=/etc/udev/rules.d/99-aicar-led.rules
+
+cmd_led() {
+    # One-time: let the pi user switch the green LED (ACT) for the start button display. Nothing else is opened up.
+    case "${1:-}" in
+        setup)
+            run "echo 'SUBSYSTEM==\"leds\", KERNEL==\"ACT|led0\", ACTION==\"add\", RUN+=\"/bin/chmod 0666 /sys%p/trigger /sys%p/brightness\"' | sudo tee $LED_RULE >/dev/null &&
+                 for l in /sys/class/leds/ACT /sys/class/leds/led0; do [ -e \$l ] && sudo chmod 0666 \$l/trigger \$l/brightness; done; ls -l /sys/class/leds/*/brightness" &&
+                green "Green LED: the pi user can switch it now (and after reboots). Undo: aicar led undo" ;;
+        undo)
+            run "sudo rm -f $LED_RULE; for l in /sys/class/leds/ACT /sys/class/leds/led0; do [ -e \$l ] && sudo chmod 0644 \$l/trigger \$l/brightness; done; true" &&
+                green "Green LED permission removed (the LED keeps its normal SD card activity)" ;;
+        *)  die "Usage: aicar led setup|undo" ;;
+    esac
+}
+
+cmd_end_report() {
+    # Where each cm= action really ended: the last N drive logs and recordings (only their small text files), as a table.
+    local n="${1:-5}" name kind
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] || die "Usage: aicar end-report [how many drives, 5 by default]"
+    host
+    local dirs=()
+    for kind in logs runs; do
+        for name in $(run "ls -1 ~/$REMOTE/$kind 2>/dev/null | tail -n $n"); do
+            mkdir -p "$ROOT/$kind/$name"
+            rsync -a -e "ssh ${SSH_OPTS[*]}" --include ends.csv --include out.log --include course.py --exclude '*' \
+                "pi@$HOST:$REMOTE/$kind/$name/" "$ROOT/$kind/$name/" 2>/dev/null && dirs+=("$ROOT/$kind/$name")
+        done
+    done
+    [ ${#dirs[@]} -gt 0 ] || die "No drive logs or recordings on the Pi yet"
+    ensure_mac_venv
+    "$ROOT/.venv/bin/python" "$ROOT/tools/end_report.py" "${dirs[@]}"
 }
 
 cmd_fetch() {
@@ -498,6 +537,10 @@ AICAR commands  (in a Mac terminal: aicar <command>)
          sweep on|off        before a fresh start, turn the front wheels slowly left, right, and back to center
          sweep-speed slow|normal|fast   how long that check takes (3, 1.8, 1.2 s)
          sweep-test          run the check once now (motor off)
+         led on|off          show the states on the Pi's green LED: on while driving, blinks for the check, pause and presses
+         press-stop on|off   while driving, pressing stops the car at once (off: only when let go)
+         led-test            show every LED pattern once with its name
+  led setup|undo         one-time: let the drive switch the green LED (a udev rule on the Pi), or take that back
          test [seconds]      print presses and the state they lead to (motor does not move)
   course                 edit the course (course.py) on the Mac, then aicar push
                          LANE_POINTS: "pairs" fits both lane lines as one pair (steadier), "bands" the band points as before.
@@ -535,6 +578,7 @@ AICAR commands  (in a Mac terminal: aicar <command>)
   fetch-log [name|latest]   bring a drive log to the Mac and show what each action did and how it ended
   drive-log [on|off|toggle] keep a log of every drive or not (on by default). With nothing: show which
   fetch [name|latest]    fetch a recording into the Mac runs/ folder
+  end-report [N]         where each cm= action really ended in the last N drives (5 by default): target, cm at the end, error, speed
   replay [name|latest] [--set K=V]   re-analyse a recording on the Mac and open the video
   clean-runs [N]         delete Pi recordings except the last N (5 by default)
 
@@ -603,6 +647,8 @@ case "$cmd" in
     drive-log)   cmd_drive_log "$@" ;;
     button)      cmd_button "$@" ;;
     replay)      cmd_replay "$@" ;;
+    end-report)  cmd_end_report "$@" ;;
+    led)         cmd_led "$@" ;;
     clean-runs)  cmd_clean_runs "$@" ;;
 
     wifi)        cmd_wifi ;;

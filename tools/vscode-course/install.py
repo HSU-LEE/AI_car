@@ -1,6 +1,8 @@
 """Build the course.py helper as a .vsix and install it into VS Code (and Cursor, if present).
 
     python3 tools/vscode-course/install.py
+
+The tests (node --test) run first; nothing is installed if one fails.
 """
 import json
 import shutil
@@ -11,7 +13,8 @@ import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-FILES = ("package.json", "extension.js", "docs.json", "check_course.py")
+FILES = ("package.json", "extension.js", "docs.json")
+DIRS = ("src", "py")        # Packed whole (only .js and .py files).
 EDITORS = ("code", "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code",
            "/Applications/Cursor.app/Contents/Resources/app/bin/cursor")
 
@@ -46,9 +49,23 @@ def build(out):
         z.writestr("extension.vsixmanifest", manifest)
         for f in FILES:
             z.write(HERE / f, f"extension/{f}")
+        for d in DIRS:
+            for f in sorted((HERE / d).glob("*")):
+                if f.suffix in (".js", ".py"):
+                    z.write(f, f"extension/{d}/{f.name}")
+
+
+def run_tests():
+    node = shutil.which("node")
+    if not node:
+        sys.exit("node not found: the tests cannot run, so nothing is installed")
+    r = subprocess.run([node, "--test", *sorted(str(p) for p in (HERE / "test").glob("*.test.js"))], cwd=HERE)
+    if r.returncode != 0:
+        sys.exit("Tests failed: nothing installed")
 
 
 def main():
+    run_tests()
     with tempfile.TemporaryDirectory() as tmp:
         vsix = Path(tmp) / "aicar-course.vsix"
         build(vsix)

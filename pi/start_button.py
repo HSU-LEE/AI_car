@@ -1,6 +1,9 @@
 """Start button on GPIO21 (pin 40, the other side to GND pin 39).
 
 A short press starts the drive, pauses it, or resumes it. Holding it for hold_sec puts the car back to waiting for a start.
+A fresh start first turns the front wheels left, right and back to center (the steering check); a press during it cancels.
+With press_stop, a press while driving stops the motor the moment it goes down. The Pi's green LED shows the state:
+off waiting, blinking for the check, on while the course runs, two blinks every 2 s paused, and a count while held.
 Settings live in button.json next to this file on the Pi, so they hold without the Mac. aicar push leaves *.json alone.
 
   python start_button.py show                  current settings
@@ -11,6 +14,9 @@ Settings live in button.json next to this file on the Pi, so they hold without t
   python start_button.py sweep on | off        before a fresh start, turn the front wheels slowly left, right, and back to center
   python start_button.py sweep-speed slow | normal | fast    how long that takes (3, 1.8, 1.2 s)
   python start_button.py sweep-test            run the steering check once now (servo only, the motor stays off)
+  python start_button.py led on | off          show the button states on the Pi's green LED (needs: aicar led setup)
+  python start_button.py press-stop on | off   while driving, pressing stops the car at once (off: when let go)
+  python start_button.py led-test              show every LED pattern once, with its name
 """
 import math
 import sys
@@ -24,7 +30,7 @@ PIN = 21
 BOUNCE_SEC = 0.03           # A change shorter than this is contact bounce, not a press.
 POLL_SEC = 0.005
 SETTINGS_FILE = Path(__file__).with_name("button.json")
-DEFAULTS = {"enabled": True, "hold": "restart", "hold_sec": 3.0, "sweep": True, "sweep_speed": "normal"}
+DEFAULTS = {"enabled": True, "hold": "restart", "hold_sec": 3.0, "sweep": True, "sweep_speed": "normal", "led": True, "press_stop": True}
 HOLD_MIN, HOLD_MAX = 1.0, 10.0
 
 SWEEP_DEG = 20.0            # How far the steering check turns each way. Under the steering limit, so the servo never hits its end.
@@ -52,6 +58,9 @@ def clean_settings(raw):
         s["sweep"] = raw["sweep"]
     if raw.get("sweep_speed") in SWEEP_SEC:
         s["sweep_speed"] = raw["sweep_speed"]
+    for key in ("led", "press_stop"):
+        if isinstance(raw.get(key), bool):
+            s[key] = raw[key]
     return s
 
 
@@ -74,7 +83,9 @@ def describe(s):
     after = "start again from step 1" if s["hold"] == "restart" else "carry on from where it stopped"
     sweep = (f"steering check before a fresh start: ON ({s['sweep_speed']}, {SWEEP_SEC[s['sweep_speed']]:g} s)"
              if s["sweep"] else "steering check before a fresh start: OFF")
-    return f"button ON: tap = start / pause / resume, hold {s['hold_sec']:g} s = wait for start ({after})\n{sweep}"
+    led = "green LED: ON (on while driving)" if s["led"] else "green LED: OFF"
+    stop = "pressing while driving stops at once" if s["press_stop"] else "pressing while driving stops when let go"
+    return f"button ON: tap = start / pause / resume, hold {s['hold_sec']:g} s = wait for start ({after})\n{sweep}\n{led}, {stop}"
 
 
 class Sweep:
@@ -107,7 +118,8 @@ class Presses:
     """Raw button levels in, "tap" and "hold" events out. Time is passed in, so it runs the same without the button.
 
     A tap is a press released before hold_sec. A hold fires the moment hold_sec is reached, while still held,
-    and its release is not a tap. A button already held when this starts counts only after it is released once."""
+    and its release is not a tap. A button already held when this starts counts only after it is released once.
+    Also "down" the moment it is pressed, and "count1", "count2" ... at each whole second it is held before the hold."""
 
     def __init__(self, hold_sec=DEFAULTS["hold_sec"], bounce=BOUNCE_SEC):
         self.hold_sec, self.bounce = hold_sec, bounce
@@ -116,6 +128,7 @@ class Presses:
         self.raw_since = 0.0
         self.down_at = None
         self.held = False
+        self.counted = 0            # Whole seconds of this press already reported.
         self.ready = False          # False until the button is seen released.
 
     def feed(self, pressed, now):
@@ -131,28 +144,47 @@ class Presses:
             if not self.ready:
                 self.ready = not self.level
             elif self.level:
-                self.down_at, self.held = self.raw_since, False
+                self.down_at, self.held, self.counted = self.raw_since, False, 0
+                events.append("down")
             elif self.down_at is not None:
                 if not self.held:
                     events.append("tap")
                 self.down_at, self.held = None, False
-        if self.ready and self.level and self.down_at is not None and not self.held and now - self.down_at >= self.hold_sec:
-            self.held = True
-            events.append("hold")
+        if self.ready and self.level and self.down_at is not None and not self.held:
+            held_for = now - self.down_at
+            if held_for >= self.hold_sec:
+                self.held = True
+                events.append("hold")
+            else:
+                while self.counted + 1 <= held_for and self.counted + 1 < self.hold_sec:
+                    self.counted += 1
+                    events.append(f"count{self.counted}")
         return events
 
 
 class StartControl:
     """WAIT -> tap -> RUN -> tap -> PAUSE -> tap -> RUN. A hold in RUN or PAUSE goes back to WAIT.
 
-    handle() returns what the drive has to do: "start" (fresh course), "resume", "pause", "wait", or None."""
+    handle() returns what the drive has to do: "start" (fresh course), "resume", "pause", "wait", or None.
+    press_stop: pressing while driving pauses at once (on "down"); releasing that same press then does nothing more."""
 
-    def __init__(self, hold="restart"):
-        self.hold = hold
+    def __init__(self, hold="restart", press_stop=False):
+        self.hold, self.press_stop = hold, press_stop
         self.state = WAIT
         self.fresh = True           # The next start runs the course from the first step.
+        self.swallow = False        # The release of a press that already acted is not a tap.
 
     def handle(self, event):
+        if event == "down":
+            if self.press_stop and self.state == RUN:
+                self.state, self.swallow = PAUSE, True
+                return "pause"
+            return None
+        if event == "tap" and self.swallow:
+            self.swallow = False
+            return None
+        if event == "hold":
+            self.swallow = False
         if event == "tap":
             if self.state == WAIT:
                 self.state = RUN
@@ -172,13 +204,150 @@ class StartControl:
             return "wait"
         return None
 
-    def cancel(self):
-        """A press during the steering check: back to waiting, and the next start is still a fresh one."""
-        self.state, self.fresh = WAIT, True
+    def cancel(self, swallow=False):
+        """A press during the steering check: back to waiting, and the next start is still a fresh one.
+        swallow: the press is still down, so its release must not start the car again."""
+        self.state, self.fresh, self.swallow = WAIT, True, swallow
 
     def finished(self):
         """The course ran to its end: wait for a start, which runs it again from the first step."""
         self.state, self.fresh = WAIT, True
+
+
+LED_NAMES = ("ACT", "led0")      # The green LED on a Pi 4: ACT on current Raspberry Pi OS, led0 on older ones.
+LED_DIR = Path("/sys/class/leds")
+SWEEP = "SWEEP"                  # Not a StartControl state: the steering check, shown on the LED.
+
+# Steady patterns per state, repeated: (on, seconds) pairs. RUN is on all the time, WAIT off.
+LED_STATE = {
+    WAIT: [(0, 1.0)],
+    RUN: [(1, 1.0)],
+    SWEEP: [(1, 0.15), (0, 0.15)],
+    PAUSE: [(1, 0.12), (0, 0.12), (1, 0.12), (0, 1.64)],        # Two short blinks every 2 s.
+}
+# One-time patterns for a press, shown over the state pattern, which follows when they end.
+LED_FLASH = {
+    "count1": [(1, 0.12), (0, 0.1)],
+    "count2": [(1, 0.12), (0, 0.12), (1, 0.12), (0, 0.1)],
+    "hold": [(1, 0.05), (0, 0.05)] * 6,                         # Held long enough: let go.
+    "nothing": [(1, 0.6), (0, 0.2)],                            # A hold or press that changes nothing, or a cancelled start.
+    "resume": [(0, 0.15), (1, 0.15), (0, 0.15)],
+    "pause": [(0, 0.1)],
+}
+
+
+class StatusLed:
+    """The Pi's green LED as the start button's display. A thread draws the pattern, so the drive loop never waits on it.
+
+    Needs write access to the LED (aicar led setup). Without it, nothing is shown and the drive goes on (ok is False).
+    close() gives the LED back to what it did before (normally SD card activity)."""
+
+    def __init__(self, base=LED_DIR, names=LED_NAMES, clock=time.monotonic):
+        self.clock = clock
+        self.dir = next((base / n for n in names if (base / n).exists()), None)
+        self.ok, self.error, self.old_trigger = False, None, None
+        self.state, self.flash, self.flash_t, self.held = WAIT, None, 0.0, False
+        self.lock = threading.Lock()
+        self._stop = threading.Event()
+        self._level = None
+        if self.dir is None:
+            self.error = "no LED found under /sys/class/leds"
+            return
+        try:
+            text = (self.dir / "trigger").read_text()
+            self.old_trigger = text[text.index("[") + 1:text.index("]")] if "[" in text else None
+            (self.dir / "trigger").write_text("none")
+            self._write(0)
+            self.ok = True
+        except (OSError, ValueError) as e:
+            self.error = f"{type(e).__name__}: {e}"
+            if self.old_trigger:
+                try:
+                    (self.dir / "trigger").write_text(self.old_trigger)
+                except OSError:
+                    pass
+            return
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _write(self, on):
+        if on != self._level:
+            (self.dir / "brightness").write_text("1" if on else "0")
+            self._level = on
+
+    def set_state(self, state):
+        with self.lock:
+            self.state = state
+
+    def hold(self, down):
+        """While the button is held the LED is off (the counts flash over it), so the press shows at once."""
+        with self.lock:
+            self.held = down
+
+    def show(self, name):
+        with self.lock:
+            self.flash, self.flash_t = LED_FLASH[name], self.clock()
+
+    def level(self, now):
+        """On or off at this moment. Used by the thread, and by the tests with their own clock."""
+        with self.lock:
+            if self.flash is not None:
+                t = now - self.flash_t
+                for on, sec in self.flash:
+                    if t < sec:
+                        return on
+                    t -= sec
+                self.flash = None
+            if self.held:
+                return 0
+            pattern = LED_STATE[self.state]
+        t = now % sum(sec for _, sec in pattern)
+        for on, sec in pattern:
+            if t < sec:
+                return on
+            t -= sec
+        return pattern[-1][0]
+
+    def _run(self):
+        while not self._stop.wait(0.01):
+            try:
+                self._write(self.level(self.clock()))
+            except OSError as e:
+                self.error, self.ok = f"{type(e).__name__}: {e}", False
+                return
+
+    def close(self):
+        self._stop.set()
+        if getattr(self, "thread", None):
+            self.thread.join(timeout=1)
+        if self.dir is not None and self.old_trigger:
+            try:
+                (self.dir / "trigger").write_text(self.old_trigger)
+            except OSError:
+                pass
+
+
+def led_feedback(led, event, act, state):
+    """Show a button event on the LED. act is what StartControl.handle() returned for it (None: nothing changed)."""
+    if led is None:
+        return
+    if event == "down":
+        led.hold(True)
+        if act == "pause":
+            led.set_state(state)
+        return
+    if event.startswith("count"):
+        if event in LED_FLASH:
+            led.show(event)
+        return
+    led.hold(False)
+    if event == "hold":
+        led.show("hold" if act == "wait" else "nothing")
+    elif act == "resume":
+        led.show("resume")
+    elif act == "pause":
+        led.show("pause")
+    led.set_state(state)
 
 
 class ButtonReader:
@@ -235,14 +404,14 @@ def test(seconds=30):
     print(describe(s))
     print(f"Press the button for {seconds:g} s. The motor does not move.")
     reader = ButtonReader(s["hold_sec"])
-    ctl = StartControl(s["hold"])
+    ctl = StartControl(s["hold"], s["press_stop"])
     print(f"state: {NAMES[ctl.state]}", flush=True)
     end = time.monotonic() + seconds
     try:
         while time.monotonic() < end:
             for ev in reader.take():
                 act = ctl.handle(ev)
-                print(f"{ev:4s} -> {act or 'ignored':6s}  state: {NAMES[ctl.state]}", flush=True)
+                print(f"{ev:6s} -> {act or '-':6s}  state: {NAMES[ctl.state]}", flush=True)
             time.sleep(0.02)
     except KeyboardInterrupt:
         pass
@@ -270,6 +439,29 @@ def sweep_test(s):
         print("stopped")
     finally:
         car.close()     # Motor stopped, wheels centered.
+
+
+def led_test():
+    """Every pattern once, named, so it can be checked by eye. The motor and servo are not touched."""
+    led = StatusLed()
+    if not led.ok:
+        raise SystemExit(f"Cannot drive the green LED ({led.error}). Run on the Mac: aicar led setup")
+    shows = [("waiting: off", WAIT, None, 2.0), ("steering check: blinking", SWEEP, None, 2.0), ("driving: on", RUN, None, 2.0),
+             ("paused: two blinks every 2 s", PAUSE, None, 4.0), ("held 1 s: one blink", WAIT, "count1", 1.0),
+             ("held 2 s: two blinks", WAIT, "count2", 1.0), ("held 3 s: flutter, let go", WAIT, "hold", 1.0),
+             ("nothing changed / cancelled: one long", WAIT, "nothing", 1.2), ("resume: off-on-off, then on", RUN, "resume", 1.5)]
+    try:
+        for name, state, flash, sec in shows:
+            print(name, flush=True)
+            led.set_state(state)
+            if flash:
+                led.show(flash)
+            time.sleep(sec)
+        print("done: the LED goes back to SD card activity")
+    except KeyboardInterrupt:
+        print("stopped")
+    finally:
+        led.close()
 
 
 def main(argv):
@@ -310,9 +502,15 @@ def main(argv):
     elif cmd == "sweep-test":
         sweep_test(s)
         return
+    elif cmd in ("led", "press-stop") and len(argv) == 2 and argv[1] in ("on", "off"):
+        s["led" if cmd == "led" else "press_stop"] = argv[1] == "on"
+        s = save_settings(s)
+    elif cmd == "led-test":
+        led_test()
+        return
     else:
         raise SystemExit("usage: start_button.py [show | on | off | hold restart|keep | hold-sec N | test [seconds] | "
-                         "sweep on|off | sweep-speed slow|normal|fast | sweep-test]")
+                         "sweep on|off | sweep-speed slow|normal|fast | sweep-test | led on|off | press-stop on|off | led-test]")
     print(describe(s))
 
 

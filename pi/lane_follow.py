@@ -201,7 +201,8 @@ STOP_LEAD = True        # go_to(): count the stop point as reached a little earl
 STOP_LEAD_MAX_CM = 4.0  # ... never more than this early,
 STOP_LEAD_SCORE = 0.85  # ... and only on a clear match (a borderline one may be a look-alike just short of the place).
 END_MIN_SPEED = 3.0     # cm=: a measured speed below this (cm/s), on a car that is being driven, is a bad reading. END_DEFAULT_SPEED is used instead.
-END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measured. About what the lowest motor command gives.
+END_DEFAULT_SPEED = 10.0    # cm=: speed assumed (cm/s) when none could be measured and the motor command is unknown.
+MOTOR_CM_PER_CMD = 32.0     # cm=: about this many cm/s per unit of motor command (sim.py SPEED_CM), for a speed that could not be measured.
 END_SWITCH_FRAMES = 3   # cm=: before the end line is reached, this many readings in a row that agree with each other replace a reading they jump away from.
 END_FRESH_SEC = 0.15    # cm=: a reading older than this when the line is reached does not count as that line's position.
 JUNCTION_REF = "laneend" # to_junction(cm=): what it measures to. "laneend": where the lane's own line ends at the junction, the nearer side.
@@ -2228,7 +2229,15 @@ class EndRuler:
         self.kind, self.z, self.t, self.read_t, self.guess = kind, None, None, None, False
         self.raw, self.track, self.jump = [], [], []
 
-    def feed(self, kind, y, now, locked=False, moving=True):
+    def assumed_speed(self, cmd):
+        """Speed to carry on with (cm/s): the measured one, else what the motor command gives, else END_DEFAULT_SPEED."""
+        if self.speed is not None and self.speed >= END_MIN_SPEED:
+            return self.speed
+        if cmd is not None and cmd > 0:
+            return cmd * MOTOR_CM_PER_CMD
+        return END_DEFAULT_SPEED
+
+    def feed(self, kind, y, now, locked=False, moving=True, cmd=None):
         if kind != self.kind:
             self.reset(kind)
         dt = 0.0 if self.t is None else min(now - self.t, 0.1)      # Capped: a stop for the LEGO figure is not driving.
@@ -2245,20 +2254,24 @@ class EndRuler:
             self.jump = []
         if z is None:
             if self.z is not None and moving:
-                speed = self.speed if self.speed is not None and self.speed >= END_MIN_SPEED else END_DEFAULT_SPEED
-                self.z -= speed * dt
+                self.z -= self.assumed_speed(cmd) * dt
                 self.guess = True
             return
         if self.guess:              # Back from carrying on: the old readings would pull the position backwards.
             self.raw, self.track = [], []
-        self.raw = (self.raw + [z])[-3:]
-        self.z = float(np.median(self.raw))     # A median of 3, so one misread frame cannot end the action.
+        self.raw = (self.raw + [(now, z)])[-3:]
+        # Speed from the readings themselves (not the medians, which lag while there are few): the median of the slopes
+        # between every pair, so one misread frame cannot skew it.
+        self.track = [p for p in self.track if now - p[0] <= END_SPEED_SEC] + [(now, z)]
+        if len(self.track) >= 4 and self.track[-1][0] - self.track[0][0] >= END_SPEED_SEC / 2:
+            slopes = [(zb - za) / (tb - ta) for i, (ta, za) in enumerate(self.track) for tb, zb in self.track[i + 1:] if tb > ta]
+            self.speed = max(0.0, -float(np.median(slopes)))
+        # A median of 3, so one misread frame cannot end the action. Each older reading is first moved on by the distance
+        # driven since (measured speed x its age), so the median is where the line is now, not a frame behind.
+        known = moving and self.speed is not None and self.speed >= END_MIN_SPEED
+        self.z = float(np.median([rz - (self.speed * (now - rt) if known else 0.0) for rt, rz in self.raw]))
         self.guess = False
         self.read_t = now
-        self.track = [p for p in self.track if now - p[0] <= END_SPEED_SEC] + [(now, self.z)]
-        if len(self.track) >= 5 and self.track[-1][0] - self.track[0][0] >= END_SPEED_SEC / 2:
-            ts, zs = zip(*self.track)
-            self.speed = max(0.0, -float(np.polyfit(np.array(ts) - ts[0], zs, 1)[0]))
 
 
 class EndWatch:
@@ -2407,6 +2420,8 @@ class CourseRunner:
         self.gap_end = None         # gap=: after passing one, the next is not looked at until this time (set again by begin()).
         self.blind_top_y = None     # blind_sec: highest point (farthest) of the junction line seen during this action's blind period.
         self.end_hits = 0           # cm=: frames in a row the lane's line end has been found (LANEEND_FRAMES).
+        self.end_pending = []       # cm=: (time, y) of those frames, given to the ruler once the end is confirmed.
+        self.drive_cmd = None       # cm=: motor command of the last frame, for a speed that could not be measured. Driver fills it.
         self.line_gap = None        # cm=: the line across minus the lane end, when both were seen this action (LANEEND_LINE_GAP).
         self.run_out = False        # cm=: the end line was found and the car is covering the last distance.
         self.run_start = None       # cm=: when the end line was reached.
@@ -2451,7 +2466,7 @@ class CourseRunner:
         self.red_boxes, self.local_light = [], None
         self.ruler, self.run_out, self.run_start = EndRuler(), False, None
         self.line_gap = None
-        self.end_hits = 0
+        self.end_hits, self.end_pending = 0, []
         step = self.step()
         if step is None:
             self.done = True
@@ -2685,11 +2700,17 @@ class CourseRunner:
                     self.line_gap = gap if self.line_gap is None else 0.8 * self.line_gap + 0.2 * gap
             self.end_hits = self.end_hits + 1 if lane_end is not None else 0
             if self.ruler.kind == "laneend" or self.end_hits >= LANEEND_FRAMES:
-                self.ruler.feed("laneend", lane_end, now, locked=self.run_out, moving=self.moving)
+                # Confirmed: the frames that confirmed it count too, in order, so distance and speed are right at once.
+                for t_, y_ in self.end_pending:
+                    self.ruler.feed("laneend", y_, t_, locked=self.run_out, moving=self.moving, cmd=self.drive_cmd)
+                self.end_pending = []
+                self.ruler.feed("laneend", lane_end, now, locked=self.run_out, moving=self.moving, cmd=self.drive_cmd)
                 return
+            # Not confirmed yet: keep the readings (a break in the run drops them, as it drops the count).
+            self.end_pending = self.end_pending + [(now, lane_end)] if lane_end is not None else []
             # No line end yet: the line across the lane is measured as before, and stands in if no end is ever found.
         if self.run_out:
-            self.ruler.feed(self.ruler.kind, {"line": hline, "tip": tip}.get(self.ruler.kind), now, locked=True, moving=self.moving)
+            self.ruler.feed(self.ruler.kind, {"line": hline, "tip": tip}.get(self.ruler.kind), now, locked=True, moving=self.moving, cmd=self.drive_cmd)
         elif hline is not None:
             self.ruler.feed("line", hline, now)
         elif step["until"] == "end" and not step.get("dead_end") and ys.get("gap") is not None and tip is not None:
@@ -2815,7 +2836,7 @@ class CourseRunner:
                     # nth=: pass this one (a bend that looks like a junction) and keep going. It must vanish before the next counts.
                     print(f"\n[{self.idx + 1}] {reason} #{self.count} passed (ends at #{step['nth']})")
                     self.ruler.reset(None)      # The next line is a new one.
-                    self.end_hits, self.line_gap = 0, None
+                    self.end_hits, self.end_pending, self.line_gap = 0, [], None
                     if step.get("gap"):
                         wait = step["gap"][min(self.count, len(step["gap"])) - 1]
                         self.gap_end = now + wait
@@ -4284,6 +4305,7 @@ class Driver:
         else:
             course.turned, self.yaw_idx = None, -1
         course.moving = self.speed > 0
+        course.drive_cmd = self.last_cmd
         idx_before, ruler_before = course.idx, course.ruler      # Starting the next action replaces the ruler.
         course.update(junction, now, det, detect.crosswalk,
                       {"junction": detect.junction_y, "crosswalk": detect.crosswalk_y, "gap": detect.gap_y, "_crosswalk": detect.xwalk2_y,
@@ -4584,12 +4606,13 @@ def main():
         raise SystemExit(problem)
 
     car = cam = obs = None
-    button = ctl = bset = None
+    button = ctl = bset = led = None
 
     def refuse(message):
         """Stop before driving: release everything opened so far, and keep the reason in the drive log."""
         for name, fn in (("car", lambda: car and car.close()), ("camera", lambda: cam and cam.stop()),
-                         ("obstacle", lambda: obs and obs.close()), ("button", lambda: button and button.close())):
+                         ("obstacle", lambda: obs and obs.close()), ("button", lambda: button and button.close()),
+                         ("led", lambda: led and led.close())):
             try:
                 fn()
             except Exception as e:
@@ -4626,7 +4649,12 @@ def main():
                 except Exception as e:      # Driving without the button would start at once: not what was asked for.
                     refuse(f"the start button (GPIO21) is not working: {type(e).__name__}: {e}. Not driving. "
                            f"Check the wiring, or turn the button off: aicar button off")
-                ctl = StartControl(bset["hold"])
+                ctl = StartControl(bset["hold"], bset["press_stop"])
+                if bset["led"]:
+                    from start_button import StatusLed
+                    led = StatusLed()
+                    if not led.ok:      # No write access to the LED: drive without it.
+                        print(f"[warning] green LED not used ({led.error}). To use it: aicar led setup")
         cam = open_camera()
         person_det = load_person()
         driver = Driver(COURSE, args.start, args.speed, obs, person_det)
@@ -4660,9 +4688,11 @@ def main():
     driver_used = False
     sweep = None        # Steering check before a fresh start (start_button.Sweep), while it runs.
     if ctl:
-        from start_button import NAMES, RUN, WAIT, Sweep, describe
-        hold_banners = {WAIT: ("PRESS BUTTON TO START", (160, 120, 40)), "PAUSE": ("PAUSED - PRESS BUTTON", (160, 120, 40)),
-                        "SWEEP": ("STEER CHECK - PRESS TO CANCEL", (40, 140, 160))}
+        from start_button import NAMES, PAUSE, RUN, SWEEP, WAIT, Sweep, describe, led_feedback
+        if led is not None and not led.ok:
+            led = None
+        hold_banners = {WAIT: ("PRESS BUTTON TO START", (160, 120, 40)), PAUSE: ("PAUSED - PRESS BUTTON", (160, 120, 40)),
+                        SWEEP: ("STEER CHECK - PRESS TO CANCEL", (40, 140, 160))}
         driver.hold_banner = hold_banners[WAIT]
         print(describe(bset))
         print("Waiting for the start button (GPIO21)")
@@ -4677,14 +4707,19 @@ def main():
             view_frame = show and frames % VIEW_EVERY == 0     # Driving: the view on every other frame keeps the loop fast.
             if ctl:
                 for ev in button.take():
-                    if sweep:       # Any press during the steering check cancels it: wheels to center, wait for a start.
+                    if sweep and not ev.startswith("count"):     # A press during the steering check cancels it: wheels to center, wait.
                         sweep = None
-                        ctl.cancel()
+                        ctl.cancel(swallow=ev == "down")     # Still held: its release must not start the car again.
                         car.steer(0)
                         driver.hold_banner = hold_banners[WAIT]
+                        if led:
+                            led.hold(ev == "down")
+                            led.show("nothing")
+                            led.set_state(WAIT)
                         print(f"\n[button] {ev} -> steering check cancelled: {NAMES[ctl.state]}", flush=True)
                         continue
                     act = ctl.handle(ev)
+                    led_feedback(led, ev, act, ctl.state)
                     if act is None:
                         continue
                     if act == "start" and driver_used:      # A fresh run of the course from the first step.
@@ -4693,7 +4728,9 @@ def main():
                         # The course clock stays stopped (paused_at kept) until the check is over.
                         driver_used = True
                         sweep = Sweep(now, bset["sweep_speed"])
-                        driver.hold_banner = hold_banners["SWEEP"]
+                        driver.hold_banner = hold_banners[SWEEP]
+                        if led:
+                            led.set_state(SWEEP)
                         print(f"\n[button] {ev} -> steering check ({sweep.total:g} s), then driving", flush=True)
                         continue
                     if act in ("start", "resume"):
@@ -4716,6 +4753,8 @@ def main():
                         paused_total += now - paused_at
                         paused_at = None
                         driver.hold_banner = None
+                        if led:
+                            led.set_state(RUN)      # On from the first step (the barrier wait) to the end of the course.
                         print("\n[button] steering check done: driving", flush=True)
                 if ctl.state != RUN or sweep:
                     watchdog.drive(0)
@@ -4757,6 +4796,8 @@ def main():
                 print("\nCourse done")
                 if ctl:     # With the start button the program stays up: the next press runs the course again.
                     ctl.finished()
+                    if led:
+                        led.set_state(WAIT)
                     paused_at = now
                     driver.hold_banner = hold_banners[WAIT]
                     print(f"Waiting for the start button (the next press runs the course again from step {args.start})")
@@ -4821,6 +4862,7 @@ def main():
                              ("camera", cam.stop),
                              ("obstacle", lambda: obs.close() if obs else None),
                              ("button", lambda: button.close() if button else None),
+                             ("led", lambda: led.close() if led else None),
                              ("recording", lambda: rec and (rec.close(), driver.ends.save(rec.dir / "ends.csv"), driver.save_stop_log(rec.dir / "stops.csv"),
                                                              print(f"Recording saved: {rec.dir} ({rec.n} frames)"))),
                              ("drive log", lambda: box and (print(f"Drive log: {box.dir} ({box.n} frames)"), box.close(driver)))):

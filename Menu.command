@@ -115,7 +115,12 @@ menu_button() {
         '7|출발 전 조향 확인 켜기 (처음 출발할 때 앞바퀴 왼쪽→오른쪽→중앙)|$A button sweep on' \
         '8|출발 전 조향 확인 끄기|$A button sweep off' \
         '9|조향 확인 속도 (slow 3초 / normal 1.8초 / fast 1.2초)|v=$(ask "slow, normal, fast 중 하나 (엔터 = normal): "); $A button sweep-speed "${v:-normal}"' \
-        't|조향 확인 지금 해 보기 (앞바퀴만 움직임, 모터 꺼짐)|$A button sweep-test'
+        't|조향 확인 지금 해 보기 (앞바퀴만 움직임, 모터 꺼짐)|$A button sweep-test' \
+        '-' \
+        'l|초록 LED 표시 켜기/끄기 (주행 중 켜짐, 조향 확인·일시정지·누름은 깜빡임)|v=$(ask "on 또는 off: "); $A button led "$v"' \
+        'p|주행 중 누르면 바로 멈춤 켜기/끄기 (끄면 손을 뗄 때 멈춤)|v=$(ask "on 또는 off: "); $A button press-stop "$v"' \
+        'm|LED 패턴 테스트 (모터 안 움직임)|$A button led-test' \
+        'k|LED 사용 준비 (파이 설정 한 번, 되돌리기: aicar led undo)|y=$(ask "파이에 LED 권한 규칙을 추가할까요? [y/N] "); [ "$y" = y ] && $A led setup'
 }
 
 menu_camera() {
@@ -130,7 +135,8 @@ menu_camera() {
         '-' \
         '7|주행 기록 목록 (영상 없이 매 주행마다 자동 저장, 최근 30개)|$A logs' \
         '8|최근 주행 기록 받아서 보기 (동작별 시작·끝, 경고, 오류)|$A fetch-log latest' \
-        '9|주행 기록 자동 저장 켜기/끄기|$A drive-log; y=$(ask "바꾸려면 y (그대로: 엔터): "); [ "$y" = y ] && $A drive-log toggle'
+        '9|주행 기록 자동 저장 켜기/끄기|$A drive-log; y=$(ask "바꾸려면 y (그대로: 엔터): "); [ "$y" = y ] && $A drive-log toggle' \
+        'e|cm= 종료 위치 보고 (최근 주행에서 목표 cm, 끝날 때 cm, 오차, 속도)|n=$(ask "최근 몇 번 주행 (엔터 = 5): "); $A end-report $n'
 }
 
 menu_settings() {

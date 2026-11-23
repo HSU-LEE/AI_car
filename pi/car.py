@@ -116,6 +116,8 @@ class HardwareServo(SysfsPWM):
     @angle.setter
     def angle(self, value):
         value = max(self.min_angle, min(self.max_angle, value))
+        if value == self._angle:
+            return      # Same pulse as now: no write (it runs every frame). Only this class drives the servo PWM.
         ratio = (value - self.min_angle) / (self.max_angle - self.min_angle)
         self._write("duty_cycle", int(self.min_ns + ratio * (self.max_ns - self.min_ns)))
         self._write("enable", 1)

@@ -1914,7 +1914,8 @@ def _test_end_cm():
         c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), finish()])
         z = drive_line(c, 45.0, 0.0, 10.0)
     target = lf.END_BASE_CM - 10
-    check("to_junction(cm=10): ends exactly by the line", c.idx == 1 and abs(z - target) < 0.5, f"line {z:.2f}cm, target {target}cm")
+    lead = 10.0 * lf.END_LEAD_SEC     # Ends this much early on purpose (camera delay), now that the median has no lag of its own.
+    check("to_junction(cm=10): ends exactly by the line", c.idx == 1 and abs(z - (target + lead)) < 0.5, f"line {z:.2f}cm, target {target}cm + lead {lead:g}")
     ends = []
     for v in (6.0, 12.0, 20.0):
         with quiet():
@@ -1928,11 +1929,11 @@ def _test_end_cm():
     with quiet():
         c = lf.CourseRunner([cs.to_end(cm=5), finish()])
         z = drive_line(c, 45.0, 0.0, 10.0, tip=True)
-    check("to_end(cm=5): ends by the lane end", c.idx == 1 and abs(z - (lf.END_BASE_CM - 5)) < 0.5, f"line {z:.2f}cm")
+    check("to_end(cm=5): ends by the lane end", c.idx == 1 and abs(z - (lf.END_BASE_CM - 5 + lead)) < 0.5, f"line {z:.2f}cm")
     with quiet():
         c = lf.CourseRunner([cs.to_end(cm=5), finish()])
         z = drive_line(c, 45.0, 0.0, 10.0)
-    check("to_end(cm=5): ends by the junction line too", c.idx == 1 and abs(z - (lf.END_BASE_CM - 5)) < 0.5, f"line {z:.2f}cm")
+    check("to_end(cm=5): ends by the junction line too", c.idx == 1 and abs(z - (lf.END_BASE_CM - 5 + lead)) < 0.5, f"line {z:.2f}cm")
     with quiet():
         c = lf.CourseRunner([cs.to_junction(cm=10, blind_sec=0), follow(9), finish()])
         drive_line(c, 45.0, 0.0, 10.0)
@@ -4299,12 +4300,12 @@ def test_start_button():
     ev = []
     for t_, lvl in [(0, False), (1.0, True), (1.04, True), (1.2, False), (1.24, False)]:
         ev += p.feed(lvl, t_)
-    check("short press = one tap", ev == ["tap"], ev)
+    check("short press = down, then one tap", ev == ["down", "tap"], ev)
     p = sb.Presses(hold_sec=3.0)
     ev = []
     for t_, lvl in [(0, False), (1.0, True), (1.01, False), (1.015, True), (1.05, True), (1.3, False), (1.4, False)]:
         ev += p.feed(lvl, t_)
-    check("contact bounce inside a press is not a second tap", ev == ["tap"], ev)
+    check("contact bounce inside a press is not a second tap", ev == ["down", "tap"], ev)
     p = sb.Presses(hold_sec=3.0)
     ev = []
     for t_ in [0, 1.0] + [1.0 + 0.1 * k for k in range(1, 35)]:
@@ -4312,13 +4313,13 @@ def test_start_button():
     at_hold = list(ev)
     for t_, lvl in [(4.6, False), (4.7, False)]:
         ev += p.feed(lvl, t_)
-    check("hold fires at 3 s while still held", at_hold == ["hold"], at_hold)
-    check("releasing after a hold is not a tap", ev == ["hold"], ev)
+    check("hold: down, a count at 1 s and 2 s, hold at 3 s while still held", at_hold == ["down", "count1", "count2", "hold"], at_hold)
+    check("releasing after a hold is not a tap", ev == at_hold, ev)
     p = sb.Presses(hold_sec=3.0)
     ev = []
     for t_, lvl in [(0, True), (5.0, True), (5.1, False), (5.2, False), (6.0, True), (6.1, True), (6.3, False), (6.4, False)]:
         ev += p.feed(lvl, t_)
-    check("a button held at start counts only after one release", ev == ["tap"], ev)
+    check("a button held at start counts only after one release", ev == ["down", "tap"], ev)
 
     # StartControl.
     c = sb.StartControl("restart")
@@ -4340,7 +4341,7 @@ def test_start_button():
         check("bad values fall back, good ones kept", s == dict(sb.DEFAULTS, enabled=False), s)
         f.write_text("not json")
         check("broken file: defaults", sb.load_settings(f) == sb.DEFAULTS)
-        new = {"enabled": True, "hold": "keep", "hold_sec": 2.5, "sweep": False, "sweep_speed": "fast"}
+        new = {"enabled": True, "hold": "keep", "hold_sec": 2.5, "sweep": False, "sweep_speed": "fast", "led": False, "press_stop": False}
         sb.save_settings(new, f)
         check("saved settings read back", sb.load_settings(f) == new)
         f.write_text('{"sweep": "yes", "sweep_speed": "turbo"}')
@@ -4363,6 +4364,61 @@ def test_start_button():
     c = sb.StartControl("keep")
     c.handle("tap"); c.cancel()
     check("cancel: waiting, next start is fresh", c.state == sb.WAIT and c.handle("tap") == "start")
+    c = sb.StartControl("restart")
+    c.handle("tap"); c.cancel(swallow=True)
+    check("cancel by a press still held: its release does not start again, the next tap does",
+          [c.handle("tap"), c.handle("tap")] == [None, "start"])
+
+    # press_stop: pressing while driving pauses at once; that press's release does nothing more.
+    c = sb.StartControl("restart", press_stop=True)
+    acts = [c.handle(e) for e in ["down", "tap", "down", "tap", "down", "tap"]]
+    check("press_stop: down pauses at once, release swallowed, next press resumes on release",
+          acts == [None, "start", "pause", None, None, "resume"], acts)
+    c = sb.StartControl("restart", press_stop=True)
+    acts = [c.handle(e) for e in ["down", "tap", "down", "count1", "count2", "hold", "down", "tap"]]
+    check("press_stop: held to 3 s goes to waiting, the next tap starts fresh",
+          acts == [None, "start", "pause", None, None, "wait", None, "start"], acts)
+    c = sb.StartControl("restart", press_stop=False)
+    acts = [c.handle(e) for e in ["down", "tap", "down", "tap"]]
+    check("press_stop off: pauses only on release", acts == [None, "start", None, "pause"], acts)
+
+    # The green LED, on a stand-in for /sys/class/leds with a clock the test sets.
+    with tempfile.TemporaryDirectory() as d:
+        act_dir = Path(d) / "ACT"
+        act_dir.mkdir()
+        (act_dir / "trigger").write_text("none [mmc0] timer heartbeat")
+        (act_dir / "brightness").write_text("0")
+        clock = [100.0]
+        led = sb.StatusLed(base=Path(d), clock=lambda: clock[0])
+        check("LED: found ACT, taken over from the SD card trigger", led.ok and (act_dir / "trigger").read_text() == "none" and led.old_trigger == "mmc0")
+        lv = lambda t: led.level(t)
+        led.set_state(sb.WAIT)
+        check("LED: off while waiting", all(lv(100 + k * 0.1) == 0 for k in range(20)))
+        led.set_state(sb.RUN)
+        check("LED: on while driving", all(lv(100 + k * 0.1) == 1 for k in range(20)))
+        led.set_state(sb.SWEEP)
+        sweep = [lv(100 + k * 0.05) for k in range(12)]
+        check("LED: blinking during the steering check", 0 in sweep and 1 in sweep, sweep)
+        led.set_state(sb.PAUSE)
+        pause = [lv(100.0 + k * 0.06) for k in range(34)]
+        ons = sum(1 for a, b in zip([0] + pause, pause) if b and not a)
+        check("LED: paused = two short blinks per 2 s", ons == 2, pause)
+        led.set_state(sb.RUN)
+        sb.led_feedback(led, "down", None, sb.RUN)
+        check("LED: off at once while the button is held", lv(101.0) == 0)
+        clock[0] = 102.0
+        sb.led_feedback(led, "count1", None, sb.RUN)
+        check("LED: one blink at 1 s held, then off again", lv(102.05) == 1 and lv(102.5) == 0)
+        clock[0] = 104.0
+        sb.led_feedback(led, "hold", "wait", sb.WAIT)
+        flutter = [lv(104.0 + k * 0.05) for k in range(12)]
+        check("LED: flutter at 3 s, then off (waiting)", flutter.count(1) >= 5 and lv(105.5) == 0, flutter)
+        clock[0] = 110.0
+        sb.led_feedback(led, "tap", "resume", sb.RUN)
+        check("LED: resume shows off-on-off, then on", [lv(110.05), lv(110.2), lv(110.35), lv(111.0)] == [0, 1, 0, 1])
+        led.close()
+        check("LED: close gives it back to the SD card", (act_dir / "trigger").read_text() == "mmc0")
+        check("LED: no LED there -> not ok, no error raised", not sb.StatusLed(base=Path(d) / "none").ok)
 
     # The drive loop in main() with a fake camera, motor, button and driver.
     import car as car_mod
@@ -4492,6 +4548,40 @@ def test_start_button():
     check("steering check: course clock starts at its end (waiting and checking not counted)",
           ticks and -0.01 <= ticks[0][1] - t_before < 0.1 and t_after - t_before > 0.5, ticks and f"{ticks[0][1] - t_before:.3f}")
 
+    # The loop with real presses: "down" and its release. A press during the check cancels it and its release does not
+    # start the car; press_stop pauses on the very frame of the press.
+    made.clear()
+    script.clear()
+    script.update({20: "down", 21: "tap", 30: "down", 32: "tap", 60: "down", 61: "tap", 110: "down", 112: "tap", 130: "down", 131: "tap"})
+    cam.n = 0
+    press_car = FakeCar()
+    saved = (car_mod.Car, lf.open_camera, lf.Driver, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE,
+             sb.load_settings, sb.SWEEP_SEC, sb.SWEEP_SETTLE)
+    lf.COURSE = [follow(until="junction"), finish()]
+    car_mod.Car = lambda: press_car
+    lf.open_camera = lambda locked=True: cam
+    lf.Driver = FakeDriver
+    lf.load_person = lambda path=None: None
+    sb.ButtonReader = FakeReader
+    sb.load_settings = lambda path=None: dict(sb.DEFAULTS, sweep=True, press_stop=True, led=False)
+    sb.SWEEP_SEC, sb.SWEEP_SETTLE = {"normal": 0.08}, 0.02
+    sys.argv = ["lane_follow.py", "--drive", "--no-stream", "--no-log", "--button", "on"]
+    press_car.drive = lambda v: press_car.cmds.append((cam.n, v))
+    try:
+        with quiet():
+            lf.main()
+    except SystemExit:
+        pass
+    finally:
+        (car_mod.Car, lf.open_camera, lf.Driver, lf.load_person, sb.ButtonReader, sys.argv, lf.COURSE,
+         sb.load_settings, sb.SWEEP_SEC, sb.SWEEP_SETTLE) = saved
+    ran = [n for d in made for n, _ in d.ticks]
+    check("press during the check cancels it, its release does not start the car", not any(21 <= n < 61 for n in ran), [n for n in ran if n < 70][:5])
+    check("the next press starts it: check, then driving", any(61 < n < 110 for n in ran))
+    check("press_stop: no course frame from the press until the resume", not any(110 <= n < 131 for n in ran), [n for n in ran if 105 <= n <= 135])
+    check("press_stop: motor 0 on the frame of the press", all(v == 0 for n, v in press_car.cmds if 110 <= n < 131) and any(n == 110 for n, _ in press_car.cmds))
+    check("resumed after the last press", any(n > 131 for n in ran))
+
     # Ctrl+C (or aicar stop) while the camera opens: a clean stop that releases the motor, not a traceback.
     closed = []
     fake_car.close = lambda: closed.append("car")
@@ -4517,10 +4607,121 @@ def test_start_button():
     check("stop while starting up: clean exit, motor released", outcome == "Stopped before driving" and closed == ["car"], (outcome, closed))
 
 
+def test_end_timing():
+    print("\n[cm= end timing: readings kept while confirming, speed from the motor command, no median lag]")
+    import course as cs
+    old_ref = lf.JUNCTION_REF
+    lf.JUNCTION_REF = "laneend"
+    try:
+        # 1. The lane end needs LANEEND_FRAMES in a row. The frames before that are kept and count once it is confirmed.
+        v, fps = 30.0, 20.0
+        c = lf.CourseRunner([cs.to_junction(cm=8), cs.finish()])
+        c.moving, c.drive_cmd = True, 0.95
+        z, t = 60.0, 0.0
+        for k in range(lf.LANEEND_FRAMES):
+            c.track_end({"end_y": y_at(z)}, t)
+            if k < lf.LANEEND_FRAMES - 1:
+                z -= v / fps
+                t += 1 / fps
+        r = c.ruler
+        check("lane end confirmed: on the ruler at once", r.kind == "laneend" and r.z is not None, r.kind)
+        check("right after confirming: distance is where the line is now", abs(r.z - z) < 1.0, f"{r.z:.2f} vs {z:.2f}")
+        check("right after confirming: speed already measured from the waiting frames",
+              r.speed is not None and abs(r.speed - v) < 3.0, None if r.speed is None else f"{r.speed:.1f}")
+        c2 = lf.CourseRunner([cs.to_junction(cm=8), cs.finish()])
+        c2.moving = True
+        for k, y in enumerate([y_at(60), y_at(58), None, y_at(55)]):
+            c2.track_end({"end_y": y}, k / fps)
+        check("a break in the run drops the kept readings", c2.end_pending == [(3 / fps, y_at(55))] and c2.ruler.kind != "laneend", c2.end_pending)
+
+        # 2. No speed measured, the line gone: carried on at what the motor command gives (0.95 -> about 30 cm/s), not 10 cm/s.
+        r = lf.EndRuler()
+        with quiet():
+            r.feed("laneend", y_at(40.0), 0.0, cmd=0.95)
+            for k in range(1, 11):
+                r.feed("laneend", None, k * 0.05, cmd=0.95)
+        expect = 40.0 - 0.95 * lf.MOTOR_CM_PER_CMD * 0.5
+        check("no speed measured: carries on at the motor command's speed", r.speed is None and abs(r.z - expect) < 0.01, f"{r.z:.2f} vs {expect:.2f}")
+        r2 = lf.EndRuler()
+        r2.feed("laneend", y_at(40.0), 0.0, cmd=0.95)
+        r2.feed("laneend", None, 0.05, moving=False, cmd=0.95)
+        r2.feed("laneend", None, 0.10, moving=False, cmd=0.95)
+        check("standing still: the distance does not shrink", abs(r2.z - 40.0) < 0.01, r2.z)
+        r3 = lf.EndRuler()
+        r3.feed("laneend", y_at(40.0), 0.0, cmd=0.95)
+        r3.feed("laneend", None, 2.0, cmd=0.95)
+        check("a long gap (a stop for the figure) counts at most 0.1 s", abs(r3.z - (40.0 - 0.95 * lf.MOTOR_CM_PER_CMD * 0.1)) < 0.01, r3.z)
+        r4 = lf.EndRuler()
+        r4.feed("laneend", y_at(40.0), 0.0)
+        r4.feed("laneend", None, 0.1)
+        check("no command either: END_DEFAULT_SPEED as before", abs(r4.z - (40.0 - lf.END_DEFAULT_SPEED * 0.1)) < 0.01, r4.z)
+
+        # 3. A line coming closer at a steady speed: the median of 3 is not a frame behind.
+        r = lf.EndRuler()
+        z, lags = 70.0, []
+        for k in range(30):
+            r.feed("line", y_at(z), k / fps)
+            if k >= 10:
+                lags.append(r.z - z)
+            z -= v / fps
+        worst = max(abs(x) for x in lags)
+        check("steady approach: the median is where the line is now (under 0.5 cm, one frame is 1.5 cm)", worst < 0.5, f"{worst:.2f}")
+        r = lf.EndRuler()
+        z = 70.0
+        for k in range(20):
+            r.feed("line", y_at(z) if k != 12 else y_at(z + 15), k / fps)
+            if k == 12:
+                one_off = abs(r.z - z)
+            z -= v / fps
+        check("one misread frame still cannot move it", one_off < 1.0, f"{one_off:.2f}")
+    finally:
+        lf.JUNCTION_REF = old_ref
+
+    # tools/end_report.py: the table from ends.csv, and from out.log when there is no ends.csv.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    try:
+        import end_report
+    finally:
+        sys.path.pop(0)
+    with tempfile.TemporaryDirectory() as d:
+        a, b = Path(d) / "20261123-100000", Path(d) / "20261123-110000"
+        a.mkdir()
+        b.mkdir()
+        w = lf.EndWatch()
+        r = lf.EndRuler()
+        r.kind, r.z, r.speed = "laneend", 22.0, 29.0
+        with quiet():
+            w.ended(2, {"cm": 8}, r, None, 0.95, 1.0, None, 1.0, False)
+        w.save(a / "ends.csv")
+        (b / "out.log").write_text("[measure 3] end: line at 30.0cm (line, +8.0cm past the 38cm base, target 10) speed 28.0cm/s command 0.95 steer +1.0 offset - heading -\r"
+                                   "[measure 3] stopped: line at 26.0cm, slid 4.0cm after the end (0.40s)\n")
+        lines = []
+        by_step = end_report.report([a, b], out=lines.append)
+    row_a = [l for l in lines if l.startswith("20261123-100000")][0].split()
+    check("end report: lane end row = target 8, at end 22 - 14.5 = 7.5, error -0.5 (late), ref laneend",
+          row_a[2:5] == ["8.0", "7.5", "-0.5"] and "laneend" in row_a, row_a)
+    check("end report: out.log row = target 10, at end 38 - 30 = 8, error +2 (early), slid 4",
+          by_step.get(3) == [-0.5, 2.0] and any("4.0" in l and "20261123-110000" in l for l in lines), by_step)
+
+
+def test_course_docs():
+    print("\n[VS Code course helper: docs.json describes every course.py action and option]")
+    tools = Path(__file__).resolve().parents[1] / "tools" / "vscode-course" / "py"
+    sys.path.insert(0, str(tools))
+    try:
+        import docs_check
+        res = docs_check.check()
+    finally:
+        sys.path.remove(str(tools))
+    check("every public course action is in docs.json", res["missing_functions"] == [], res["missing_functions"])
+    check("every course option is in docs.json", res["missing_options"] == [], res["missing_options"])
+    check("docs.json describes no action that is gone", res["stale_functions"] == [], res["stale_functions"])
+
+
 def main():
     for t in (test_corrections, test_junction_lost, test_laneend, test_end_cm, test_gap_tip, test_end_ruler, test_align_steer, test_key_inbox, test_key_route, test_web_view, test_red_search, test_tools_read_web_keys, test_saved_with_run, test_fast_math, test_lane, test_gap, test_mat_mask, test_crosswalk, test_track_color,
               test_traffic_light, test_course_logic, test_calibration, test_motor, test_turn_align_stop, test_blind_and_bundles, test_lost_and_far, test_stripes_and_crossing,
-              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_go_end_and_gap_hold, test_sharp_bend, test_junction_point, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes, test_start_button):
+              test_driver_smoke, test_person_detect, test_person_near_decoys, test_person_look, test_person_photos, test_person_any, test_person_in_lane, test_next, test_speed_constant, test_person_stop, test_end_watch, test_set_speed, test_set_steer, test_reflections, test_glare_motion, test_landmarks, test_line_and_stop_points, test_stop_point_details, test_no_slowdown, test_random_courses, test_same_on_every_platform, test_go_dis, test_drive_log, test_safe_settings, test_start_checks, test_lane_track, test_lane_model_locked, test_junction_assist, test_lane_end_continues, test_lane_end_other_side, test_assist_fault, test_confirm_jump, test_calibrate_end, test_lane_pairs, test_web_dashboard, test_go_end_and_gap_hold, test_sharp_bend, test_junction_point, test_course_end_stops, test_junction_not_mat_edge, test_drive_fixes, test_start_button, test_end_timing, test_course_docs):
         t()
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed")
