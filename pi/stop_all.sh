@@ -6,7 +6,7 @@ cd ~/aicar || exit 1
 find_pids() {
     # Real python processes only. `pgrep -f` also matches the shell that launched this script.
     ps -eo pid=,comm=,args= |
-        awk '$2 ~ /^python/ && /(lane_follow|drive_keys|tune_center|tune_white|tune_light|tune_person|tune_landmark|camera_view|calibrate|gap_probe|car)\.py/ {print $1}'
+        awk '$2 ~ /^python/ && /(lane_follow|drive_keys|tune_center|tune_white|tune_light|tune_person|tune_landmark|camera_view|calibrate|gap_probe|start_button|car)\.py/ {print $1}'
 }
 
 pids=$(find_pids)
@@ -26,6 +26,11 @@ else
     fi
     echo "Drive program stopped"
 fi
+
+# A killed drive cannot hand the green LED back (start button display): give it back to SD card activity.
+for l in /sys/class/leds/ACT /sys/class/leds/led0; do
+    [ -w "$l/trigger" ] && echo mmc0 > "$l/trigger" 2>/dev/null
+done
 
 # If the process was killed, grab the motor pins again and stop them.
 # Retried: another stop (Ctrl+C on the Mac and aicar stop at once) can hold the pins for a moment.

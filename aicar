@@ -252,12 +252,12 @@ cmd_end_report() {
     local n="${1:-5}" name kind
     [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] || die "Usage: aicar end-report [how many drives, 5 by default]"
     host
-    local dirs=()
+    local dirs=() cache="$STATE/ends"     # Own folder: partial copies in runs/ would look like recordings to replay.
     for kind in logs runs; do
         for name in $(run "ls -1 ~/$REMOTE/$kind 2>/dev/null | tail -n $n"); do
-            mkdir -p "$ROOT/$kind/$name"
+            mkdir -p "$cache/$kind/$name"
             rsync -a -e "ssh ${SSH_OPTS[*]}" --include ends.csv --include out.log --include course.py --exclude '*' \
-                "pi@$HOST:$REMOTE/$kind/$name/" "$ROOT/$kind/$name/" 2>/dev/null && dirs+=("$ROOT/$kind/$name")
+                "pi@$HOST:$REMOTE/$kind/$name/" "$cache/$kind/$name/" 2>/dev/null && dirs+=("$cache/$kind/$name")
         done
     done
     [ ${#dirs[@]} -gt 0 ] || die "No drive logs or recordings on the Pi yet"

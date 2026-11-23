@@ -1,7 +1,7 @@
 """Where each cm= action really ended, from drive logs and recordings on this Mac. A table per step, to set against a tape.
 
   .venv/bin/python tools/end_report.py logs/20261123-101500 runs/20261123-102000 ...
-  .venv/bin/python tools/end_report.py                       every drive log and recording under logs/ and runs/
+  .venv/bin/python tools/end_report.py                       every drive log and recording under logs/, runs/ and .aicar/ends/
 
 Reads ends.csv (saved by every drive log and recording that had one), or the [measure] lines in out.log when there is none.
 Columns: target cm, cm at the end (lane end: from the car front, as on screen), error (+ = ended early, still that far
@@ -131,7 +131,9 @@ def report(folders, out=print):
 
 
 def main(argv):
-    folders = [Path(a) for a in argv] or sorted([*(ROOT / "logs").glob("2*"), *(ROOT / "runs").glob("2*")])
+    cache = ROOT / ".aicar" / "ends"     # What aicar end-report downloads.
+    folders = [Path(a) for a in argv] or sorted([*(ROOT / "logs").glob("2*"), *(ROOT / "runs").glob("2*"),
+                                                 *(cache / "logs").glob("2*"), *(cache / "runs").glob("2*")], key=lambda p: p.name)
     report([f for f in folders if f.is_dir()])
 
 
