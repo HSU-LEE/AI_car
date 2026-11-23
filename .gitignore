@@ -35,7 +35,5 @@ track/tiles/
 track/*.pdf
 track/*.png
 
-# PCB intermediate files and KiCad auto backups (only before-routing, the route_manual.sh input, is kept)
-
 # Previous settings kept by safe_io
 pi/*.json.bak
